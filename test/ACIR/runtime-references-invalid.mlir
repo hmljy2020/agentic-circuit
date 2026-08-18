@@ -43,7 +43,7 @@ builtin.module attributes {ac.contract_epoch = "0.2"} {
     ac.process @p kind "control" {
       %v = arith.constant 1 : i32
       %delay = arith.constant 1 : i64
-      ac.schedule @missing %v after %delay : i32
+      %accepted = ac.schedule @missing %v after %delay : i32
       ac.yield_sim
     }
     ac.return
@@ -67,7 +67,11 @@ builtin.module attributes {ac.contract_epoch = "0.2"} {
 builtin.module attributes {ac.contract_epoch = "0.2"} {
   ac.module @M() parameters {} graph {
     ac.process @p kind "control" {
-      ac.await_event @missing
+      %value, %ready = ac.try_event @missing : i32
+      scf.if %ready {
+      } else {
+        ac.await_event @missing
+      }
       ac.yield_sim
     }
     ac.return
@@ -102,22 +106,20 @@ builtin.module attributes {ac.contract_epoch = "0.2"} {
 
 //--- schedule-type.mlir
 builtin.module attributes {ac.contract_epoch = "0.2"} {
-  ac.module @M(i64) parameters {} graph {
-  ^bb0(%input : i64):
-    ac.process @worker kind "workload" captures(%input : i64) {
-    ^bb0(%value : i64):
-      ac.yield_sim
-    }
+  ac.module @M() parameters {} graph {
+    ac.time_domain @core period 1 phase 0 scale 1
+    ac.event_queue @events payload !ac.event<i64> capacity 2
+        ordering "time_then_sequence" domain @core id "events" path "events"
     ac.process @p kind "control" {
       %v = arith.constant 1 : i32
       %delay = arith.constant 1 : i64
-      ac.schedule @worker %v after %delay : i32
+      %accepted = ac.schedule @events %v after %delay : i32
       ac.yield_sim
     }
     ac.return
   }
 }
-// SCHEDULE-TYPE: must match the target process's single capture type
+// SCHEDULE-TYPE: does not match event queue element type {{.*}}i64
 
 //--- probe-kind.mlir
 builtin.module attributes {ac.contract_epoch = "0.2"} {

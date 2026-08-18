@@ -657,6 +657,41 @@ runtimeObjectExpression(const ModelPlan &plan,
   return expression;
 }
 
+llvm::Expected<const PlacementPlan *>
+runtimeObjectPlacement(const ModelPlan &plan,
+                       const RuntimeObjectPlan &runtimeObject) {
+  const ModulePlan *module = rootModule(plan);
+  if (!module)
+    return generatorError("ACLOWER-OWNERSHIP",
+                          "root module has no generated specialization");
+  llvm::SmallVector<llvm::StringRef> segments;
+  llvm::StringRef(runtimeObject.hierarchyPath).split(segments, '.');
+  if (segments.size() < 2)
+    return generatorError("ACLOWER-DISPATCH",
+                          "runtime path has no hierarchy segments");
+  for (size_t segmentIndex = 1; segmentIndex < segments.size();
+       ++segmentIndex) {
+    llvm::StringRef symbol = segments[segmentIndex].take_until(
+        [](char value) { return value == '['; });
+    auto placement =
+        std::find_if(module->placements.begin(), module->placements.end(),
+                     [&](const PlacementPlan &candidate) {
+                       return candidate.symbol == symbol;
+                     });
+    if (placement == module->placements.end())
+      return static_cast<const PlacementPlan *>(nullptr);
+    if (segmentIndex + 1 == segments.size())
+      return &*placement;
+    llvm::StringRef target = placement->target;
+    target = target.take_until([](char value) { return value == ':'; });
+    module = findModule(plan, target);
+    if (!module)
+      return generatorError("ACLOWER-DISPATCH",
+                            "runtime path crosses a non-module member");
+  }
+  return static_cast<const PlacementPlan *>(nullptr);
+}
+
 llvm::Expected<GeneratedFile> dispatchHeader(const ModelPlan &plan) {
   std::vector<uint32_t> offsets(plan.runtimeObjects.size() + 1, 0);
   std::vector<uint32_t> targets;
@@ -753,6 +788,30 @@ llvm::Expected<GeneratedFile> modelHeader(const ModelPlan &plan,
 }
 
 llvm::Expected<GeneratedFile> modelSource(const ModelPlan &plan) {
+  uint64_t eventCapacity = 1024;
+  for (const RuntimeObjectPlan &object : plan.runtimeObjects) {
+    auto placement = runtimeObjectPlacement(plan, object);
+    if (!placement)
+      return placement.takeError();
+    if (!*placement)
+      continue;
+    const TypePlan *type = findType(plan, (*placement)->target);
+    if (!type ||
+        !llvm::StringRef(type->cppType).starts_with("gfsim::TimedEventQueue<"))
+      continue;
+    if ((*placement)->staticArguments.empty())
+      return generatorError("ACLOWER-CAPACITY",
+                            "timed event queue has no capacity argument");
+    auto capacity = (*placement)->staticArguments.front().getAsInteger();
+    if (!capacity || *capacity <= 0)
+      return generatorError("ACLOWER-CAPACITY",
+                            "timed event queue capacity is invalid");
+    const uint64_t addition = static_cast<uint64_t>(*capacity);
+    if (eventCapacity > std::numeric_limits<uint64_t>::max() - addition)
+      return generatorError("ACLOWER-CAPACITY",
+                            "internal event queue capacity overflow");
+    eventCapacity += addition;
+  }
   std::ostringstream output;
   output << "#include \"generated/dispatch.h\"\n\n#include <stdexcept>\n"
             "#include <utility>\n\n"
@@ -764,6 +823,11 @@ llvm::Expected<GeneratedFile> modelSource(const ModelPlan &plan) {
             "dispatch_(DispatchAccess::makeRows(*this)) {\n"
             "  if (!system_.root().attachChild(top_))\n"
             "    throw std::logic_error(\"ACLOWER-OWNERSHIP\");\n"
+            "  const bool capacityConfigured = "
+            "system_.setEventQueueCapacity("
+         << eventCapacity
+         << ");\n  if (!capacityConfigured)\n"
+            "    throw std::logic_error(\"ACLOWER-CAPACITY\");\n"
             "  for (gfsim::DispatchRow &row : dispatch_) {\n"
             "    auto *object = static_cast<gfsim::SimObject *>(row.object);\n"
             "    object->bindSystem(&system_);\n"

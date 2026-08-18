@@ -2607,8 +2607,21 @@ LogicalResult verifyDispatchAndActivation(ModelOp model,
   };
 
   std::set<std::pair<int64_t, int64_t>> expected;
-  for (const ExpandedRuntimeRow &row : expansion.runtimeRows)
+  auto isTimedEventReference = [&](Value value) {
+    auto owner = dyn_cast<OwnerType>(value.getType());
+    if (!owner)
+      return false;
+    auto type = dyn_cast_or_null<TypeOp>(
+        SymbolTable::lookupSymbolIn(model, owner.getRealization()));
+    return type && type.getCppName().starts_with("gfsim::TimedEventQueue<");
+  };
+  for (const ExpandedRuntimeRow &row : expansion.runtimeRows) {
+    auto realization = dyn_cast_or_null<TypeOp>(row.realization);
+    if (realization &&
+        realization.getCppName().starts_with("gfsim::TimedEventQueue<"))
+      continue;
     expected.insert({row.activationId, row.objectId});
+  }
   for (auto [contextOrdinal, expansionContext] :
        llvm::enumerate(expansion.contexts)) {
     for (Operation &operation : expansionContext.module.getBody().front()) {
@@ -2631,6 +2644,11 @@ LogicalResult verifyDispatchAndActivation(ModelOp model,
               "process must instantiate once per concrete module context");
         int64_t processId = rows->second.front();
         for (Value capture : process.getCaptures()) {
+          // A named timed queue capture is an ownership dependency only.
+          // Arrival activation is derived from receive/wake invokes below;
+          // producers that merely schedule must not be activated by delivery.
+          if (isTimedEventReference(capture))
+            continue;
           FailureOr<std::set<int64_t>> sources =
               collectIds(capture, contextOrdinal, process);
           if (failed(sources))
@@ -2641,6 +2659,12 @@ LogicalResult verifyDispatchAndActivation(ModelOp model,
         }
         LogicalResult invokeStatus = success();
         process.walk([&](InvokeOp invoke) -> WalkResult {
+          auto callee =
+              dyn_cast_or_null<TypeOp>(SymbolTable::lookupNearestSymbolFrom(
+                  invoke, invoke.getCalleeAttr()));
+          if (callee &&
+              callee.getSymName().starts_with("acir_impl_event_schedule_"))
+            return WalkResult::advance();
           for (Value argument : invoke.getArgs()) {
             FailureOr<std::set<int64_t>> sources =
                 collectIds(argument, contextOrdinal, invoke);

@@ -103,8 +103,8 @@ PlanSetBuilder::makePlannedAction(const ExpandedAction &expanded, uint32_t id) {
     action->scalarOp = ProcessScalarOperationPlan(std::move(scalar));
   }
   if (action->kind == ProcessActionKind::Original && action->sourceOperation) {
-    if (isa<ac::TrySendOp, ac::TryRecvOp, ac::PeekOp, ac::AssertOp>(
-            action->sourceOperation)) {
+    if (isa<ac::TrySendOp, ac::TryRecvOp, ac::PeekOp, ac::ScheduleOp,
+            ac::TryEventOp, ac::AssertOp>(action->sourceOperation)) {
       action->emission = ProcessEmissionClass::Invoke;
       action->cost = 1;
     }
@@ -226,9 +226,10 @@ PlanSetBuilder::planStructuredIfContinuation(const ExpandedProcess &expanded,
   for (const auto &ownedNode : nodes) {
     StructuredNode *node = ownedNode.get();
     auto await = dyn_cast_or_null<ac::AwaitQueueOp>(node->operation);
+    auto awaitEvent = dyn_cast_or_null<ac::AwaitEventOp>(node->operation);
     auto ifOp = node->operation ? node->operation->getParentOfType<scf::IfOp>()
                                 : scf::IfOp();
-    if (!await || !ifOp)
+    if ((!await && !awaitEvent) || !ifOp)
       continue;
     auto definition = definitionsByValue.find(ifOp.getCondition());
     if (definition == definitionsByValue.end())
@@ -241,7 +242,11 @@ PlanSetBuilder::planStructuredIfContinuation(const ExpandedProcess &expanded,
       queue = recv.getQueueAttr();
     else if (auto peek = dyn_cast<ac::PeekOp>(operation))
       queue = peek.getQueueAttr();
-    if (queue && queue == await.getQueueAttr())
+    else if (auto recv = dyn_cast<ac::TryEventOp>(operation))
+      queue = recv.getEventQueueAttr();
+    FlatSymbolRefAttr awaited =
+        await ? await.getQueueAttr() : awaitEvent.getEventQueueAttr();
+    if (queue && queue == awaited)
       retryRoots.try_emplace(node, definition->second);
   }
 
@@ -494,8 +499,8 @@ PlanSetBuilder::planProcessContinuation(const ExpandedProcess &expanded,
         act->scalarOp = ProcessScalarOperationPlan(std::move(scalar));
       }
       if (act->kind == ProcessActionKind::Original && act->sourceOperation) {
-        if (isa<ac::TrySendOp, ac::TryRecvOp, ac::PeekOp, ac::AssertOp>(
-                act->sourceOperation)) {
+        if (isa<ac::TrySendOp, ac::TryRecvOp, ac::PeekOp, ac::ScheduleOp,
+                ac::TryEventOp, ac::AssertOp>(act->sourceOperation)) {
           act->emission = ProcessEmissionClass::Invoke;
           act->cost = 1;
         }

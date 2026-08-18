@@ -472,8 +472,16 @@ def ACIR_PeekOp : ACIR_RuntimeEffectOp<"peek"> {
 def ACIR_ScheduleOp : ACIR_RuntimeEffectOp<"schedule"> {
   let arguments = (ins AnyType:$value, I64:$delay,
                        FlatSymbolRefAttr:$target);
+  let results = (outs I1:$accepted);
   let hasVerifier = 1;
   let assemblyFormat = "$target $value `after` $delay attr-dict `:` type($value)";
+}
+
+def ACIR_TryEventOp : ACIR_RuntimeEffectOp<"try_event"> {
+  let arguments = (ins FlatSymbolRefAttr:$event_queue);
+  let results = (outs AnyType:$value, I1:$ready);
+  let hasVerifier = 1;
+  let assemblyFormat = "$event_queue attr-dict `:` type($value)";
 }
 
 def ACIR_WaitUntilOp : ACIR_RuntimeEffectOp<"wait_until"> {

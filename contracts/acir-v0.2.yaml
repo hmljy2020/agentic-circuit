@@ -49,6 +49,7 @@ operations:
   - ac.try_recv
   - ac.peek
   - ac.schedule
+  - ac.try_event
   - ac.wait_until
   - ac.wait_for
   - ac.await_event

@@ -105,10 +105,14 @@ constexpr llvm::StringLiteral kProcessModel = R"mlir(
         %unused = arith.constant 101 : i64
         %accepted = ac.try_send @q0 %captured : i32
         %value, %received = ac.try_recv @q0 : i32
-        ac.schedule @worker0 %value after %one : i32
+        %eventAccepted = ac.schedule @e0 %value after %one : i32
         ac.wait_until %true
         ac.wait_for @r0
-        ac.await_event @e0
+        %eventValue, %eventReady = ac.try_event @e0 : i32
+        scf.if %eventReady {
+        } else {
+          ac.await_event @e0
+        }
         %cursor = ac.trace.open source "pto"
         %observed = ac.probe @q0 kind "queue" : i32
         ac.stat.add @s0 %captured : i32
@@ -438,12 +442,13 @@ TEST(ModelAnalysisTest, FrozenProcessSkeletonRejectsEffectSemanticMutation) {
        [&](mlir::ModuleOp model) {
          one<StatAddOp>(model).setStatAttr(symbol("s1"));
        }},
-      {"process target",
+      {"schedule target",
        [&](mlir::ModuleOp model) {
-         one<ScheduleOp>(model).setTargetAttr(symbol("worker1"));
+         one<ScheduleOp>(model).setTargetAttr(symbol("e1"));
        }},
       {"event target",
        [&](mlir::ModuleOp model) {
+         one<TryEventOp>(model).setEventQueueAttr(symbol("e1"));
          one<AwaitEventOp>(model).setEventQueueAttr(symbol("e1"));
        }},
       {"trace source",

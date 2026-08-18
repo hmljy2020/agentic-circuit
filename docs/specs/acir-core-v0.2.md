@@ -652,8 +652,8 @@ ACIR defines:
 - `ac.await_queue @queue until "readable|writable"`;
 - `ac.yield_sim`.
 
-Communication uses non-blocking `ac.try_send`, `ac.try_recv`, `ac.peek`, and
-`ac.schedule`.
+Communication uses non-blocking `ac.try_send`, `ac.try_recv`, `ac.peek`,
+`ac.schedule`, and `ac.try_event`.
 `ac.try_issue` is a frontend or standard-library convenience and is not a core
 operation.
 
@@ -666,6 +666,24 @@ converts suspension points into explicit continuation state.
 from `ac.try_recv` or `valid` result from `ac.peek`. On wake, the continuation
 retries that receive or peek. Queue commit may activate those subscribers only
 for the next integer tick.
+
+`ac.event_queue` is a finite named delayed queue ordered by
+`(ready_time, sequence)`. `ac.schedule @events %value after %delay` returns an
+`i1` acceptance result; its capacity snapshot includes committed entries and
+all schedule proposals in the current epoch, and pending pops do not free
+capacity until Xfer. `ac.try_event @events` returns the earliest payload whose
+ready time is no later than the current epoch plus an `i1` ready flag. A failed
+read returns the payload type's zero value. `ac.await_event` is legal only in
+the false branch of the matching `ac.try_event`, and resumes by retrying that
+operation. Each event queue has at most one consuming process, while any number
+of non-monitor processes may schedule it.
+
+A zero-delay schedule becomes visible after the current Xfer and may wake its
+consumer in the next causal delta of the same global tick. A positive delay is
+measured directly in global ticks and becomes ready at delta zero of
+`current_tick + delay`. Negative dynamic delay, tick overflow, and internal
+notification failure are runtime errors. Equal-ready-time events retain stable
+schedule proposal order.
 
 ## Units and time
 

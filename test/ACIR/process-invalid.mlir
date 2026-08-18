@@ -56,7 +56,7 @@ builtin.module attributes {ac.contract_epoch = "0.2"} {
     ^bb0(%captured : !ac.resource_token<@r>):
       %c1 = arith.constant 1 : i64
       ac.await_event @events
-      ac.schedule @worker %captured after %c1 : !ac.resource_token<@r>
+      %accepted = ac.schedule @worker %captured after %c1 : !ac.resource_token<@r>
       ac.yield_sim
     }
     ac.return
@@ -105,7 +105,7 @@ builtin.module attributes {ac.contract_epoch = "0.2"} {
       %one = arith.constant 1 : i64
       %token, %received = ac.try_recv @tokens : !ac.resource_token<@r>
       ac.await_event @events
-      ac.schedule @worker %token after %one : !ac.resource_token<@r>
+      %accepted = ac.schedule @worker %token after %one : !ac.resource_token<@r>
       ac.yield_sim
     }
     ac.return
@@ -192,7 +192,7 @@ builtin.module attributes {ac.contract_epoch = "0.2"} {
       %delay = arith.constant 1 : i64
       scf.if %branch {
         ac.wait_until %branch
-        ac.schedule @worker %captured after %delay : !ac.resource_token<@r>
+        %accepted = ac.schedule @worker %captured after %delay : !ac.resource_token<@r>
       }
       ac.yield_sim
     }

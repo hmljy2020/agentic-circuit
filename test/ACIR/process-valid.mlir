@@ -47,10 +47,14 @@ builtin.module attributes {ac.contract_epoch = "0.2"} {
       } else {
         ac.await_queue @ready until "readable"
       }
-      ac.schedule @worker %value after %c1 : i32
+      %event_accepted = ac.schedule @done %value after %c1 : i32
       ac.wait_until %ready
       ac.wait_for @compute
-      ac.await_event @done
+      %event_value, %event_ready = ac.try_event @done : i32
+      scf.if %event_ready {
+      } else {
+        ac.await_event @done
+      }
       scf.if %accepted {
         ac.assert %received, "receive follows accepted send"
       }
@@ -85,9 +89,10 @@ builtin.module attributes {ac.contract_epoch = "0.2"} {
 // CHECK: ac.peek @ready
 // CHECK: ac.await_queue @ready until "writable"
 // CHECK: ac.await_queue @ready until "readable"
-// CHECK: ac.schedule @worker
+// CHECK: ac.schedule @done
 // CHECK: ac.wait_until
 // CHECK: ac.wait_for @compute
+// CHECK: ac.try_event @done
 // CHECK: ac.await_event @done
 // CHECK: scf.if
 // CHECK: ac.yield_sim

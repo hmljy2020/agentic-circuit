@@ -132,16 +132,13 @@ struct Event {
   ObjectId targetId = kInvalidObjectId;
   uint32_t eventKind = 0;
   uint64_t payload = 0;
+  uint64_t sequence = 0;
 
-  // Stable ordering: epoch first, then target, event kind, and payload.
+  // Stable system ordering: exact ready epoch, then acceptance sequence.
   auto operator<=>(const Event &other) const {
     if (auto cmp = readyTime <=> other.readyTime; cmp != 0)
       return cmp;
-    if (auto cmp = targetId <=> other.targetId; cmp != 0)
-      return cmp;
-    if (auto cmp = eventKind <=> other.eventKind; cmp != 0)
-      return cmp;
-    return payload <=> other.payload;
+    return sequence <=> other.sequence;
   }
 };
 

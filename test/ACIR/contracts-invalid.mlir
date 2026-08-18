@@ -13,7 +13,7 @@ builtin.module attributes {ac.contract_epoch = "0.2"} {
     ac.process @p kind "control" {
       %one = arith.constant 1 : i64
       %v = ac.probe @queue kind "queue" : i32
-      ac.schedule @worker %v after %one : i32
+      %accepted = ac.schedule @worker %v after %one : i32
       ac.yield_sim
     }
     ac.return
@@ -27,7 +27,7 @@ builtin.module attributes {ac.contract_epoch = "0.2"} {
     ac.process @p kind "control" {
       ac.instrumentation @bad {
         %value = arith.constant 1 : i64
-        ac.schedule @worker %value after %value : i64
+        %accepted = ac.schedule @worker %value after %value : i64
       }
       ac.yield_sim
     }

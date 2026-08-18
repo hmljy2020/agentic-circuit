@@ -1154,7 +1154,8 @@ pointer order.
 | `queue_try_send` | `stateful` | `invoke` | Inputs `queue-ref:@queue,element`; exact original accepted-result key. |
 | `queue_try_recv` | `stateful` | `invoke` | One `queue-ref:@queue` input; exact original element and received-flag result keys. |
 | `queue_peek` | `stateful` | `invoke` | One `queue-ref:@queue` input; exact original element and valid-flag result keys. |
-| `event_schedule` | `stateful` | `invoke` | Inputs `value,delay` in original order; no result. |
+| `event_schedule` | `stateful` | `invoke` | Inputs `event-queue-ref,value,delay`; one `i1` acceptance result. |
+| `event_try_recv` | `stateful` | `invoke` | Input `event-queue-ref`; results `T,i1`. |
 | `trace_open` | `stateful` | `invoke` | No SSA input; exact original cursor result key. |
 | `trace_next` | `stateful` | `invoke` | Original cursor input; cursor, `entry`, advanced-flag results in original order. |
 | `trace_eof` | `stateful` | `invoke` | Original cursor input; exact EOF result. |
@@ -1166,7 +1167,7 @@ pointer order.
 | `stat_add` | `stateful` | `invoke` | One `value_type` input; no result. |
 | `wake_condition` | `stateful` | suspend-edge wake invoke | No helper input; one `@acir_wake_condition` result. |
 | `wake_resource` | `stateful` | suspend-edge wake invoke | No helper input; one `@acir_wake_resource` result. |
-| `wake_event_queue` | `stateful` | suspend-edge wake invoke | No helper input; one `@acir_wake_event_queue` result. |
+| `wake_event_queue` | `stateful` | suspend-edge wake invoke | Exact event-queue-ref input; one `@acir_wake_event_queue` result. |
 | `wake_next_delta` | `stateful` | suspend-edge wake invoke | No helper input; one `@acir_wake_next_delta` result. |
 | `scalar_wrap` | `pure` | `wrap` | One `scalar` input; one `value_type` result. |
 | `scalar_unwrap` | `pure` | `unwrap` | One `value_type` input; one `scalar` result. |

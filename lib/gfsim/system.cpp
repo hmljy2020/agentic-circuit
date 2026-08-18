@@ -17,6 +17,7 @@ struct SimSystem::Impl {
   DispatchTable dispatch;
   ActivationPlan activation;
   uint64_t committedEventCount = 0;
+  uint64_t nextEventSequence = 0;
   bool executingEpoch = false;
   std::optional<ObjectId> activeProposalOwner;
   std::set<ObjectId> commitParticipants;
@@ -253,6 +254,13 @@ bool SimSystem::setActivationPlan(std::span<const uint32_t> offsets,
   return true;
 }
 
+bool SimSystem::setEventQueueCapacity(size_t capacity) {
+  if (terminated_ || capacity == 0 || !impl_->eventQueue.setCapacity(capacity))
+    return fail("invalid_event_queue_capacity",
+                "the internal event queue capacity is invalid");
+  return true;
+}
+
 bool SimSystem::setTimeDomains(std::span<const TimeDomainRuntime> domains) {
   if (terminated_)
     return false;
@@ -349,6 +357,10 @@ bool SimSystem::scheduleEvent(Event event) {
   if (!lookup(event.targetId))
     return fail("unknown_event_target",
                 "event target is absent from the static dispatch table");
+  if (impl_->nextEventSequence == std::numeric_limits<uint64_t>::max())
+    return fail("event_sequence_overflow",
+                "the global event sequence counter overflowed");
+  event.sequence = impl_->nextEventSequence++;
   if (!impl_->eventQueue.proposeSchedule(event))
     return fail("event_queue_capacity_exceeded",
                 "the global event queue capacity was exceeded");
@@ -418,6 +430,24 @@ bool SimSystem::step() {
   if (stopAtEventCap())
     return false;
 
+  auto deliverReadyEvent = [&](const Event &event) -> bool {
+    SimObject *target = lookup(event.targetId);
+    if (!target ||
+        !target->deliverEvent(event.eventKind, event.payload, event.readyTime))
+      return fail("invalid_event_notification",
+                  "an event notification did not match committed state");
+    if (target->kind() != ObjectKind::EventQueue)
+      return scheduleWork(event.targetId, epoch_);
+    for (ObjectId consumer : impl_->activation.targetsFor(event.targetId)) {
+      SimObject *consumerObject = lookup(consumer);
+      if (consumerObject && !consumerObject->activateFrom(event.targetId))
+        continue;
+      if (!scheduleWork(consumer, epoch_))
+        return false;
+    }
+    return true;
+  };
+
   // Events committed by a previous epoch activate their target at their exact
   // ready epoch before the immutable Work snapshot is observed.
   while (auto event = impl_->eventQueue.nextEvent()) {
@@ -429,7 +459,7 @@ bool SimSystem::step() {
     if (stopAtEventCap())
       return false;
     impl_->eventQueue.popNext();
-    if (!scheduleWork(event->targetId, epoch_))
+    if (!deliverReadyEvent(*event))
       return false;
     ++impl_->committedEventCount;
     impl_->lastProgressTick = epoch_.time;
@@ -479,7 +509,9 @@ bool SimSystem::step() {
     if (willCommit) {
       auto previousCommit = impl_->lastCommitTick.find(id);
       if (previousCommit != impl_->lastCommitTick.end() &&
-          previousCommit->second == epoch_.time)
+          previousCommit->second == epoch_.time &&
+          (!object || (object->kind() != ObjectKind::EventQueue &&
+                       object->kind() != ObjectKind::Process)))
         return fail("multiple_stateful_commits",
                     "a stateful object cannot commit twice in one tick");
     }
@@ -495,7 +527,11 @@ bool SimSystem::step() {
       return fail("xfer_probe_mismatch",
                   "Xfer pending state changed between probe and commit");
     if (committed) {
-      committedSources.push_back(id);
+      // Timed event queues activate consumers only when a committed event's
+      // notification becomes due.  Treating the queue's proposal commit as a
+      // normal activation source would wake consumers one tick too early.
+      if (!object || object->kind() != ObjectKind::EventQueue)
+        committedSources.push_back(id);
       impl_->lastCommitTick[id] = epoch_.time;
       impl_->lastProgressTick = epoch_.time;
     }
@@ -513,9 +549,6 @@ bool SimSystem::step() {
     }
   }
   if (impl_->eventQueue.hasPendingCommit()) {
-    if (impl_->eventQueueLastCommitTick == epoch_.time)
-      return fail("multiple_stateful_commits",
-                  "the event queue cannot commit twice in one tick");
     impl_->eventQueueLastCommitTick = epoch_.time;
     impl_->lastProgressTick = epoch_.time;
   }
@@ -580,7 +613,7 @@ bool SimSystem::step() {
     if (stopAtEventCap())
       return false;
     impl_->eventQueue.popNext();
-    if (!scheduleWork(event->targetId, epoch_))
+    if (!deliverReadyEvent(*event))
       return false;
     ++impl_->committedEventCount;
     impl_->lastProgressTick = epoch_.time;
@@ -686,6 +719,7 @@ void SimSystem::reset() {
   impl_->scheduledWork.clear();
   impl_->eventQueue.reset();
   impl_->committedEventCount = 0;
+  impl_->nextEventSequence = 0;
   impl_->executingEpoch = false;
   impl_->activeProposalOwner.reset();
   impl_->noProgress = {};

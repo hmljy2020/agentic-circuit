@@ -98,8 +98,9 @@ llvm::Error emitWakeHelper(std::ostringstream &output,
     return static_cast<char>(std::toupper(static_cast<unsigned char>(value)));
   });
   output << "#ifndef " << guard << "\n#define " << guard << "\n";
-  const bool takesObjectRef =
-      *kind == "QueueReadable" || *kind == "QueueWritable";
+  const bool takesObjectRef = *kind == "EventQueue" ||
+                              *kind == "QueueReadable" ||
+                              *kind == "QueueWritable";
   if (takesObjectRef)
     output << "template <typename QueueT> inline gfsim::ProcessWake "
            << name.str()
@@ -757,6 +758,22 @@ llvm::Error emitOperation(const ModelPlan &plan, const ProcessPlan &process,
               if (call.arguments.size() != 1)
                 return processError("queue peek helper requires one queue");
               output << call.arguments[0] << ".tryPeek();\n";
+              return llvm::Error::success();
+            }
+            if (calleeSymbol.starts_with("acir_impl_event_schedule")) {
+              if (call.arguments.size() != 3)
+                return processError(
+                    "event schedule helper requires queue, value, and delay");
+              output << call.arguments[0] << ".trySchedule("
+                     << call.arguments[1] << ", epoch, " << call.arguments[2]
+                     << ");\n";
+              return llvm::Error::success();
+            }
+            if (calleeSymbol.starts_with("acir_impl_event_try_recv")) {
+              if (call.arguments.size() != 1)
+                return processError(
+                    "event receive helper requires one event queue");
+              output << call.arguments[0] << ".tryRecv(epoch);\n";
               return llvm::Error::success();
             }
             if (calleeSymbol.starts_with("acir_impl_contract_assert")) {

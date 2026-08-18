@@ -1294,6 +1294,7 @@ LogicalResult
 verifyRuntimeReferences(ModuleOp module,
                         const llvm::StringMap<Operation *> &producerIndex) {
   LogicalResult result = success();
+  llvm::StringMap<ProcessOp> eventConsumers;
   auto lookupExpected = [&](Operation *operation, StringRef reference,
                             StringRef expectedName) -> Operation * {
     Operation *target = producerIndex.lookup(reference);
@@ -1341,14 +1342,35 @@ verifyRuntimeReferences(ModuleOp module,
           result = failure();
         }
       } else if (auto schedule = dyn_cast<ScheduleOp>(operation)) {
-        auto target = dyn_cast_or_null<ProcessOp>(lookupExpected(
-            schedule, schedule.getTarget(), ProcessOp::getOperationName()));
-        if (target && (target.getCaptures().size() != 1 ||
-                       target.getCaptures().front().getType() !=
-                           schedule.getValue().getType())) {
+        auto target = dyn_cast_or_null<EventQueueOp>(lookupExpected(
+            schedule, schedule.getTarget(), EventQueueOp::getOperationName()));
+        auto eventType =
+            target ? dyn_cast<EventType>(target.getPayload()) : EventType();
+        if (eventType &&
+            eventType.getElementType() != schedule.getValue().getType()) {
           schedule.emitOpError()
               << "scheduled value type " << schedule.getValue().getType()
-              << " must match the target process's single capture type";
+              << " does not match event queue element type "
+              << eventType.getElementType();
+          result = failure();
+        }
+      } else if (auto recv = dyn_cast<TryEventOp>(operation)) {
+        auto target = dyn_cast_or_null<EventQueueOp>(lookupExpected(
+            recv, recv.getEventQueue(), EventQueueOp::getOperationName()));
+        auto eventType =
+            target ? dyn_cast<EventType>(target.getPayload()) : EventType();
+        if (eventType &&
+            eventType.getElementType() != recv.getValue().getType()) {
+          recv.emitOpError() << "result type " << recv.getValue().getType()
+                             << " does not match event queue element type "
+                             << eventType.getElementType();
+          result = failure();
+        }
+        auto [found, inserted] =
+            eventConsumers.try_emplace(recv.getEventQueue(), process);
+        if (!inserted && found->second != process) {
+          recv.emitOpError() << "event queue '" << recv.getEventQueueAttr()
+                             << "' may be consumed by only one process";
           result = failure();
         }
       } else if (auto wait = dyn_cast<WaitForOp>(operation)) {
@@ -1408,11 +1430,11 @@ LogicalResult verifyProcessOperations(ModuleOp module) {
     LogicalResult result = success();
     process.getBody().walk([&](Operation *operation) {
       result = TypeSwitch<Operation *, LogicalResult>(operation)
-                   .Case<TrySendOp, TryRecvOp, PeekOp, ScheduleOp, WaitUntilOp,
-                         WaitForOp, AwaitEventOp, AwaitQueueOp, YieldSimOp,
-                         TraceOpenOp, TraceNextOp, TraceDecodeOp, TraceEofOp,
-                         TracePositionOp, RequireOp, EnsureOp, AssertOp,
-                         ProbeOp, StatAddOp, InstrumentationOp>(
+                   .Case<TrySendOp, TryRecvOp, PeekOp, ScheduleOp, TryEventOp,
+                         WaitUntilOp, WaitForOp, AwaitEventOp, AwaitQueueOp,
+                         YieldSimOp, TraceOpenOp, TraceNextOp, TraceDecodeOp,
+                         TraceEofOp, TracePositionOp, RequireOp, EnsureOp,
+                         AssertOp, ProbeOp, StatAddOp, InstrumentationOp>(
                        [](auto op) { return op.verify(); })
                    .Default([](Operation *) { return success(); });
       return failed(result) ? WalkResult::interrupt() : WalkResult::advance();
@@ -2364,8 +2386,8 @@ bool isAllowedProcessOperation(Operation *operation) {
     return true;
   return isa<RecordCreateOp, RecordGetOp, RecordWithOp, PacketSerializeOp,
              PacketDeserializeOp, TrySendOp, TryRecvOp, PeekOp, ScheduleOp,
-             WaitUntilOp, WaitForOp, AwaitEventOp, AwaitQueueOp, YieldSimOp,
-             TraceOpenOp, TraceNextOp, TraceDecodeOp, TraceEofOp,
+             TryEventOp, WaitUntilOp, WaitForOp, AwaitEventOp, AwaitQueueOp,
+             YieldSimOp, TraceOpenOp, TraceNextOp, TraceDecodeOp, TraceEofOp,
              TracePositionOp, RequireOp, EnsureOp, AssertOp, ProbeOp, StatAddOp,
              InstrumentationOp>(operation);
 }
@@ -2925,7 +2947,8 @@ LogicalResult ProcessOp::verify() {
   LogicalResult result = success();
   walkOperationsIterative(getBody(), [&](Operation *operation) {
     if (getKind() == "monitor" &&
-        isa<TrySendOp, TryRecvOp, ScheduleOp, WaitForOp>(operation)) {
+        isa<TrySendOp, TryRecvOp, ScheduleOp, TryEventOp, WaitForOp,
+            AwaitEventOp>(operation)) {
       operation->emitOpError(
           "monitor process cannot perform functional state effects");
       result = failure();
@@ -2969,6 +2992,7 @@ LogicalResult ProcessOp::verify() {
 LogicalResult TrySendOp::verify() { return requireProcess(*this); }
 LogicalResult TryRecvOp::verify() { return requireProcess(*this); }
 LogicalResult PeekOp::verify() { return requireProcess(*this); }
+LogicalResult TryEventOp::verify() { return requireProcess(*this); }
 
 LogicalResult ScheduleOp::verify() {
   if (Operation *definition = getDelay().getDefiningOp();
@@ -2982,7 +3006,24 @@ LogicalResult ScheduleOp::verify() {
 
 LogicalResult WaitUntilOp::verify() { return requireProcess(*this); }
 LogicalResult WaitForOp::verify() { return requireProcess(*this); }
-LogicalResult AwaitEventOp::verify() { return requireProcess(*this); }
+LogicalResult AwaitEventOp::verify() {
+  if (failed(requireProcess(*this)))
+    return failure();
+  Operation *nested = getOperation();
+  for (Operation *parent = nested->getParentOp(); parent;
+       nested = parent, parent = parent->getParentOp()) {
+    auto ifOp = dyn_cast<scf::IfOp>(parent);
+    if (!ifOp || nested->getParentRegion() != &ifOp.getElseRegion())
+      continue;
+    auto recv = ifOp.getCondition().getDefiningOp<TryEventOp>();
+    if (recv && ifOp.getCondition() == recv.getReady() &&
+        recv.getEventQueueAttr() == getEventQueueAttr())
+      return success();
+  }
+  return emitOpError() << "must be in the false branch of the matching "
+                          "ac.try_event for event queue '"
+                       << getEventQueueAttr() << "'";
+}
 
 LogicalResult AwaitQueueOp::verify() {
   if (failed(requireProcess(*this)))
@@ -3103,9 +3144,9 @@ LogicalResult InstrumentationOp::verify() {
   LogicalResult result = success();
   walkOperationsIterative(getBody(), [&](Operation *operation) {
     if (isa<ObservationOpInterface>(operation) || isMemoryEffectFree(operation))
-      if (!isa<TrySendOp, TryRecvOp, ScheduleOp, WaitUntilOp, WaitForOp,
-               AwaitEventOp, AwaitQueueOp, YieldSimOp, TraceOpenOp, TraceNextOp,
-               TraceEofOp, TracePositionOp>(operation))
+      if (!isa<TrySendOp, TryRecvOp, ScheduleOp, TryEventOp, WaitUntilOp,
+               WaitForOp, AwaitEventOp, AwaitQueueOp, YieldSimOp, TraceOpenOp,
+               TraceNextOp, TraceEofOp, TracePositionOp>(operation))
         return WalkResult::advance();
     operation->emitOpError(
         "instrumentation may contain only removable observation operations");
@@ -3153,11 +3194,20 @@ void PeekOp::getEffects(
 
 void ScheduleOp::getEffects(
     SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
-  if (!isa_and_nonnull<ProcessOp>(resolvedRuntimeTarget(*this, getTarget())))
+  if (!isa_and_nonnull<EventQueueOp>(resolvedRuntimeTarget(*this, getTarget())))
     return;
-  addEffect(effects, *this, MemoryEffects::Write::get(), getTarget(), "module",
-            ModuleStateResource::get());
   addEffect(effects, *this, MemoryEffects::Write::get(), getTarget(),
+            "event_queue", EventQueueStateResource::get());
+}
+
+void TryEventOp::getEffects(
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  if (!isa_and_nonnull<EventQueueOp>(
+          resolvedRuntimeTarget(*this, getEventQueue())))
+    return;
+  addEffect(effects, *this, MemoryEffects::Read::get(), getEventQueue(),
+            "event_queue", EventQueueStateResource::get());
+  addEffect(effects, *this, MemoryEffects::Write::get(), getEventQueue(),
             "event_queue", EventQueueStateResource::get());
 }
 

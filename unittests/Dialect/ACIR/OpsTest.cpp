@@ -11,6 +11,7 @@
 #include "mlir/AsmParser/AsmParser.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
@@ -305,6 +306,7 @@ TEST(ACIROpsTest, TaskFiveRegistryContainsExactlyTheRequiredNewOperations) {
       "ac.trace.open",
       "ac.trace.position",
       "ac.try_recv",
+      "ac.try_event",
       "ac.peek",
       "ac.try_send",
       "ac.type_alias",
@@ -421,7 +423,8 @@ TEST(ACIROpsTest, TaskSixRegistryDeltaIsExactlyNineGraphOperations) {
 
 TEST(ACIROpsTest, PublicBuildersConstructEveryTaskEightOperation) {
   mlir::MLIRContext context;
-  context.loadDialect<ACIRDialect, mlir::arith::ArithDialect>();
+  context.loadDialect<ACIRDialect, mlir::arith::ArithDialect,
+                      mlir::scf::SCFDialect>();
   mlir::OpBuilder builder(&context);
   auto loc = builder.getUnknownLoc();
   auto file = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
@@ -476,10 +479,18 @@ TEST(ACIROpsTest, PublicBuildersConstructEveryTaskEightOperation) {
   auto peek = PeekOp::create(builder, loc, builder.getI32Type(),
                              builder.getI1Type(), "q");
   EXPECT_TRUE(send && recv && peek);
-  auto schedule = ScheduleOp::create(builder, loc, i32, i64, "worker");
+  auto schedule =
+      ScheduleOp::create(builder, loc, builder.getI1Type(), i32, i64, "events");
+  auto tryEvent = TryEventOp::create(builder, loc, builder.getI32Type(),
+                                     builder.getI1Type(), "events");
   auto waitUntil = WaitUntilOp::create(builder, loc, i1);
   auto waitFor = WaitForOp::create(builder, loc, "resource");
+  auto eventBranch = mlir::scf::IfOp::create(builder, loc, tryEvent.getReady(),
+                                             /*withElseRegion=*/true);
+  builder.setInsertionPoint(
+      eventBranch.getElseRegion().front().getTerminator());
   auto awaitEvent = AwaitEventOp::create(builder, loc, "events");
+  builder.setInsertionPointAfter(eventBranch);
   EXPECT_TRUE(schedule && waitUntil && waitFor && awaitEvent);
   auto cursor =
       TraceOpenOp::create(builder, loc, builder.getIndexType(), "pto");
@@ -591,10 +602,12 @@ TEST(ACIROpsTest, PublicBuildersConstructEveryTaskEightOperation) {
                         read(ProtocolStateResource::get(), "q", "protocol"),
                         write(ProtocolStateResource::get(), "q", "protocol")});
   expectExactEffects(peek, {read(QueueStateResource::get(), "q", "queue")});
+  expectExactEffects(schedule, {write(EventQueueStateResource::get(), "events",
+                                      "event_queue")});
   expectExactEffects(
-      schedule,
-      {write(ModuleStateResource::get(), "worker", "module"),
-       write(EventQueueStateResource::get(), "worker", "event_queue")});
+      tryEvent,
+      {read(EventQueueStateResource::get(), "events", "event_queue"),
+       write(EventQueueStateResource::get(), "events", "event_queue")});
   expectExactEffects(waitUntil,
                      {read(EventQueueStateResource::get(), "p", "event_queue"),
                       write(ModuleStateResource::get(), "p", "module")});
@@ -667,17 +680,14 @@ TEST(ACIROpsTest, UnresolvedRuntimeReferencesDoNotInventEffects) {
 TEST(ACIROpsTest, TaskEightRegistryDeltaIsExactlyTwentyOperations) {
   mlir::MLIRContext context;
   context.loadDialect<ACIRDialect>();
-  const std::array<llvm::StringLiteral, 22> names = {
-      "ac.process",        "ac.try_send",
-      "ac.try_recv",       "ac.peek",
-      "ac.schedule",       "ac.wait_until",
-      "ac.wait_for",       "ac.await_event",
-      "ac.await_queue",    "ac.yield_sim",
-      "ac.trace.open",     "ac.trace.next",
-      "ac.trace.decode",   "ac.trace.eof",
-      "ac.trace.position", "ac.require",
-      "ac.ensure",         "ac.assert",
-      "ac.probe",          "ac.stat",
+  const std::array<llvm::StringLiteral, 23> names = {
+      "ac.process",        "ac.try_send",        "ac.try_recv",
+      "ac.peek",           "ac.try_event",       "ac.schedule",
+      "ac.wait_until",     "ac.wait_for",        "ac.await_event",
+      "ac.await_queue",    "ac.yield_sim",       "ac.trace.open",
+      "ac.trace.next",     "ac.trace.decode",    "ac.trace.eof",
+      "ac.trace.position", "ac.require",         "ac.ensure",
+      "ac.assert",         "ac.probe",           "ac.stat",
       "ac.stat.add",       "ac.instrumentation",
   };
   for (llvm::StringLiteral name : names)
@@ -685,7 +695,7 @@ TEST(ACIROpsTest, TaskEightRegistryDeltaIsExactlyTwentyOperations) {
         << name.str();
   EXPECT_FALSE(mlir::OperationName("ac.try_issue", &context).isRegistered());
   EXPECT_FALSE(mlir::OperationName("ac.connect", &context).isRegistered());
-  EXPECT_EQ(context.getRegisteredOperationsByDialect("ac").size(), 57u);
+  EXPECT_EQ(context.getRegisteredOperationsByDialect("ac").size(), 58u);
 }
 
 TEST(ACIROpsTest, ProcessLinearLivenessDoesNotRescanBlockPerValue) {

@@ -490,6 +490,7 @@ class RepositoryContractsTest(unittest.TestCase):
             "queue_try_send": {"element": "mlir:i32", "queue": "@queue"},
             "queue_try_recv": {"element": "mlir:i32", "queue": "@queue"},
             "event_schedule": {"delay": "mlir:i64", "target": "@event", "value": "mlir:i32"},
+            "event_try_recv": {"element": "mlir:i32", "event_queue": "@event"},
             "trace_open": {"source": "trace"}, "trace_next": {"entry": "mlir:i32", "source": "trace"},
             "trace_eof": {"source": "trace"}, "trace_position": {"source": "trace"},
             "contract_require": {"message": "required"}, "contract_ensure": {"message": "ensured"}, "contract_assert": {"message": "asserted"},
@@ -507,7 +508,21 @@ class RepositoryContractsTest(unittest.TestCase):
             candidate = {**descriptor, "ordinal": ordinal, "role": role, "payload": payload, "effect": "pure" if role in pure_roles else "stateful"}
             if role == "wake_next_delta":
                 candidate.update(inputs=[], results=["@acir_wake_next_delta"])
+            elif role == "wake_event_queue":
+                candidate.update(inputs=["event-queue-ref:@event"], results=["@acir_wake_event_queue"])
+            elif role == "event_schedule":
+                candidate.update(inputs=["event-queue-ref:@event", "mlir:i32", "mlir:i64"], results=["mlir:i1"])
+            elif role == "event_try_recv":
+                candidate.update(inputs=["event-queue-ref:@event"], results=["mlir:i32", "mlir:i1"])
             validate_definition("callee", candidate)
+
+        invalid_event_schedule = {**descriptor, "role": "event_schedule", "payload": payloads["event_schedule"]}
+        with self.assertRaises(ValidationError):
+            validate_definition("callee", invalid_event_schedule)
+
+        invalid_event_recv = {**descriptor, "role": "event_try_recv", "payload": payloads["event_try_recv"], "inputs": ["event-queue-ref:@event"], "results": ["mlir:i32"]}
+        with self.assertRaises(ValidationError):
+            validate_definition("callee", invalid_event_recv)
 
         value_identity = "0" * 64
         value_base = {"acir_type": "i32", "cpp": "acir::generated::value_" + value_identity, "fingerprint": "sha256:" + value_identity, "ordinal": 0, "symbol": "@acir_value_" + value_identity}

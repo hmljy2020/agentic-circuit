@@ -53,16 +53,34 @@ std::string scalarStorageCppType(mlir::Type type) {
 }
 
 llvm::StringRef helperRoleSpelling(ProcessHelperRole role) {
-  static constexpr llvm::StringLiteral names[] = {
-      "record_create",    "record_get",          "record_with",
-      "packet_serialize", "packet_deserialize",  "trace_decode",
-      "queue_try_send",   "queue_try_recv",      "queue_peek",
-      "event_schedule",   "trace_open",          "trace_next",
-      "trace_eof",        "trace_position",      "contract_require",
-      "contract_ensure",  "contract_assert",     "probe",
-      "stat_add",         "wake_condition",      "wake_resource",
-      "wake_event_queue", "wake_next_delta",     "scalar_wrap",
-      "scalar_unwrap",    "wake_queue_readable", "wake_queue_writable"};
+  static constexpr llvm::StringLiteral names[] = {"record_create",
+                                                  "record_get",
+                                                  "record_with",
+                                                  "packet_serialize",
+                                                  "packet_deserialize",
+                                                  "trace_decode",
+                                                  "queue_try_send",
+                                                  "queue_try_recv",
+                                                  "queue_peek",
+                                                  "event_schedule",
+                                                  "event_try_recv",
+                                                  "trace_open",
+                                                  "trace_next",
+                                                  "trace_eof",
+                                                  "trace_position",
+                                                  "contract_require",
+                                                  "contract_ensure",
+                                                  "contract_assert",
+                                                  "probe",
+                                                  "stat_add",
+                                                  "wake_condition",
+                                                  "wake_resource",
+                                                  "wake_event_queue",
+                                                  "wake_next_delta",
+                                                  "scalar_wrap",
+                                                  "scalar_unwrap",
+                                                  "wake_queue_readable",
+                                                  "wake_queue_writable"};
   return names[static_cast<unsigned>(role)];
 }
 
@@ -102,6 +120,8 @@ bool validTypeKey(llvm::StringRef key) {
     return key.size() > 5;
   if (key.starts_with("queue-ref:@"))
     return key.size() > 11;
+  if (key.starts_with("event-queue-ref:@"))
+    return key.size() > 17;
   if (key.consume_front("storage:value:") ||
       key.consume_front("storage:packet:"))
     return validDigest(key);
@@ -164,9 +184,19 @@ bool validCalleeSemantics(const ProcessGeneratedCalleePlan &callee) {
            results.size() == 2 && results[0] == payload.queuePeek().element() &&
            results[1] == "mlir:i1";
   case ProcessHelperRole::EventSchedule:
-    return inputs.size() == 2 && results.empty() &&
-           inputs[0] == payload.eventSchedule().value() &&
-           inputs[1] == payload.eventSchedule().delay();
+    return inputs.size() == 3 && results.size() == 1 &&
+           inputs[0] ==
+               ("event-queue-ref:" + payload.eventSchedule().target()).str() &&
+           inputs[1] == payload.eventSchedule().value() &&
+           inputs[2] == payload.eventSchedule().delay() &&
+           results[0] == "mlir:i1";
+  case ProcessHelperRole::EventTryRecv:
+    return inputs.size() == 1 && results.size() == 2 &&
+           inputs[0] ==
+               ("event-queue-ref:" + payload.eventTryRecv().eventQueue())
+                   .str() &&
+           results[0] == payload.eventTryRecv().element() &&
+           results[1] == "mlir:i1";
   case ProcessHelperRole::TraceOpen:
     return inputs.empty() && results.size() == 1;
   case ProcessHelperRole::TraceNext:
@@ -198,7 +228,8 @@ bool validCalleeSemantics(const ProcessGeneratedCalleePlan &callee) {
                wakeTypeKey(ProcessWakeKind::Resource) &&
            results[0] == payload.wakeResource().wakeType();
   case ProcessHelperRole::WakeEventQueue:
-    return inputs.empty() && results.size() == 1 &&
+    return inputs.size() == 1 && inputs[0] == "event-queue-ref:@event" &&
+           results.size() == 1 &&
            payload.wakeEventQueue().wakeKind() == ProcessWakeKind::EventQueue &&
            payload.wakeEventQueue().wakeType() ==
                wakeTypeKey(ProcessWakeKind::EventQueue) &&
@@ -367,8 +398,11 @@ detail::PlanSetBuilder::buildProduction(mlir::ModuleOp module,
     callee->role = wakeHelperRole(kind);
     callee->payload = makeWakePayload(kind);
     if (kind == ProcessWakeKind::QueueReadable ||
-        kind == ProcessWakeKind::QueueWritable) {
-      callee->inputTypeKeyStorage = {"queue-ref:@queue"};
+        kind == ProcessWakeKind::QueueWritable ||
+        kind == ProcessWakeKind::EventQueue) {
+      callee->inputTypeKeyStorage = {kind == ProcessWakeKind::EventQueue
+                                         ? "event-queue-ref:@event"
+                                         : "queue-ref:@queue"};
       callee->inputTypeKeys = {callee->inputTypeKeyStorage.front()};
       std::map<std::string, mlir::Operation *> sourcesByPath;
       for (const PendingProcess &item : pending)
@@ -434,6 +468,17 @@ detail::PlanSetBuilder::buildProduction(mlir::ModuleOp module,
                            ProcessHelperRole::QueuePeek,
                            "mlir:" + typeSpelling(peek.getValue().getType())}]
               .push_back(action);
+        } else if (auto schedule =
+                       mlir::dyn_cast_or_null<ac::ScheduleOp>(source)) {
+          queueActions[QueueCalleeKey{ProcessHelperRole::EventSchedule,
+                                      "mlir:" + typeSpelling(schedule.getValue()
+                                                                 .getType())}]
+              .push_back(action);
+        } else if (auto recv = mlir::dyn_cast_or_null<ac::TryEventOp>(source)) {
+          queueActions[QueueCalleeKey{
+                           ProcessHelperRole::EventTryRecv,
+                           "mlir:" + typeSpelling(recv.getValue().getType())}]
+              .push_back(action);
         }
       }
     }
@@ -451,21 +496,39 @@ detail::PlanSetBuilder::buildProduction(mlir::ModuleOp module,
       arm->queue = "@queue";
       arm->element = key.element;
       payload->queueTryRecv = ProcessQueueTryRecvPayload(arm);
-    } else {
+    } else if (key.role == ProcessHelperRole::QueuePeek) {
       auto arm = std::make_shared<ProcessQueuePeekPayload::Impl>();
       arm->queue = "@queue";
       arm->element = key.element;
       payload->queuePeek = ProcessQueuePeekPayload(arm);
+    } else if (key.role == ProcessHelperRole::EventSchedule) {
+      auto arm = std::make_shared<ProcessEventSchedulePayload::Impl>();
+      arm->target = "@event";
+      arm->value = key.element;
+      arm->delay = "mlir:i64";
+      payload->eventSchedule = ProcessEventSchedulePayload(arm);
+    } else {
+      auto arm = std::make_shared<ProcessEventTryRecvPayload::Impl>();
+      arm->eventQueue = "@event";
+      arm->element = key.element;
+      payload->eventTryRecv = ProcessEventTryRecvPayload(arm);
     }
     auto callee = std::make_shared<ProcessGeneratedCalleePlan::Impl>();
     callee->effect = ProcessEffectKind::Stateful;
     callee->role = key.role;
     callee->payload = ProcessGeneratedCalleePayload(payload);
-    callee->inputTypeKeyStorage = {"queue-ref:@queue"};
-    if (key.role == ProcessHelperRole::QueueTrySend)
+    const bool eventRole = key.role == ProcessHelperRole::EventSchedule ||
+                           key.role == ProcessHelperRole::EventTryRecv;
+    callee->inputTypeKeyStorage = {eventRole ? "event-queue-ref:@event"
+                                             : "queue-ref:@queue"};
+    if (key.role == ProcessHelperRole::QueueTrySend ||
+        key.role == ProcessHelperRole::EventSchedule)
       callee->inputTypeKeyStorage.push_back(key.element);
+    if (key.role == ProcessHelperRole::EventSchedule)
+      callee->inputTypeKeyStorage.push_back("mlir:i64");
     callee->resultTypeKeyStorage =
-        key.role == ProcessHelperRole::QueueTrySend
+        key.role == ProcessHelperRole::QueueTrySend ||
+                key.role == ProcessHelperRole::EventSchedule
             ? std::vector<std::string>{"mlir:i1"}
             : std::vector<std::string>{key.element, "mlir:i1"};
     for (const std::string &value : callee->inputTypeKeyStorage)
@@ -484,7 +547,11 @@ detail::PlanSetBuilder::buildProduction(mlir::ModuleOp module,
               ? mlir::cast<ac::TrySendOp>(source).getQueueAttr()
           : mlir::isa<ac::TryRecvOp>(source)
               ? mlir::cast<ac::TryRecvOp>(source).getQueueAttr()
-              : mlir::cast<ac::PeekOp>(source).getQueueAttr();
+          : mlir::isa<ac::PeekOp>(source)
+              ? mlir::cast<ac::PeekOp>(source).getQueueAttr()
+          : mlir::isa<ac::ScheduleOp>(source)
+              ? mlir::cast<ac::ScheduleOp>(source).getTargetAttr()
+              : mlir::cast<ac::TryEventOp>(source).getEventQueueAttr();
       mlir::Operation *declaration =
           mlir::SymbolTable::lookupNearestSymbolFrom(source, queue);
       if (!declaration)
@@ -701,10 +768,14 @@ detail::PlanSetBuilder::buildProduction(mlir::ModuleOp module,
         if (callee->role != role)
           return false;
         if (wake->kind != ProcessWakeKind::QueueReadable &&
-            wake->kind != ProcessWakeKind::QueueWritable)
+            wake->kind != ProcessWakeKind::QueueWritable &&
+            wake->kind != ProcessWakeKind::EventQueue)
           return callee->inputTypeKeys.empty();
         return callee->inputTypeKeys.size() == 1 &&
-               callee->inputTypeKeys.front() == "queue-ref:@queue";
+               callee->inputTypeKeys.front() ==
+                   (wake->kind == ProcessWakeKind::EventQueue
+                        ? "event-queue-ref:@event"
+                        : "queue-ref:@queue");
       });
       if (found == callees.end())
         return mlir::failure();
@@ -786,6 +857,37 @@ detail::PlanSetBuilder::buildProduction(mlir::ModuleOp module,
             return callee->role == ProcessHelperRole::QueuePeek &&
                    callee->inputTypeKeys.size() == 1 &&
                    callee->inputTypeKeys[0] == queueKey &&
+                   callee->resultTypeKeys.size() == 2 &&
+                   callee->resultTypeKeys[0] == elementKey;
+          });
+          if (found == callees.end())
+            return mlir::failure();
+          std::const_pointer_cast<ProcessActionPlan::Impl>(action.impl_)
+              ->callee = (*found)->id;
+          continue;
+        }
+        if (auto schedule = mlir::dyn_cast_or_null<ac::ScheduleOp>(
+                action.sourceOperation())) {
+          std::string elementKey =
+              "mlir:" + typeSpelling(schedule.getValue().getType());
+          auto found = llvm::find_if(callees, [&](const auto &callee) {
+            return callee->role == ProcessHelperRole::EventSchedule &&
+                   callee->inputTypeKeys.size() == 3 &&
+                   callee->inputTypeKeys[1] == elementKey;
+          });
+          if (found == callees.end())
+            return mlir::failure();
+          std::const_pointer_cast<ProcessActionPlan::Impl>(action.impl_)
+              ->callee = (*found)->id;
+          continue;
+        }
+        if (auto recv = mlir::dyn_cast_or_null<ac::TryEventOp>(
+                action.sourceOperation())) {
+          std::string elementKey =
+              "mlir:" + typeSpelling(recv.getValue().getType());
+          auto found = llvm::find_if(callees, [&](const auto &callee) {
+            return callee->role == ProcessHelperRole::EventTryRecv &&
+                   callee->inputTypeKeys.size() == 1 &&
                    callee->resultTypeKeys.size() == 2 &&
                    callee->resultTypeKeys[0] == elementKey;
           });
@@ -2292,6 +2394,10 @@ bool detail::PlanSetBuilder::exerciseCompleteApiFixture(
   eventImpl->target = "@event";
   eventImpl->value = "mlir:i32";
   ProcessEventSchedulePayload event(eventImpl);
+  auto eventRecvImpl = std::make_shared<ProcessEventTryRecvPayload::Impl>();
+  eventRecvImpl->element = "mlir:i32";
+  eventRecvImpl->eventQueue = "@event";
+  ProcessEventTryRecvPayload eventRecv(eventRecvImpl);
   expect(traceDecode.entry() == "mlir:i32");
   expect(traceDecode.result() == "mlir:i64");
   expect(traceDecode.source() == "trace");
@@ -2304,6 +2410,8 @@ bool detail::PlanSetBuilder::exerciseCompleteApiFixture(
   expect(event.delay() == "mlir:i64");
   expect(event.target() == "@event");
   expect(event.value() == "mlir:i32");
+  expect(eventRecv.element() == "mlir:i32");
+  expect(eventRecv.eventQueue() == "@event");
 
   auto traceOpenImpl = std::make_shared<ProcessTraceOpenPayload::Impl>();
   traceOpenImpl->source = "trace";
@@ -2423,6 +2531,8 @@ bool detail::PlanSetBuilder::exerciseCompleteApiFixture(
              &ProcessGeneratedCalleePayload::Impl::queuePeek);
   addPayload(ProcessHelperRole::EventSchedule, event,
              &ProcessGeneratedCalleePayload::Impl::eventSchedule);
+  addPayload(ProcessHelperRole::EventTryRecv, eventRecv,
+             &ProcessGeneratedCalleePayload::Impl::eventTryRecv);
   addPayload(ProcessHelperRole::TraceOpen, traceOpen,
              &ProcessGeneratedCalleePayload::Impl::traceOpen);
   addPayload(ProcessHelperRole::TraceNext, traceNext,
@@ -2453,7 +2563,7 @@ bool detail::PlanSetBuilder::exerciseCompleteApiFixture(
              &ProcessGeneratedCalleePayload::Impl::scalarWrap);
   addPayload(ProcessHelperRole::ScalarUnwrap, scalarUnwrap,
              &ProcessGeneratedCalleePayload::Impl::scalarUnwrap);
-  expect(payloads.size() == 25);
+  expect(payloads.size() == 26);
   for (auto [index, payload] : llvm::enumerate(payloads))
     expect(static_cast<unsigned>(payload.role()) == index);
   expect(payloads[0].recordCreate().recordType() == "mlir:!ac.record");
@@ -2466,22 +2576,23 @@ bool detail::PlanSetBuilder::exerciseCompleteApiFixture(
   expect(payloads[7].queueTryRecv().queue() == "@queue");
   expect(payloads[8].queuePeek().queue() == "@queue");
   expect(payloads[9].eventSchedule().target() == "@event");
-  expect(payloads[10].traceOpen().source() == "trace");
-  expect(payloads[11].traceNext().entry() == "mlir:i32");
-  expect(payloads[12].traceEof().source() == "trace");
-  expect(payloads[13].tracePosition().source() == "trace");
-  expect(payloads[14].contractRequire().message() == "require");
-  expect(payloads[15].contractEnsure().message() == "ensure");
-  expect(payloads[16].contractAssert().message() == "assert");
-  expect(payloads[17].probe().target() == "@probe");
-  expect(payloads[18].statAdd().stat() == "@stat");
-  expect(payloads[19].wakeCondition().wakeType() == "@acir_wake_condition");
-  expect(payloads[20].wakeResource().wakeType() == "@acir_wake_resource");
-  expect(payloads[21].wakeEventQueue().wakeType() == "@acir_wake_event_queue");
-  expect(payloads[22].wakeNextDelta().wakeType() == "@acir_wake_next_delta");
-  expect(payloads[23].scalarWrap().direction() ==
+  expect(payloads[10].eventTryRecv().eventQueue() == "@event");
+  expect(payloads[11].traceOpen().source() == "trace");
+  expect(payloads[12].traceNext().entry() == "mlir:i32");
+  expect(payloads[13].traceEof().source() == "trace");
+  expect(payloads[14].tracePosition().source() == "trace");
+  expect(payloads[15].contractRequire().message() == "require");
+  expect(payloads[16].contractEnsure().message() == "ensure");
+  expect(payloads[17].contractAssert().message() == "assert");
+  expect(payloads[18].probe().target() == "@probe");
+  expect(payloads[19].statAdd().stat() == "@stat");
+  expect(payloads[20].wakeCondition().wakeType() == "@acir_wake_condition");
+  expect(payloads[21].wakeResource().wakeType() == "@acir_wake_resource");
+  expect(payloads[22].wakeEventQueue().wakeType() == "@acir_wake_event_queue");
+  expect(payloads[23].wakeNextDelta().wakeType() == "@acir_wake_next_delta");
+  expect(payloads[24].scalarWrap().direction() ==
          ProcessWrapperDirection::Wrap);
-  expect(payloads[24].scalarUnwrap().direction() ==
+  expect(payloads[25].scalarUnwrap().direction() ==
          ProcessWrapperDirection::Unwrap);
 
   auto fieldMemberImpl = std::make_shared<ProcessValueTypeMemberPlan::Impl>();
@@ -2558,7 +2669,7 @@ bool detail::PlanSetBuilder::exerciseCompleteApiFixture(
   calleeImpl->resultTypeKeyStorage = {"mlir:i64"};
   calleeImpl->resultTypeKeys = {calleeImpl->resultTypeKeyStorage[0]};
   calleeImpl->role = ProcessHelperRole::Probe;
-  calleeImpl->payload = payloads[17];
+  calleeImpl->payload = payloads[18];
   // NOLINTBEGIN(performance-no-int-to-ptr) sentinel test identities
   calleeImpl->sourceOperations = {
       reinterpret_cast<mlir::Operation *>(uintptr_t{1})};
@@ -3067,6 +3178,7 @@ detail::PlanSetBuilder::structuralError(const ProcessStatePlanSet &plans) {
                       static_cast<unsigned>(p.queueTryRecv.has_value()) +
                       static_cast<unsigned>(p.queuePeek.has_value()) +
                       static_cast<unsigned>(p.eventSchedule.has_value()) +
+                      static_cast<unsigned>(p.eventTryRecv.has_value()) +
                       static_cast<unsigned>(p.traceOpen.has_value()) +
                       static_cast<unsigned>(p.traceNext.has_value()) +
                       static_cast<unsigned>(p.traceEof.has_value()) +
@@ -3110,6 +3222,8 @@ detail::PlanSetBuilder::structuralError(const ProcessStatePlanSet &plans) {
       return present(p.queuePeek);
     case ProcessHelperRole::EventSchedule:
       return present(p.eventSchedule);
+    case ProcessHelperRole::EventTryRecv:
+      return present(p.eventTryRecv);
     case ProcessHelperRole::TraceOpen:
       return present(p.traceOpen);
     case ProcessHelperRole::TraceNext:
@@ -3846,10 +3960,14 @@ mlir::LogicalResult verifyProcessStatePlan(const ProcessStatePlanSet &plans,
           plans.callees()[wake.callee().value()];
       ProcessHelperRole expectedRole = wakeHelperRole(wake.kind());
       bool queueWake = wake.kind() == ProcessWakeKind::QueueReadable ||
-                       wake.kind() == ProcessWakeKind::QueueWritable;
+                       wake.kind() == ProcessWakeKind::QueueWritable ||
+                       wake.kind() == ProcessWakeKind::EventQueue;
       bool inputsMatch =
           queueWake ? callee.inputTypeKeys().size() == 1 &&
-                          callee.inputTypeKeys().front() == "queue-ref:@queue"
+                          callee.inputTypeKeys().front() ==
+                              (wake.kind() == ProcessWakeKind::EventQueue
+                                   ? "event-queue-ref:@event"
+                                   : "queue-ref:@queue")
                     : callee.inputTypeKeys().empty();
       if (callee.role() != expectedRole || !inputsMatch ||
           callee.resultTypeKeys().size() != 1 ||
@@ -4043,6 +4161,7 @@ mlir::LogicalResult verifyProcessStatePlan(const ProcessStatePlanSet &plans,
         callee.role() == ProcessHelperRole::QueueTryRecv ||
         callee.role() == ProcessHelperRole::QueuePeek ||
         callee.role() == ProcessHelperRole::EventSchedule ||
+        callee.role() == ProcessHelperRole::EventTryRecv ||
         callee.role() == ProcessHelperRole::Probe ||
         callee.role() == ProcessHelperRole::StatAdd;
     llvm::SmallPtrSet<mlir::Operation *, 8> uniqueDeclarations;

@@ -534,11 +534,13 @@ struct PlacementPlan {
   std::string processDefinitionKey;
   uint64_t fairnessCap = 1;
   ac::QueueOp queue;
+  ac::EventQueueOp eventQueue;
 };
 
 struct BindingEdgePlan {
   unsigned sourcePlacement = 0;
   unsigned targetPlacement = 0;
+  bool activates = true;
 };
 
 struct PureCallPlan {
@@ -1115,6 +1117,75 @@ mlir::LogicalResult ACIRToACSimPass::planModule(ac::ModuleOp module,
       planned.placements.push_back(std::move(placement));
       continue;
     }
+    if (auto queue = dyn_cast<ac::EventQueueOp>(operation)) {
+      if (queue.getOrdering() != "time_then_sequence" ||
+          queue.getDelayTicks() != 1)
+        return lowerError(queue, "ACLOWER-UNSUPPORTED-CONSTRUCT",
+                          "native event queues require ordering "
+                          "'time_then_sequence' and delay_ticks = 1");
+      auto eventType = dyn_cast<ac::EventType>(queue.getPayload());
+      auto elementCpp =
+          eventType ? nativeQueueCppType(eventType.getElementType(), queue)
+                    : std::nullopt;
+      if (!elementCpp)
+        return lowerError(queue, "ACLOWER-TYPE-MISMATCH",
+                          "native event queue payload has no closed C++ "
+                          "realization");
+      std::string payloadSpelling;
+      llvm::raw_string_ostream(payloadSpelling) << eventType.getElementType();
+      llvm::json::Object typeDescriptor;
+      typeDescriptor["contract_epoch"] = kEpoch;
+      typeDescriptor["kind"] = "runtime_object";
+      typeDescriptor["payload"] = payloadSpelling;
+      typeDescriptor["ordering"] = queue.getOrdering().str();
+      std::string typeFingerprint =
+          fingerprintJson(llvm::json::Value(std::move(typeDescriptor)));
+      std::string identity =
+          "acir_event_queue_" +
+          llvm::StringRef(typeFingerprint).drop_front(7).str();
+      if (failed(typeSymbols.intern(
+              queue, identity, "runtime_object",
+              "gfsim::TimedEventQueue<" + *elementCpp + ">", typeFingerprint)))
+        return mlir::failure();
+      if (isa<ac::PacketType>(eventType.getElementType()) &&
+          !nativePacketValueIdentities.contains(eventType.getElementType())) {
+        llvm::json::Object valueDescriptor;
+        valueDescriptor["contract_epoch"] = kEpoch;
+        valueDescriptor["kind"] = "packet";
+        valueDescriptor["payload"] = payloadSpelling;
+        std::string valueFingerprint =
+            fingerprintJson(llvm::json::Value(std::move(valueDescriptor)));
+        std::string valueIdentity =
+            "acir_packet_" +
+            llvm::StringRef(valueFingerprint).drop_front(7).str();
+        if (failed(typeSymbols.intern(queue, valueIdentity, "packet",
+                                      *elementCpp, valueFingerprint)))
+          return mlir::failure();
+        nativePacketValueIdentities.try_emplace(eventType.getElementType(),
+                                                valueIdentity);
+      }
+      PlacementPlan placement;
+      placement.kind = PlacementPlan::Kind::RuntimeObject;
+      placement.name = queue.getSymName().str();
+      placement.targetSymbol = identity;
+      placement.targetIsRuntimeObject = true;
+      placement.eventQueue = queue;
+      placement.staticArgs = builder.getArrayAttr(
+          {builder.getI64IntegerAttr(queue.getCapacity())});
+      llvm::json::Object specialization;
+      specialization["contract_epoch"] = kEpoch;
+      specialization["kind"] = "event_queue";
+      specialization["type"] = typeFingerprint;
+      specialization["capacity"] = queue.getCapacity();
+      placement.specialization =
+          fingerprintJson(llvm::json::Value(std::move(specialization)));
+      placement.work = "gfsim::QueueRuntime::work";
+      placement.xfer = "gfsim::QueueRuntime::xfer";
+      placement.reset = "gfsim::QueueRuntime::reset";
+      placement.validate = "gfsim::QueueRuntime::validate";
+      planned.placements.push_back(std::move(placement));
+      continue;
+    }
     if (auto array = dyn_cast<ac::ArrayOp>(operation)) {
       PlacementPlan placement;
       placement.kind = PlacementPlan::Kind::Array;
@@ -1333,6 +1404,7 @@ mlir::LogicalResult ACIRToACSimPass::planModule(ac::ModuleOp module,
           {*sourceIndex, static_cast<unsigned>(targetIndex)});
     }
     llvm::StringSet<> referencedQueues;
+    llvm::StringSet<> consumedEventQueues;
     target.process.walk([&](Operation *operation) {
       if (auto send = dyn_cast<ac::TrySendOp>(operation))
         referencedQueues.insert(send.getQueue());
@@ -1342,6 +1414,15 @@ mlir::LogicalResult ACIRToACSimPass::planModule(ac::ModuleOp module,
         referencedQueues.insert(peek.getQueue());
       else if (auto await = dyn_cast<ac::AwaitQueueOp>(operation))
         referencedQueues.insert(await.getQueue());
+      else if (auto schedule = dyn_cast<ac::ScheduleOp>(operation))
+        referencedQueues.insert(schedule.getTarget());
+      else if (auto recv = dyn_cast<ac::TryEventOp>(operation)) {
+        referencedQueues.insert(recv.getEventQueue());
+        consumedEventQueues.insert(recv.getEventQueue());
+      } else if (auto await = dyn_cast<ac::AwaitEventOp>(operation)) {
+        referencedQueues.insert(await.getEventQueue());
+        consumedEventQueues.insert(await.getEventQueue());
+      }
     });
     for (const auto &queueName : referencedQueues) {
       auto queue =
@@ -1354,7 +1435,9 @@ mlir::LogicalResult ACIRToACSimPass::planModule(ac::ModuleOp module,
                           "process queue reference has no native owner");
       planned.bindingEdges.push_back(
           {static_cast<unsigned>(queue - planned.placements.begin()),
-           static_cast<unsigned>(targetIndex)});
+           static_cast<unsigned>(targetIndex),
+           !queue->eventQueue ||
+               consumedEventQueues.contains(queueName.getKey())});
     }
   }
 
@@ -1947,22 +2030,32 @@ void ACIRToACSimPass::emitProcessBody(
       reference = peek.getQueueAttr();
     else if (auto await = dyn_cast<ac::AwaitQueueOp>(operation))
       reference = await.getQueueAttr();
+    else if (auto schedule = dyn_cast<ac::ScheduleOp>(operation))
+      reference = schedule.getTargetAttr();
+    else if (auto recv = dyn_cast<ac::TryEventOp>(operation))
+      reference = recv.getEventQueueAttr();
+    else if (auto await = dyn_cast<ac::AwaitEventOp>(operation))
+      reference = await.getEventQueueAttr();
     if (!reference || !seenQueues.insert(reference.getValue()).second)
       return;
-    auto queue = dyn_cast_or_null<ac::QueueOp>(
-        SymbolTable::lookupNearestSymbolFrom(operation, reference));
-    if (!queue)
+    Operation *queue =
+        SymbolTable::lookupNearestSymbolFrom(operation, reference);
+    if (!isa_and_nonnull<ac::QueueOp, ac::EventQueueOp>(queue))
       if (auto owner = operation->getParentOfType<ac::ModuleOp>())
         for (Operation &candidate : owner.getBody().front())
-          if (auto candidateQueue = dyn_cast<ac::QueueOp>(candidate);
-              candidateQueue &&
-              candidateQueue.getSymName() == reference.getValue()) {
-            queue = candidateQueue;
+          if (isa<ac::QueueOp, ac::EventQueueOp>(candidate) &&
+              candidate
+                      .getAttrOfType<StringAttr>(
+                          SymbolTable::getSymbolAttrName())
+                      .getValue() == reference.getValue()) {
+            queue = &candidate;
             break;
           }
     assert(queue && "validated queue reference must resolve");
-    referencedQueues.emplace_back(queue.getPath().str(),
-                                  reference.getValue().str());
+    llvm::StringRef path = isa<ac::QueueOp>(queue)
+                               ? cast<ac::QueueOp>(queue).getPath()
+                               : cast<ac::EventQueueOp>(queue).getPath();
+    referencedQueues.emplace_back(path.str(), reference.getValue().str());
   });
   llvm::sort(referencedQueues);
   for (const auto &[path, name] : referencedQueues) {
@@ -2239,9 +2332,20 @@ void ACIRToACSimPass::emitProcessBody(
           operands.insert(operands.begin(),
                           queueArgumentsByPc[blockPlan.pc().value()].lookup(
                               peek.getQueue()));
+        else if (auto schedule =
+                     dyn_cast_or_null<ac::ScheduleOp>(action.sourceOperation()))
+          operands.insert(operands.begin(),
+                          queueArgumentsByPc[blockPlan.pc().value()].lookup(
+                              schedule.getTarget()));
+        else if (auto recv =
+                     dyn_cast_or_null<ac::TryEventOp>(action.sourceOperation()))
+          operands.insert(operands.begin(),
+                          queueArgumentsByPc[blockPlan.pc().value()].lookup(
+                              recv.getEventQueue()));
         llvm::SmallVector<Type> invokeResultTypes;
-        bool isNativeQueueRead = isa_and_nonnull<ac::TryRecvOp, ac::PeekOp>(
-            action.sourceOperation());
+        bool isNativeQueueRead =
+            isa_and_nonnull<ac::TryRecvOp, ac::PeekOp, ac::TryEventOp>(
+                action.sourceOperation());
         for (Type resultType : action.resultTypes()) {
           auto packetIdentity = nativePacketValueIdentities.find(resultType);
           if (!isNativeQueueRead ||
@@ -2353,7 +2457,8 @@ void ACIRToACSimPass::emitProcessBody(
         generatedCalleeIdentities[wakePlan.callee().value()];
     llvm::SmallVector<Value> wakeInputs;
     if (wakePlan.kind() == ProcessWakeKind::QueueReadable ||
-        wakePlan.kind() == ProcessWakeKind::QueueWritable)
+        wakePlan.kind() == ProcessWakeKind::QueueWritable ||
+        wakePlan.kind() == ProcessWakeKind::EventQueue)
       wakeInputs.push_back(
           queueArgumentsByPc[blockPlan.pc().value()].lookup(wakePlan.target()));
     auto wake = acsim::InvokeOp::create(
@@ -2675,14 +2780,17 @@ ACIRToACSimPass::emit(mlir::ModuleOp input) {
         builder.getStringAttr(reset), builder.getStringAttr(validate)));
   }
 
-  // Rank 4: static activation adjacency. Every runtime object has its self
-  // wake, and each typed construction bind adds source-object -> target-object
-  // within the same expanded module context.
+  // Rank 4: static activation adjacency. Ordinary runtime objects have their
+  // self wake. Timed event queues instead have only arrival edges to their
+  // consumer; their proposals join Xfer through explicit commit registration.
   std::set<std::pair<unsigned, unsigned>> activationEdges;
-  for (unsigned id = 0; id < dispatches.size(); ++id)
-    activationEdges.emplace(id, id);
+  for (auto [id, row] : llvm::enumerate(runtimeRows))
+    if (!modules[row.moduleIndex].placements[row.placementIndex].eventQueue)
+      activationEdges.emplace(id, id);
   for (auto [moduleIndex, module] : llvm::enumerate(modules))
-    for (const BindingEdgePlan &edge : module.bindingEdges)
+    for (const BindingEdgePlan &edge : module.bindingEdges) {
+      if (!edge.activates)
+        continue;
       for (auto [sourceId, source] : llvm::enumerate(runtimeRows)) {
         if (source.moduleIndex != moduleIndex ||
             source.placementIndex != edge.sourcePlacement)
@@ -2693,6 +2801,7 @@ ACIRToACSimPass::emit(mlir::ModuleOp input) {
               target.contextPath == source.contextPath)
             activationEdges.emplace(sourceId, targetId);
       }
+    }
   for (auto [source, target] : activationEdges)
     acsim::ActivateOp::create(builder, input.getLoc(),
                               dispatches[source].getActivation(),

@@ -635,18 +635,18 @@ TEST(GfsimCoreTest, EventSameTimeOrderedByDelta) {
   EXPECT_LT(e2, e3);
 }
 
-TEST(GfsimCoreTest, EventSameTimeOrderedByKindThenPayload) {
-  Event e1{{0, 0}, 1, 0, 0};
-  Event e2{{0, 0}, 1, 1, 0};
-  Event e3{{0, 0}, 1, 1, 1};
+TEST(GfsimCoreTest, EventSameTimeOrderedByAcceptanceSequence) {
+  Event e1{{0, 0}, 7, 9, 11, 0};
+  Event e2{{0, 0}, 1, 0, 0, 1};
+  Event e3{{0, 0}, 3, 4, 5, 2};
   EXPECT_LT(e1, e2);
   EXPECT_LT(e2, e3);
   EXPECT_LT(e1, e3);
 }
 
-TEST(GfsimCoreTest, EventTieBreaksByStableTargetId) {
-  Event first{{0, 0}, 3, 1, 9};
-  Event second{{0, 0}, 7, 1, 9};
+TEST(GfsimCoreTest, EventSequencePrecedesTargetKindAndPayload) {
+  Event first{{0, 0}, 7, 9, 11, 3};
+  Event second{{0, 0}, 1, 0, 0, 4};
   EXPECT_LT(first, second);
 }
 
@@ -1027,6 +1027,62 @@ TEST(GfsimEventQueueTest, ResetClearsAllEvents) {
   eq.reset();
   EXPECT_EQ(eq.size(), 0u);
   EXPECT_FALSE(eq.nextEvent().has_value());
+}
+
+TEST(GfsimTimedEventQueueTest, SnapshotCapacityReadyOrderAndReset) {
+  TimedEventQueue<int> queue("typed_events", 7, nullptr, 2);
+  EXPECT_EQ(queue.tryRecv({0, 0}), (std::pair<int, bool>{0, false}));
+  EXPECT_TRUE(queue.trySchedule(20, {3, 0}, 2));
+  EXPECT_TRUE(queue.trySchedule(10, {3, 0}, 2));
+  EXPECT_FALSE(queue.trySchedule(30, {3, 0}, 2));
+  queue.doXfer({3, 0});
+  EXPECT_EQ(queue.tryRecv({4, 0}), (std::pair<int, bool>{0, false}));
+  EXPECT_EQ(queue.tryRecv({5, 0}), (std::pair<int, bool>{20, true}));
+  // A pending pop does not release capacity until Xfer.
+  EXPECT_FALSE(queue.trySchedule(30, {5, 0}, 0));
+  EXPECT_EQ(queue.tryRecv({5, 0}), (std::pair<int, bool>{10, true}));
+  queue.doXfer({5, 0});
+  EXPECT_TRUE(queue.trySchedule(30, {5, 0}, 0));
+  queue.doXfer({5, 0});
+  EXPECT_EQ(queue.tryRecv({5, 0}), (std::pair<int, bool>{30, true}));
+  EXPECT_EQ(queue.totalPushes(), 3u);
+  EXPECT_EQ(queue.highWatermark(), 2u);
+  std::vector<StatSnapshot> statistics;
+  queue.collectStatistics(statistics);
+  ASSERT_EQ(statistics.size(), 4u);
+  EXPECT_EQ(statistics[0].name, "event_queue_occupancy");
+  EXPECT_EQ(statistics[0].value, 1u);
+  EXPECT_EQ(statistics[2].value, 3u);
+  EXPECT_EQ(statistics[3].value, 2u);
+  queue.reset();
+  EXPECT_EQ(queue.committedSize(), 0u);
+  EXPECT_EQ(queue.totalPushes(), 0u);
+  EXPECT_EQ(queue.highWatermark(), 0u);
+  EXPECT_TRUE(queue.trySchedule(40, {0, 0}, 0));
+}
+
+TEST(GfsimTimedEventQueueTest, RejectsNegativeDelayAndOverflow) {
+  TimedEventQueue<int> queue("typed_events", 7, nullptr, 2);
+  EXPECT_FALSE(queue.trySchedule(1, {0, 0}, -1));
+  EXPECT_EQ(queue.runtimeFailureCode(), "negative_event_delay");
+  queue.reset();
+  EXPECT_FALSE(queue.trySchedule(1, {std::numeric_limits<Tick>::max(), 0}, 1));
+  EXPECT_EQ(queue.runtimeFailureCode(), "tick_overflow");
+}
+
+TEST(GfsimTimedEventQueueTest, NativePayloadTypesRoundTrip) {
+  auto roundTrip = []<typename T>(T expected) {
+    TimedEventQueue<T> queue("typed_events", 7, nullptr, 1);
+    EXPECT_TRUE(queue.trySchedule(expected, {2, 0}, 0));
+    queue.doXfer({2, 0});
+    EXPECT_EQ(queue.tryRecv({2, 0}), (std::pair<T, bool>{expected, true}));
+  };
+  roundTrip(true);
+  roundTrip(uint64_t{0xfedcba9876543210ULL});
+  roundTrip(size_t{17});
+  roundTrip(1.25F);
+  roundTrip(2.5);
+  roundTrip(TestPacket{3, 99});
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -2595,6 +2651,57 @@ private:
   SimQueue<int> &queue_;
 };
 
+class TimedEventProducer : public SimObject {
+public:
+  TimedEventProducer(ObjectId id, TimedEventQueue<int> &queue, int value = 42,
+                     int64_t delay = 0)
+      : SimObject(ObjectKind::Process, "event_producer", id), queue_(queue),
+        value_(value), delay_(delay) {}
+
+  void doWork(Epoch epoch) override {
+    if (!scheduled) {
+      accepted = queue_.trySchedule(value_, epoch, delay_);
+      scheduled = true;
+    }
+  }
+  bool validate() const { return true; }
+
+  bool scheduled = false;
+  bool accepted = false;
+
+private:
+  TimedEventQueue<int> &queue_;
+  int value_;
+  int64_t delay_;
+};
+
+class TimedEventConsumer final : public ProcessRuntime<TimedEventConsumer> {
+public:
+  TimedEventConsumer(ObjectId id, TimedEventQueue<int> &queue,
+                     size_t expectedCount = 1)
+      : ProcessRuntime("event_consumer", id, nullptr, 0, expectedCount + 1),
+        queue_(queue), expectedCount_(expectedCount) {}
+
+  ProcessStep executeProcessStep(uint32_t, Epoch epoch) {
+    auto [value, ready] = queue_.tryRecv(epoch);
+    if (!ready)
+      return ProcessStep::suspendAt(
+          0, {.kind = ProcessWakeKind::EventQueue, .id = queue_.id()}, 1);
+    received.push_back(value);
+    receivedAt.push_back(epoch);
+    return received.size() == expectedCount_ ? ProcessStep::terminate()
+                                             : ProcessStep::continueAt(0);
+  }
+  bool validate() const { return ProcessRuntime::validate(); }
+
+  std::vector<int> received;
+  std::vector<Epoch> receivedAt;
+
+private:
+  TimedEventQueue<int> &queue_;
+  size_t expectedCount_;
+};
+
 TEST(GfsimSystemTest, StaticDispatchUsesDenseStableOrderAndBarrierPhases) {
   for (unsigned seed = 0; seed < 32; ++seed) {
     SimSystem system("test");
@@ -2776,6 +2883,64 @@ TEST(GfsimSystemTest, QueueCommitWakesMatchingReaderOnNextTick) {
   EXPECT_EQ(queue.totalPops(), 1u);
 }
 
+TEST(GfsimSystemTest, ZeroDelayTimedEventWakesConsumerNextDelta) {
+  SimSystem system("test");
+  TimedEventQueue<int> queue("events", 0, nullptr, 2);
+  TimedEventProducer producer(1, queue);
+  TimedEventConsumer consumer(2, queue);
+  std::array rows = {makeDispatchRow(&queue), makeDispatchRow(&producer),
+                     makeDispatchRow(&consumer)};
+  constexpr std::array<uint32_t, 4> offsets = {0, 1, 1, 1};
+  constexpr std::array<ObjectId, 1> targets = {2};
+  queue.bindSystem(&system);
+  ASSERT_TRUE(system.setDispatchTable(rows));
+  ASSERT_TRUE(system.setActivationPlan(offsets, targets));
+  ASSERT_TRUE(system.scheduleWork(producer.id(), {0, 0}));
+  ASSERT_TRUE(system.scheduleWork(consumer.id(), {0, 0}));
+
+  ASSERT_TRUE(system.step());
+  EXPECT_TRUE(producer.accepted);
+  EXPECT_TRUE(consumer.received.empty());
+  EXPECT_EQ(system.currentEpoch(), (Epoch{0, 1}));
+
+  EXPECT_FALSE(system.step());
+  EXPECT_EQ(system.terminationResult().classification,
+            TerminationClass::Completed);
+  EXPECT_EQ(consumer.received, (std::vector<int>{42}));
+  EXPECT_EQ(consumer.receivedAt, (std::vector<Epoch>{{0, 1}}));
+  EXPECT_EQ(queue.committedSize(), 0u);
+}
+
+TEST(GfsimSystemTest, TimedEventsFromMultipleProducersKeepProposalOrder) {
+  SimSystem system("test");
+  TimedEventQueue<int> queue("events", 0, nullptr, 2);
+  TimedEventProducer first(1, queue, 20, 2);
+  TimedEventProducer second(2, queue, 10, 2);
+  TimedEventConsumer consumer(3, queue, 2);
+  std::array rows = {makeDispatchRow(&queue), makeDispatchRow(&first),
+                     makeDispatchRow(&second), makeDispatchRow(&consumer)};
+  constexpr std::array<uint32_t, 5> offsets = {0, 1, 1, 1, 1};
+  constexpr std::array<ObjectId, 1> targets = {3};
+  queue.bindSystem(&system);
+  ASSERT_TRUE(system.setDispatchTable(rows));
+  ASSERT_TRUE(system.setActivationPlan(offsets, targets));
+  ASSERT_TRUE(system.scheduleWork(first.id(), {0, 0}));
+  ASSERT_TRUE(system.scheduleWork(second.id(), {0, 0}));
+  ASSERT_TRUE(system.scheduleWork(consumer.id(), {0, 0}));
+
+  ASSERT_TRUE(system.step());
+  EXPECT_EQ(system.currentEpoch(), (Epoch{2, 0}));
+  EXPECT_TRUE(consumer.received.empty());
+  EXPECT_FALSE(system.step());
+  EXPECT_EQ(system.terminationResult().classification,
+            TerminationClass::Completed);
+  EXPECT_EQ(consumer.received, (std::vector<int>{20, 10}));
+  EXPECT_EQ(consumer.receivedAt, (std::vector<Epoch>{{2, 0}, {2, 0}}));
+  EXPECT_EQ(system.terminationResult().committedEventCount, 2u);
+  EXPECT_EQ(queue.totalPushes(), 2u);
+  EXPECT_EQ(queue.totalPops(), 2u);
+}
+
 TEST(GfsimSystemTest, CrossObjectQueueCannotCommitTwiceInOneTick) {
   SimSystem system("test");
   SimQueue<int> queue("queue", 1, nullptr, 2);
@@ -2855,7 +3020,7 @@ TEST(GfsimSystemTest, StatefulObjectCannotCommitTwiceInOneTick) {
             "multiple_stateful_commits");
 }
 
-TEST(GfsimSystemTest, EventQueueCannotCommitTwiceInOneTick) {
+TEST(GfsimSystemTest, EventQueueSupportsSameTickDeltaChain) {
   SimSystem system("test");
   SameTickEventChainObject object(0, system);
   std::array rows = {makeDispatchRow(&object)};
@@ -2864,9 +3029,9 @@ TEST(GfsimSystemTest, EventQueueCannotCommitTwiceInOneTick) {
 
   EXPECT_TRUE(system.step());
   EXPECT_EQ(system.currentEpoch(), (Epoch{0, 1}));
-  EXPECT_FALSE(system.step());
-  EXPECT_EQ(system.terminationResult().diagnosticCode,
-            "multiple_stateful_commits");
+  while (system.step()) {
+  }
+  EXPECT_EQ(system.terminationResult().diagnosticCode, "max_deltas_exceeded");
 }
 
 TEST(GfsimSystemTest, SchedulingOutOfRangeDeltaFailsImmediately) {

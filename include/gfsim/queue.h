@@ -5,10 +5,13 @@
 #include "gfsim/object.h"
 #include "gfsim/packet.h"
 
+#include <algorithm>
 #include <cstddef>
+#include <limits>
 #include <optional>
 #include <queue>
 #include <set>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -214,8 +217,8 @@ public:
 
 // ── EventQueue ────────────────────────────────────────────────────────
 
-/// Time-ordered event queue. Events are ordered by exact epoch, target object
-/// ID, event kind, and payload.
+/// Internal system notification queue. Events are ordered by exact ready
+/// epoch followed by their globally assigned acceptance sequence.
 class EventQueue : public SimObject {
 public:
   EventQueue(std::string name, ObjectId id, SimObject *parent,
@@ -226,6 +229,12 @@ public:
   // ── Capacity ────────────────────────────────────────────────────────
 
   size_t capacity() const { return capacity_; }
+  bool setCapacity(size_t capacity) {
+    if (capacity < committed_.size() + pushProposals_.size())
+      return false;
+    capacity_ = capacity;
+    return true;
+  }
   size_t size() const { return committed_.size(); }
   bool isFull() const {
     return committed_.size() + pushProposals_.size() >= capacity_;
@@ -284,6 +293,170 @@ private:
   size_t capacity_;
   std::multiset<Event> committed_;
   std::multiset<Event> pushProposals_;
+};
+
+// ── TimedEventQueue<T> ───────────────────────────────────────────────
+
+/// Compiler-native named delayed queue. Schedule and pop operations are
+/// proposals; neither becomes visible until the epoch's Xfer barrier.
+template <typename T> class TimedEventQueue final : public SimObject {
+public:
+  TimedEventQueue(std::string name, ObjectId id, SimObject *parent,
+                  size_t capacity, ObservationSink *observations = nullptr)
+      : SimObject(ObjectKind::EventQueue, std::move(name), id, parent,
+                  observations),
+        capacity_(capacity) {}
+
+  bool trySchedule(T value, Epoch epoch, int64_t delay) {
+    if (delay < 0) {
+      recordFailure("negative_event_delay");
+      return false;
+    }
+    const auto unsignedDelay = static_cast<uint64_t>(delay);
+    if (epoch.time > std::numeric_limits<Tick>::max() - unsignedDelay) {
+      recordFailure("tick_overflow");
+      return false;
+    }
+    // Pending pops deliberately do not release capacity in this snapshot.
+    if (committed_.size() + scheduleProposals_.size() >= capacity_)
+      return false;
+    if (nextSequence_ == std::numeric_limits<uint64_t>::max()) {
+      recordFailure("event_sequence_overflow");
+      return false;
+    }
+    if (system_ && !system_->registerCommitParticipant(id()))
+      return false;
+    scheduleProposals_.push_back(
+        Entry{{epoch.time + unsignedDelay, delay == 0 ? epoch.delta : 0},
+              nextSequence_++,
+              std::move(value)});
+    return true;
+  }
+
+  std::pair<T, bool> tryRecv(Epoch epoch) {
+    auto it = committed_.begin();
+    std::advance(it, static_cast<std::ptrdiff_t>(popProposalCount_));
+    if (it == committed_.end() || it->readyTime > epoch)
+      return {T{}, false};
+    if (system_ && !system_->registerCommitParticipant(id()))
+      return {T{}, false};
+    ++popProposalCount_;
+    return {it->value, true};
+  }
+
+  void doXfer(Epoch epoch) override {
+    const bool changed = hasPendingCommit();
+    for (size_t index = 0; index < popProposalCount_ && !committed_.empty();
+         ++index) {
+      committed_.erase(committed_.begin());
+      ++totalPops_;
+    }
+    popProposalCount_ = 0;
+    for (Entry &entry : scheduleProposals_) {
+      const uint64_t sequence = entry.sequence;
+      const Epoch readyTime = entry.readyTime;
+      committed_.insert(std::move(entry));
+      ++totalPushes_;
+      if (system_ && !system_->scheduleEvent(
+                         {readyTime, id(), kNotificationKind, sequence})) {
+        setRuntimeFailureCode("event_notification_failed");
+        break;
+      }
+    }
+    scheduleProposals_.clear();
+    highWatermark_ = std::max(highWatermark_, committed_.size());
+    if (changed)
+      lastUpdate_ = epoch;
+  }
+
+  bool hasPendingCommit() const override {
+    return popProposalCount_ != 0 || !scheduleProposals_.empty() ||
+           !runtimeFailureCode().empty();
+  }
+
+  bool deliverEvent(uint32_t kind, uint64_t sequence, Epoch epoch) override {
+    if (kind != kNotificationKind)
+      return false;
+    auto found = std::find_if(
+        committed_.begin(), committed_.end(),
+        [&](const Entry &entry) { return entry.sequence == sequence; });
+    return found != committed_.end() && found->readyTime == epoch;
+  }
+
+  RuntimeObjectState runtimeState(Epoch epoch) const override {
+    RuntimeObjectState state = SimObject::runtimeState(epoch);
+    state.queueOccupancy = committed_.size();
+    state.pendingOffers = scheduleProposals_.size();
+    state.quiescent = committed_.empty() && !hasPendingCommit();
+    if (!state.quiescent)
+      state.reason = hasPendingCommit() ? "pending_commit" : "events_not_empty";
+    return state;
+  }
+
+  size_t capacity() const { return capacity_; }
+  size_t committedSize() const { return committed_.size(); }
+  size_t highWatermark() const { return highWatermark_; }
+  uint64_t totalPushes() const { return totalPushes_; }
+  uint64_t totalPops() const { return totalPops_; }
+
+  void collectStatistics(std::vector<StatSnapshot> &out) const override {
+    auto append = [&](std::string name, uint64_t value, StatisticKind kind) {
+      out.push_back({.name = std::move(name),
+                     .objectPath = std::string(path()),
+                     .kind = kind,
+                     .value = value,
+                     .lastUpdate = lastUpdate_});
+    };
+    append("event_queue_occupancy", committed_.size(), StatisticKind::Gauge);
+    append("event_queue_occupancy_peak", highWatermark_, StatisticKind::Gauge);
+    append("accepted_events", totalPushes_, StatisticKind::Counter);
+    append("completed_events", totalPops_, StatisticKind::Counter);
+  }
+
+  void bindSystem(SimSystem *system) override { system_ = system; }
+
+  void reset() override {
+    committed_.clear();
+    scheduleProposals_.clear();
+    popProposalCount_ = 0;
+    nextSequence_ = 0;
+    highWatermark_ = 0;
+    totalPushes_ = 0;
+    totalPops_ = 0;
+    lastUpdate_ = {};
+    clearRuntimeFailureCode();
+  }
+
+private:
+  static constexpr uint32_t kNotificationKind = 0x45565131u;
+  struct Entry {
+    Epoch readyTime;
+    uint64_t sequence;
+    T value;
+  };
+  struct Earlier {
+    bool operator()(const Entry &left, const Entry &right) const {
+      return std::tie(left.readyTime, left.sequence) <
+             std::tie(right.readyTime, right.sequence);
+    }
+  };
+
+  void recordFailure(std::string_view code) {
+    if (system_)
+      (void)system_->registerCommitParticipant(id());
+    setRuntimeFailureCode(code);
+  }
+
+  size_t capacity_;
+  std::multiset<Entry, Earlier> committed_;
+  std::vector<Entry> scheduleProposals_;
+  size_t popProposalCount_ = 0;
+  uint64_t nextSequence_ = 0;
+  size_t highWatermark_ = 0;
+  uint64_t totalPushes_ = 0;
+  uint64_t totalPops_ = 0;
+  Epoch lastUpdate_;
+  SimSystem *system_ = nullptr;
 };
 
 } // namespace gfsim

@@ -79,6 +79,9 @@ public:
   /// scheduler queues work for the next tick.
   virtual bool activateFrom(ObjectId) { return true; }
 
+  /// Validate and accept a system notification targeted at this object.
+  virtual bool deliverEvent(uint32_t, uint64_t, Epoch) { return true; }
+
   /// Describe committed liveness state for diagnostics outside the hot path.
   virtual RuntimeObjectState runtimeState(Epoch epoch) const {
     const bool pending = hasPendingCommit();
@@ -248,6 +251,9 @@ public:
   /// Install canonical compressed activation adjacency.
   bool setActivationPlan(std::span<const uint32_t> offsets,
                          std::span<const ObjectId> targets);
+
+  /// Configure capacity for the internal system notification queue.
+  bool setEventQueueCapacity(size_t capacity);
 
   /// Get the next pending event (earliest ready time).
   std::optional<Event> nextEvent() const;
