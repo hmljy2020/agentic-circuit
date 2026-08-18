@@ -2511,11 +2511,41 @@ LogicalResult verifyDispatchAndActivation(ModelOp model,
         frame.initialized = true;
         if (auto argument = dyn_cast<BlockArgument>(frame.value)) {
           if (auto process =
-                  dyn_cast<ProcessOp>(argument.getOwner()->getParentOp()))
-            if (argument.getArgNumber() < process.getCaptures().size())
-              frame.dependencies.push_back(
-                  {frame.key.first,
-                   process.getCaptures()[argument.getArgNumber()]});
+                  dyn_cast<ProcessOp>(argument.getOwner()->getParentOp())) {
+            Block *block = argument.getOwner();
+            if (block->isEntryBlock()) {
+              // Entry-block arguments are the process captures.
+              if (argument.getArgNumber() < process.getCaptures().size())
+                frame.dependencies.push_back(
+                    {frame.key.first,
+                     process.getCaptures()[argument.getArgNumber()]});
+            } else {
+              // Inner-block arguments are branch arguments produced by the
+              // predecessor terminator; follow the corresponding operand.
+              unsigned argNumber = argument.getArgNumber();
+              for (Block *predecessor : block->getPredecessors()) {
+                Operation *terminator = predecessor->getTerminator();
+                if (auto branch = dyn_cast<cf::BranchOp>(terminator)) {
+                  if (branch.getDest() == block &&
+                      argNumber < branch.getDestOperands().size())
+                    frame.dependencies.push_back(
+                        {frame.key.first, branch.getDestOperands()[argNumber]});
+                } else if (auto branch =
+                               dyn_cast<cf::CondBranchOp>(terminator)) {
+                  if (branch.getTrueDest() == block &&
+                      argNumber < branch.getTrueDestOperands().size())
+                    frame.dependencies.push_back(
+                        {frame.key.first,
+                         branch.getTrueDestOperands()[argNumber]});
+                  else if (branch.getFalseDest() == block &&
+                           argNumber < branch.getFalseDestOperands().size())
+                    frame.dependencies.push_back(
+                        {frame.key.first,
+                         branch.getFalseDestOperands()[argNumber]});
+                }
+              }
+            }
+          }
         } else if (Operation *definition = frame.value.getDefiningOp()) {
           unsigned currentContext = frame.key.first;
           auto appendGeneratedEndpoint = [&](Value base, StringRef field,
