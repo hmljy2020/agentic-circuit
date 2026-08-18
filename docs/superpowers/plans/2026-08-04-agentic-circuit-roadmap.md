@@ -1,8 +1,8 @@
-# Agentic Circuit v0.1 Delivery Roadmap
+# Agentic Circuit v0.2 Delivery Roadmap
 
 > Status: approved for implementation. The nine documents in `docs/specs/`
 > and the ten schemas in `schemas/` are normative. This roadmap schedules
-> their complete implementation without narrowing the public v0.1 contract.
+> their complete implementation without narrowing the public v0.2 contract.
 
 ## Outcome
 
@@ -54,15 +54,15 @@ defined exclusively by this repository's specifications.
 
 | Contract | Normative source | Primary implementation phase |
 | --- | --- | --- |
-| ACIR syntax, types, operations, verification | `docs/specs/acir-core-v0.1.md` | 1 |
-| Standard schemas, protocols, components | `docs/specs/acir-stdlib-v0.1.md` | 2 |
-| ACSim and structured C++ lowering | `docs/specs/acsim-gfsim-lowering-v0.1.md` | 1, 3 |
-| C++ simulator model-library ABI | `docs/specs/gfsim-runtime-abi-v0.1.md` | 2 |
-| Python language and CLI | `docs/specs/agentic-python-cli-v0.1.md` | 4 |
-| Python AST, ACPy, and ACIR lowering | `docs/specs/python-to-acir-lowering-v0.1.md` | 4 |
-| PTO trace representation and streaming | `docs/specs/pto-trace-schema-v0.1.md` | 2, 5 |
-| Immutable process-state plan and canonical report | `docs/specs/acir-process-state-plan-v0.1.md` | 1, 3 |
-| Hard-break evolution and conformance | `docs/specs/interface-evolution-v0.1.md` | all |
+| ACIR syntax, types, operations, verification | `docs/specs/acir-core-v0.2.md` | 1 |
+| Standard schemas, protocols, components | `docs/specs/acir-stdlib-v0.2.md` | 2 |
+| ACSim and structured C++ lowering | `docs/specs/acsim-gfsim-lowering-v0.2.md` | 1, 3 |
+| C++ simulator model-library ABI | `docs/specs/gfsim-runtime-abi-v0.2.md` | 2 |
+| Python language and CLI | `docs/specs/agentic-python-cli-v0.2.md` | 4 |
+| Python AST, ACPy, and ACIR lowering | `docs/specs/python-to-acir-lowering-v0.2.md` | 4 |
+| PTO trace representation and streaming | `docs/specs/pto-trace-schema-v0.2.md` | 2, 5 |
+| Immutable process-state plan and canonical report | `docs/specs/acir-process-state-plan-v0.2.md` | 1, 3 |
+| Hard-break evolution and conformance | `docs/specs/interface-evolution-v0.2.md` | all |
 | Machine-readable public artifacts | `schemas/*.schema.json` | all |
 
 No implementation plan may silently weaken a normative requirement. A genuine
@@ -156,7 +156,7 @@ modules and deterministic delta ordering under legal Work permutations, emits
 an inspectable hierarchy and swimlane trace, and passes architectural golden
 checks.
 
-### Phase 6 — Release audit and v0.1 publication
+### Phase 6 — Release audit and v0.2 publication
 
 Run the complete spec-coverage audit, public-interface lockstep checks, clean
 clone builds, Debug assertions, Release, sanitizers, static analysis, Python
@@ -166,7 +166,7 @@ review. Remove all placeholders and stale APIs.
 
 Exit gate: every normative paragraph has implementation/test evidence or an
 explicit machine-checked declaration of unavailability allowed by the spec;
-all CI gates pass on the release commit; v0.1 artifacts and checksums are
+all CI gates pass on the release commit; v0.2 artifacts and checksums are
 published from the public repository.
 
 ## Cross-phase quality gates

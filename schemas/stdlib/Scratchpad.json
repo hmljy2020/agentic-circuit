@@ -1,7 +1,7 @@
 {
   "schema_kind": "agentic-circuit-component",
-  "schema_version": "0.1",
-  "contract_epoch": "0.1",
+  "schema_version": "0.2",
+  "contract_epoch": "0.2",
   "canonical_name": "ac.std.Scratchpad",
   "family": "storage",
   "provider_namespace": "ac.std",
@@ -11,7 +11,7 @@
     "symbol": "gfsim::Scratchpad",
     "language": "c++20",
     "concept": "gfsim::Component",
-    "toolchain_target": "ac-gfsim-cxx20-v0.1",
+    "toolchain_target": "ac-gfsim-cxx20-v0.2",
     "functional_policy": "none"
   },
   "static_parameters": [
@@ -149,5 +149,5 @@
     ],
     "histograms": []
   },
-  "schema_fingerprint": "sha256:999cf684eee989137c98a940e7a1cd855c298b018adbf38029f2bb27039627e7"
+  "schema_fingerprint": "sha256:75bd38f28a4ba10510d5337a0253046de18d4b1eafc5a67740f4c86afc8732b8"
 }

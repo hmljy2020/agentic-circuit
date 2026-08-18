@@ -83,7 +83,7 @@ publicationFingerprint(const BuildRequest &request, const SourceBundle &bundle,
       {"python_version", request.frontend.pythonVersion},
       {"helpers", std::move(helpers)}};
   llvm::json::Object preimage{
-      {"domain", "agentic-circuit-generated-build-0.1"},
+      {"domain", "agentic-circuit-generated-build-0.2"},
       {"source_bundle", bundle.sourceFingerprint},
       {"compile_plan", compilePlan.fingerprint},
       {"project", llvm::json::Object{{"name", request.project.name},

@@ -24,6 +24,8 @@ enum class ProcessWakeKind : uint8_t {
   Resource,
   EventQueue,
   NextDelta,
+  QueueReadable,
+  QueueWritable,
 };
 
 struct ProcessWake {
@@ -180,6 +182,12 @@ public:
         case ProcessWakeKind::NextDelta:
           kind = "next_delta";
           break;
+        case ProcessWakeKind::QueueReadable:
+          kind = "queue_readable";
+          break;
+        case ProcessWakeKind::QueueWritable:
+          kind = "queue_writable";
+          break;
         }
         state.subscriptions.push_back(kind + ":" +
                                       std::to_string(committedWake_->id));
@@ -192,6 +200,34 @@ public:
     if (committedStatus_ != ProcessStatus::Suspended || !committedWake_ ||
         *committedWake_ != wake || committedContinuationId_ != continuationId)
       return false;
+    committedStatus_ = ProcessStatus::Runnable;
+    committedWake_.reset();
+    return true;
+  }
+
+  bool activateFrom(ObjectId sourceId) override {
+    if (committedStatus_ == ProcessStatus::Runnable)
+      return true;
+    if (committedStatus_ != ProcessStatus::Suspended || !committedWake_)
+      return false;
+
+    switch (committedWake_->kind) {
+    case ProcessWakeKind::QueueReadable:
+    case ProcessWakeKind::QueueWritable:
+      if (committedWake_->id != sourceId)
+        return false;
+      break;
+    case ProcessWakeKind::NextDelta:
+      if (sourceId != id())
+        return false;
+      break;
+    case ProcessWakeKind::Condition:
+    case ProcessWakeKind::Resource:
+    case ProcessWakeKind::EventQueue:
+      if (committedWake_->id != 0 && committedWake_->id != sourceId)
+        return false;
+      break;
+    }
     committedStatus_ = ProcessStatus::Runnable;
     committedWake_.reset();
     return true;

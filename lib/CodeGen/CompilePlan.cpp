@@ -160,7 +160,7 @@ llvm::Expected<Fingerprint>
 toolchainFingerprint(const ToolchainIdentity &toolchain) {
   std::vector<std::string> flags = toolchain.contractFlags;
   std::sort(flags.begin(), flags.end());
-  llvm::json::Object identity{{"domain", "acsim-toolchain-0.1"},
+  llvm::json::Object identity{{"domain", "acsim-toolchain-0.2"},
                               {"compiler_path", toolchain.compilerPath},
                               {"compiler_name", toolchain.compilerName},
                               {"compiler_build_id", toolchain.compilerBuildId},
@@ -183,7 +183,7 @@ bool provenanceMatches(const PrebuiltProvenance &provenance,
          provenance.standardLibrary == toolchain.standardLibrary &&
          provenance.abiMode == toolchain.abiMode &&
          provenance.objectFormat == toolchain.objectFormat &&
-         provenance.contractEpoch == "0.1" && actualFlags == expectedFlags &&
+         provenance.contractEpoch == "0.2" && actualFlags == expectedFlags &&
          provenance.toolchainFingerprint == toolchain.fingerprint &&
          isValidFingerprint(provenance.sourceFingerprint);
 }
@@ -401,7 +401,7 @@ llvm::Error preflightBuildRequest(const BuildRequest &request) {
 }
 
 llvm::Error CompilePlan::validate() const {
-  if (schema != "acsim-compile-plan-0.1")
+  if (schema != "acsim-compile-plan-0.2")
     return buildError("ACLOWER-FINGERPRINT", "compile plan schema is invalid");
   if (!isValidFingerprint(sourceFingerprint) ||
       !isValidFingerprint(toolchainFingerprint) ||
@@ -557,7 +557,7 @@ llvm::Expected<CompilePlan> createCompilePlan(const BuildRequest &request,
                                     {"-o", plan.executablePath});
   plan.linkCommand.output = plan.executablePath;
 
-  llvm::json::Object preimage{{"domain", "acsim-compile-plan-0.1"},
+  llvm::json::Object preimage{{"domain", "acsim-compile-plan-0.2"},
                               {"plan", planJson(plan, "")}};
   auto fingerprint =
       fingerprintCanonicalJson(llvm::json::Value(std::move(preimage)));

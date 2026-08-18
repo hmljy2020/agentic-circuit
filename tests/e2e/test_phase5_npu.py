@@ -83,7 +83,7 @@ def _selected_result(run_directory: Path) -> dict[str, object]:
     }
     return {
         "schema": "phase5-npu-result",
-        "version": "0.1",
+        "version": "0.2",
         "status": result["status"],
         "termination_reason": result["termination_reason"],
         "simulated_ticks": result["simulated_ticks"],

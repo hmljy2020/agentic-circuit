@@ -1,7 +1,7 @@
 {
   "schema_kind": "agentic-circuit-component",
-  "schema_version": "0.1",
-  "contract_epoch": "0.1",
+  "schema_version": "0.2",
+  "contract_epoch": "0.2",
   "canonical_name": "ac.std.TimeDomainBridge",
   "family": "adaptation",
   "provider_namespace": "ac.std",
@@ -11,7 +11,7 @@
     "symbol": "gfsim::TimeDomainBridge",
     "language": "c++20",
     "concept": "gfsim::Component",
-    "toolchain_target": "ac-gfsim-cxx20-v0.1",
+    "toolchain_target": "ac-gfsim-cxx20-v0.2",
     "functional_policy": "none"
   },
   "static_parameters": [
@@ -119,5 +119,5 @@
     "gauges": [],
     "histograms": []
   },
-  "schema_fingerprint": "sha256:73374f48585cace5450a704a12bb002021e1df89f88c8eadb36bfc0805e90b52"
+  "schema_fingerprint": "sha256:d579d5e1288579f646a3d593bba29712e6553eefe9da23883d5eeeeb245bc98a"
 }

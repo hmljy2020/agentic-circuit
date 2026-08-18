@@ -13,13 +13,14 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <string>
+#include <sstream>
 
 namespace acir::test {
 
 inline mlir::OwningOpRef<mlir::ModuleOp>
 parseAndFreezeYieldOnly(mlir::MLIRContext &context) {
   constexpr llvm::StringLiteral source = R"mlir(
-    builtin.module attributes {ac.contract_epoch = "0.1"} {
+    builtin.module attributes {ac.contract_epoch = "0.2"} {
       ac.system @soc root @Top as "root" tick 0 "cycle"
           workload @Top::@workload seed {kind = "fixed", value = 0 : i64}
           instrumentation [] results {id = "default", format = "json"}
@@ -41,9 +42,96 @@ parseAndFreezeYieldOnly(mlir::MLIRContext &context) {
 }
 
 inline mlir::OwningOpRef<mlir::ModuleOp>
+parseAndFreezeQueueActions(mlir::MLIRContext &context) {
+  constexpr llvm::StringLiteral source = R"mlir(
+    builtin.module attributes {ac.contract_epoch = "0.2"} {
+      ac.protocol @fifo {
+        ac.role @sender dual @receiver cardinality "exclusive"
+        ac.role @receiver dual @sender cardinality "exclusive"
+        ac.state @idle initial true terminal false
+        ac.event @push from @sender to @receiver payload i32 action "offer"
+        ac.transition from @idle to @idle on @push transfer true retain false guard {}
+      }
+      ac.system @soc root @Top as "root" tick 0 "cycle"
+          workload @Top::@workload seed {kind = "fixed", value = 0 : i64}
+          instrumentation [] results {id = "default", format = "json"}
+          selected true
+      ac.module @Top() parameters {} graph {
+        ac.queue @fifo_queue payload i32 entries 1 ordering "fifo" protocol @fifo
+            ownership "exclusive" id "fifo_queue" path "fifo_queue"
+        ac.process @workload kind "workload" {
+          %value = arith.constant 10 : i32
+          %accepted = ac.try_send @fifo_queue %value : i32
+          scf.if %accepted {
+          } else {
+            ac.await_queue @fifo_queue until "writable"
+          }
+          %received_value, %received = ac.try_recv @fifo_queue : i32
+          scf.if %received {
+          } else {
+            ac.await_queue @fifo_queue until "readable"
+          }
+          ac.yield_sim
+        }
+        ac.return
+      }
+    }
+  )mlir";
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(source, &context);
+  if (!module)
+    return {};
+  mlir::PassManager manager(&context);
+  manager.addPass(createFreezeTopologyPass());
+  if (mlir::failed(manager.run(*module)))
+    return {};
+  return module;
+}
+
+inline mlir::OwningOpRef<mlir::ModuleOp>
+parseAndFreezeManyQueueActions(mlir::MLIRContext &context, unsigned count) {
+  std::ostringstream source;
+  source << R"mlir(
+    builtin.module attributes {ac.contract_epoch = "0.2"} {
+      ac.protocol @fifo {
+        ac.role @sender dual @receiver cardinality "exclusive"
+        ac.role @receiver dual @sender cardinality "exclusive"
+        ac.state @idle initial true terminal false
+        ac.event @push from @sender to @receiver payload i32 action "offer"
+        ac.transition from @idle to @idle on @push transfer true retain false guard {}
+      }
+      ac.system @soc root @Top as "root" tick 0 "cycle"
+          workload @Top::@workload seed {kind = "fixed", value = 0 : i64}
+          instrumentation [] results {id = "default", format = "json"}
+          selected true
+      ac.module @Top() parameters {} graph {
+)mlir";
+  for (unsigned index = 0; index < count; ++index)
+    source << "ac.queue @q" << index
+           << " payload i32 entries 1 bytes 4 ordering \"fifo\" protocol @fifo "
+              "ownership \"exclusive\" id \"q"
+           << index << "\" path \"q" << index << "\"\n";
+  source << "ac.process @workload kind \"workload\" {\n"
+            "%value = arith.constant 7 : i32\n";
+  for (unsigned index = 0; index < count; ++index)
+    source << "%accepted" << index << " = ac.try_send @q" << index
+           << " %value : i32\nscf.if %accepted" << index
+           << " { } else { ac.await_queue @q" << index
+           << " until \"writable\" }\n";
+  source << "ac.yield_sim\n}\nac.return\n}\n}\n";
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(source.str(), &context);
+  if (!module)
+    return {};
+  mlir::PassManager manager(&context);
+  manager.addPass(createFreezeTopologyPass());
+  if (mlir::failed(manager.run(*module)))
+    return {};
+  return module;
+}
+
+inline mlir::OwningOpRef<mlir::ModuleOp>
 parseAndFreezeLoopActions(mlir::MLIRContext &context) {
   constexpr llvm::StringLiteral source = R"mlir(
-    builtin.module attributes {ac.contract_epoch = "0.1"} {
+    builtin.module attributes {ac.contract_epoch = "0.2"} {
       ac.system @soc root @Top as "root" tick 0 "cycle"
           workload @Top::@workload seed {kind = "fixed", value = 0 : i64}
           instrumentation [] results {id = "default", format = "json"}
@@ -104,7 +192,7 @@ inline mlir::OwningOpRef<mlir::ModuleOp>
 parseAndFreezeYieldPermutation(mlir::MLIRContext &context,
                                bool reverseDeclarations) {
   constexpr llvm::StringLiteral alphaFirst = R"mlir(
-    builtin.module attributes {ac.contract_epoch = "0.1"} {
+    builtin.module attributes {ac.contract_epoch = "0.2"} {
       ac.system @soc root @Top as "root" tick 0 "cycle"
           workload @Top::@workload seed {kind = "fixed", value = 0 : i64}
           instrumentation [] results {id = "default", format = "json"}
@@ -117,7 +205,7 @@ parseAndFreezeYieldPermutation(mlir::MLIRContext &context,
     }
   )mlir";
   constexpr llvm::StringLiteral workloadFirst = R"mlir(
-    builtin.module attributes {ac.contract_epoch = "0.1"} {
+    builtin.module attributes {ac.contract_epoch = "0.2"} {
       ac.system @soc root @Top as "root" tick 0 "cycle"
           workload @Top::@workload seed {kind = "fixed", value = 0 : i64}
           instrumentation [] results {id = "default", format = "json"}
@@ -143,7 +231,7 @@ parseAndFreezeYieldPermutation(mlir::MLIRContext &context,
 inline mlir::OwningOpRef<mlir::ModuleOp>
 parseEmptyModel(mlir::MLIRContext &context) {
   return mlir::parseSourceString<mlir::ModuleOp>(
-      "builtin.module attributes {ac.contract_epoch = \"0.1\"} {}", &context);
+      "builtin.module attributes {ac.contract_epoch = \"0.2\"} {}", &context);
 }
 
 inline std::string takeError(llvm::Error error) {

@@ -18,23 +18,23 @@ namespace acir {
 namespace {
 
 llvm::StringRef kFrozenTwoRowModule = R"mlir(
-module attributes {ac.contract_epoch = "0.1", ac.freeze_epoch = "0.1", ac.frozen_instrumentation = [], ac.frozen_owners = [{kind = "ac.system_root", owner = @Top, path = "root", stable_id = "root"}, {kind = "ac.instance", owner = @Top::@child, path = "root.child", stable_id = "root/child"}, {kind = "ac.process", owner = @Top::@workload, path = "root.workload", stable_id = "root/workload"}], ac.frozen_primary_workload = {path = "root.workload", reference = @Top::@workload, stable_id = "root/workload"}, ac.frozen_system = @soc, ac.topology_digest = "436e44d5702daf1fc6a3d94ae7248e7d3f89ae5d17cfa8e8344caa22ec661379", ac.topology_frozen = true} {
+module attributes {ac.contract_epoch = "0.2"} {
   ac.system @soc root @Top as "root" tick 0 "cycle" workload @Top::@workload seed {kind = "fixed", value = 7 : i64} instrumentation [] results {format = "json", id = "default"} selected true
   ac.module @Child() parameters {} graph {
     ac.return
   }
   ac.module @Top() parameters {} graph {
-    ac.instance @child of @Child() static {} id "child" path "child" {ac.frozen_owners = [{kind = "ac.instance", owner = @Top::@child, path = "root.child", stable_id = "root/child"}]} : () -> ()
+    ac.instance @child of @Child() static {} id "child" path "child" : () -> ()
     ac.process @workload kind "workload" {
       ac.yield_sim
-    } {ac.frozen_owners = [{kind = "ac.process", owner = @Top::@workload, path = "root.workload", stable_id = "root/workload"}], ac.frozen_process_skeleton = ["process/r0/b0/o0 ac.yield_sim{}props=<<NULL ATTRIBUTE>> operands= results= regions="]}
+    }
     ac.return
   }
 }
 )mlir";
 
 llvm::StringRef kAdversarialModuleOrder = R"mlir(
-module attributes {ac.contract_epoch = "0.1"} {
+module attributes {ac.contract_epoch = "0.2"} {
   ac.system @soc root @A as "root" tick 0 "cycle" workload @A::@workload seed {kind = "fixed", value = 7 : i64} instrumentation [] results {format = "json", id = "default"} selected true
   ac.module @A() parameters {} graph {
     ac.instance @child of @Z() static {} id "child" path "child" : () -> ()
@@ -46,7 +46,7 @@ module attributes {ac.contract_epoch = "0.1"} {
 )mlir";
 
 llvm::StringRef kCyclicModuleOrder = R"mlir(
-module attributes {ac.contract_epoch = "0.1"} {
+module attributes {ac.contract_epoch = "0.2"} {
   ac.system @soc root @A as "root" tick 0 "cycle" workload @A::@workload seed {kind = "fixed", value = 7 : i64} instrumentation [] results {format = "json", id = "default"} selected true
   ac.module @A() parameters {} graph {
     ac.instance @b of @B() static {} id "b" path "b" : () -> ()
@@ -61,7 +61,7 @@ module attributes {ac.contract_epoch = "0.1"} {
 )mlir";
 
 llvm::StringRef kAdversarialModuleOrderRenamedPlacement = R"mlir(
-module attributes {ac.contract_epoch = "0.1"} {
+module attributes {ac.contract_epoch = "0.2"} {
   ac.system @soc root @A as "root" tick 0 "cycle" workload @A::@workload seed {kind = "fixed", value = 7 : i64} instrumentation [] results {format = "json", id = "default"} selected true
   ac.module @A() parameters {} graph {
     ac.instance @offspring of @Z() static {} id "offspring" path "offspring" : () -> ()
@@ -73,7 +73,7 @@ module attributes {ac.contract_epoch = "0.1"} {
 )mlir";
 
 llvm::StringRef kInvalidGeneratedModuleName = R"mlir(
-module attributes {ac.contract_epoch = "0.1"} {
+module attributes {ac.contract_epoch = "0.2"} {
   ac.system @soc root @"bad-name" as "root" tick 0 "cycle"
       workload @"bad-name"::@workload seed {kind = "fixed", value = 7 : i64}
       instrumentation [] results {format = "json", id = "default"} selected true
@@ -93,8 +93,15 @@ protected:
   }
 
   mlir::OwningOpRef<mlir::ModuleOp> parseFrozen() {
-    return mlir::parseSourceString<mlir::ModuleOp>(kFrozenTwoRowModule,
-                                                   &context);
+    auto module =
+        mlir::parseSourceString<mlir::ModuleOp>(kFrozenTwoRowModule, &context);
+    if (!module)
+      return {};
+    mlir::PassManager freezer(&context);
+    freezer.addPass(createFreezeTopologyPass());
+    if (mlir::failed(freezer.run(module.get())))
+      return {};
+    return module;
   }
 
   mlir::DialectRegistry registry;

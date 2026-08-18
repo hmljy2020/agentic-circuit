@@ -216,8 +216,8 @@ llvm::Error validateManifest(const BuildManifest &manifest,
   if (manifest.schema != "agentic-circuit-build-manifest")
     return manifestError(
         "manifest schema must be agentic-circuit-build-manifest");
-  if (manifest.version != "0.1" || manifest.contractEpoch != "0.1")
-    return manifestError("manifest version and contract epoch must be 0.1");
+  if (manifest.version != "0.2" || manifest.contractEpoch != "0.2")
+    return manifestError("manifest version and contract epoch must be 0.2");
   if (manifest.project.name.empty() || manifest.project.identity.empty() ||
       manifest.system.name.empty() || manifest.system.identity.empty())
     return manifestError("project and system identities must be non-empty");
@@ -228,7 +228,7 @@ llvm::Error validateManifest(const BuildManifest &manifest,
     return manifestError("compiler identity must be complete");
   if (manifest.buildProfile != "fast" && manifest.buildProfile != "validated" &&
       manifest.buildProfile != "custom")
-    return manifestError("build_profile is not a closed v0.1 value");
+    return manifestError("build_profile is not a closed v0.2 value");
   if (requireBuildFingerprint && !isValidFingerprint(manifest.buildFingerprint))
     return manifestError("build_fingerprint is invalid");
 
@@ -374,7 +374,7 @@ llvm::Error BuildManifest::finalizeBuildFingerprint() {
     return error;
 
   llvm::json::Object preimage{
-      {"domain", "agentic-circuit-build-0.1"},
+      {"domain", "agentic-circuit-build-0.2"},
       {"manifest", manifestJson(*this, "")},
   };
   auto fingerprint =

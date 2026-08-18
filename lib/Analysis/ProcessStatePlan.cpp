@@ -23,9 +23,9 @@ namespace {
 thread_local std::string lastDiagnostic;
 
 constexpr llvm::StringLiteral kWakeNextDeltaSpecialization =
-    R"json({"contract_epoch":"0.1","effect":"stateful","inputs":[],"kind":"implementation","payload":{"wake_kind":"next_delta","wake_type":"@acir_wake_next_delta"},"results":["@acir_wake_next_delta"],"role":"wake_next_delta","schema":"acir-generated-implementation-0.1","source_paths":[]})json";
+    R"json({"contract_epoch":"0.2","effect":"stateful","inputs":[],"kind":"implementation","payload":{"wake_kind":"next_delta","wake_type":"@acir_wake_next_delta"},"results":["@acir_wake_next_delta"],"role":"wake_next_delta","schema":"acir-generated-implementation-0.2","source_paths":[]})json";
 constexpr llvm::StringLiteral kWakeNextDeltaDigest =
-    "63cacba5c3eb82976464804b4aeaa17d43b445733efaddfad7c7bec1ab650269";
+    "27cb4376e0c3f696c7a3d65ba8612843ec70b21d944add7d0b26efb005a04d8c";
 
 mlir::LogicalResult reject(const ProcessStatePlanSet &plans,
                            llvm::StringRef diagnostic) {
@@ -39,6 +39,17 @@ bool validDefinitionKey(llvm::StringRef key) {
   size_t separator = key.find("::");
   return separator > 1 && separator + 3 < key.size() && key.front() == '@' &&
          key[separator + 2] == '@' && key.find("::", separator + 2) == key.npos;
+}
+
+std::string scalarStorageCppType(mlir::Type type) {
+  if (type.isIndex())
+    return "std::size_t";
+  auto integer = mlir::dyn_cast<mlir::IntegerType>(type);
+  if (!integer)
+    return {};
+  if (integer.getWidth() == 1)
+    return "bool";
+  return ("std::int" + llvm::Twine(integer.getWidth()) + "_t").str();
 }
 
 llvm::StringRef helperRoleSpelling(ProcessHelperRole role) {
@@ -65,15 +76,36 @@ llvm::StringRef helperRoleSpelling(ProcessHelperRole role) {
                                                   "wake_event_queue",
                                                   "wake_next_delta",
                                                   "scalar_wrap",
-                                                  "scalar_unwrap"};
+                                                  "scalar_unwrap",
+                                                  "wake_queue_readable",
+                                                  "wake_queue_writable"};
   return names[static_cast<unsigned>(role)];
 }
 
 llvm::StringRef wakeTypeKey(ProcessWakeKind kind) {
   static constexpr llvm::StringLiteral keys[] = {
-      "@acir_wake_condition", "@acir_wake_resource", "@acir_wake_event_queue",
-      "@acir_wake_next_delta"};
+      "@acir_wake_condition",      "@acir_wake_resource",
+      "@acir_wake_event_queue",    "@acir_wake_next_delta",
+      "@acir_wake_queue_readable", "@acir_wake_queue_writable"};
   return keys[static_cast<unsigned>(kind)];
+}
+
+ProcessHelperRole wakeHelperRole(ProcessWakeKind kind) {
+  switch (kind) {
+  case ProcessWakeKind::Condition:
+    return ProcessHelperRole::WakeCondition;
+  case ProcessWakeKind::Resource:
+    return ProcessHelperRole::WakeResource;
+  case ProcessWakeKind::EventQueue:
+    return ProcessHelperRole::WakeEventQueue;
+  case ProcessWakeKind::NextDelta:
+    return ProcessHelperRole::WakeNextDelta;
+  case ProcessWakeKind::QueueReadable:
+    return ProcessHelperRole::WakeQueueReadable;
+  case ProcessWakeKind::QueueWritable:
+    return ProcessHelperRole::WakeQueueWritable;
+  }
+  llvm_unreachable("unknown wake kind");
 }
 
 bool validTypeKey(llvm::StringRef key) {
@@ -84,11 +116,15 @@ bool validTypeKey(llvm::StringRef key) {
   };
   if (key.starts_with("mlir:"))
     return key.size() > 5;
+  if (key.starts_with("queue-ref:@"))
+    return key.size() > 11;
   if (key.consume_front("storage:value:") ||
       key.consume_front("storage:packet:"))
     return validDigest(key);
   return key == "@acir_wake_condition" || key == "@acir_wake_resource" ||
-         key == "@acir_wake_event_queue" || key == "@acir_wake_next_delta";
+         key == "@acir_wake_event_queue" || key == "@acir_wake_next_delta" ||
+         key == "@acir_wake_queue_readable" ||
+         key == "@acir_wake_queue_writable";
 }
 
 bool validCalleeSemantics(const ProcessGeneratedCalleePlan &callee) {
@@ -130,10 +166,13 @@ bool validCalleeSemantics(const ProcessGeneratedCalleePlan &callee) {
            inputs[0] == payload.traceDecode().entry() &&
            results[0] == payload.traceDecode().result();
   case ProcessHelperRole::QueueTrySend:
-    return inputs.size() == 1 && results.size() == 1 &&
-           inputs[0] == payload.queueTrySend().element();
+    return inputs.size() == 2 && results.size() == 1 &&
+           inputs[0] == ("queue-ref:" + payload.queueTrySend().queue()).str() &&
+           inputs[1] == payload.queueTrySend().element();
   case ProcessHelperRole::QueueTryRecv:
-    return inputs.empty() && results.size() == 2 &&
+    return inputs.size() == 1 &&
+           inputs[0] == ("queue-ref:" + payload.queueTryRecv().queue()).str() &&
+           results.size() == 2 &&
            results[0] == payload.queueTryRecv().element();
   case ProcessHelperRole::EventSchedule:
     return inputs.size() == 2 && results.empty() &&
@@ -181,6 +220,22 @@ bool validCalleeSemantics(const ProcessGeneratedCalleePlan &callee) {
            payload.wakeNextDelta().wakeType() ==
                wakeTypeKey(ProcessWakeKind::NextDelta) &&
            results[0] == payload.wakeNextDelta().wakeType();
+  case ProcessHelperRole::WakeQueueReadable:
+    return inputs.size() == 1 && results.size() == 1 &&
+           inputs[0].starts_with("queue-ref:@") &&
+           payload.wakeEventQueue().wakeKind() ==
+               ProcessWakeKind::QueueReadable &&
+           payload.wakeEventQueue().wakeType() ==
+               wakeTypeKey(ProcessWakeKind::QueueReadable) &&
+           results[0] == payload.wakeEventQueue().wakeType();
+  case ProcessHelperRole::WakeQueueWritable:
+    return inputs.size() == 1 && results.size() == 1 &&
+           inputs[0].starts_with("queue-ref:@") &&
+           payload.wakeEventQueue().wakeKind() ==
+               ProcessWakeKind::QueueWritable &&
+           payload.wakeEventQueue().wakeType() ==
+               wakeTypeKey(ProcessWakeKind::QueueWritable) &&
+           results[0] == payload.wakeEventQueue().wakeType();
   case ProcessHelperRole::ScalarWrap:
     return inputs.size() == 1 && results.size() == 1 &&
            payload.scalarWrap().direction() == ProcessWrapperDirection::Wrap &&
@@ -208,8 +263,8 @@ detail::PlanSetBuilder::buildEmpty(mlir::ModuleOp module) {
     return mlir::failure();
   }
   auto epoch = module->getAttrOfType<mlir::StringAttr>("ac.contract_epoch");
-  if (!epoch || epoch.getValue() != "0.1") {
-    module.emitError("empty process-state fixture requires contract epoch 0.1");
+  if (!epoch || epoch.getValue() != "0.2") {
+    module.emitError("empty process-state fixture requires contract epoch 0.2");
     return mlir::failure();
   }
   return ProcessStatePlanSet(std::make_shared<ProcessStatePlanSet::Impl>());
@@ -219,8 +274,8 @@ mlir::FailureOr<ProcessStatePlanSet>
 detail::PlanSetBuilder::buildProduction(mlir::ModuleOp module,
                                         const ProcessStateLimits &limits) {
   auto frozenEpoch = module->getAttrOfType<mlir::StringAttr>("ac.freeze_epoch");
-  if (!frozenEpoch || frozenEpoch.getValue() != "0.1") {
-    module.emitError("process-state planning requires a frozen v0.1 model");
+  if (!frozenEpoch || frozenEpoch.getValue() != "0.2") {
+    module.emitError("process-state planning requires a frozen v0.2 model");
     return mlir::failure();
   }
 
@@ -269,9 +324,7 @@ detail::PlanSetBuilder::buildProduction(mlir::ModuleOp module,
 
   auto makeWakePayload = [](ProcessWakeKind kind) {
     auto payload = std::make_shared<ProcessGeneratedCalleePayload::Impl>();
-    payload->role = static_cast<ProcessHelperRole>(
-        static_cast<unsigned>(ProcessHelperRole::WakeCondition) +
-        static_cast<unsigned>(kind));
+    payload->role = wakeHelperRole(kind);
     switch (kind) {
     case ProcessWakeKind::Condition: {
       auto arm = std::make_shared<ProcessWakeConditionPayload::Impl>();
@@ -301,24 +354,46 @@ detail::PlanSetBuilder::buildProduction(mlir::ModuleOp module,
       payload->wakeNextDelta = ProcessWakeNextDeltaPayload(arm);
       break;
     }
+    case ProcessWakeKind::QueueReadable:
+    case ProcessWakeKind::QueueWritable: {
+      auto arm = std::make_shared<ProcessWakeEventQueuePayload::Impl>();
+      arm->wakeKind = kind;
+      arm->wakeType = wakeTypeKey(kind).str();
+      payload->wakeEventQueue = ProcessWakeEventQueuePayload(arm);
+      break;
+    }
     }
     return ProcessGeneratedCalleePayload(payload);
   };
 
-  llvm::SmallVector<bool, 4> usedWakeKinds(4, false);
+  std::set<unsigned> usedWakeKinds;
   for (const PendingProcess &item : pending)
     for (const auto &wake : item.control->wakes)
-      usedWakeKinds[static_cast<unsigned>(wake->kind)] = true;
+      usedWakeKinds.insert(static_cast<unsigned>(wake->kind));
   std::vector<std::shared_ptr<ProcessGeneratedCalleePlan::Impl>> callees;
-  for (unsigned kindIndex = 0; kindIndex < usedWakeKinds.size(); ++kindIndex) {
-    if (!usedWakeKinds[kindIndex])
-      continue;
+  for (unsigned kindIndex : usedWakeKinds) {
     ProcessWakeKind kind = static_cast<ProcessWakeKind>(kindIndex);
     auto callee = std::make_shared<ProcessGeneratedCalleePlan::Impl>();
     callee->effect = ProcessEffectKind::Stateful;
-    callee->role = static_cast<ProcessHelperRole>(
-        static_cast<unsigned>(ProcessHelperRole::WakeCondition) + kindIndex);
+    callee->role = wakeHelperRole(kind);
     callee->payload = makeWakePayload(kind);
+    if (kind == ProcessWakeKind::QueueReadable ||
+        kind == ProcessWakeKind::QueueWritable) {
+      callee->inputTypeKeyStorage = {"queue-ref:@queue"};
+      callee->inputTypeKeys = {callee->inputTypeKeyStorage.front()};
+      std::map<std::string, mlir::Operation *> sourcesByPath;
+      for (const PendingProcess &item : pending)
+        for (const auto &wake : item.control->wakes)
+          if (wake->kind == kind) {
+            sourcesByPath.emplace(wake->operationPath, wake->operation);
+          }
+      for (const auto &[path, operation] : sourcesByPath) {
+        callee->sourcePathStorage.push_back(path);
+        callee->sourceOperations.push_back(operation);
+      }
+      for (const std::string &path : callee->sourcePathStorage)
+        callee->sourcePaths.push_back(path);
+    }
     callee->resultTypeKeyStorage = {wakeTypeKey(kind).str()};
     callee->resultTypeKeys = {callee->resultTypeKeyStorage.front()};
     ProcessGeneratedCalleePlan value(callee);
@@ -344,6 +419,156 @@ detail::PlanSetBuilder::buildProduction(mlir::ModuleOp module,
     stream << type;
     return storage;
   };
+
+  struct QueueCalleeKey {
+    ProcessHelperRole role;
+    std::string element;
+    auto operator<=>(const QueueCalleeKey &) const = default;
+  };
+  std::map<QueueCalleeKey, llvm::SmallVector<ProcessActionPlan>> queueActions;
+  for (const PendingProcess &item : pending) {
+    for (const auto &block : item.control->blocks) {
+      for (const ProcessActionPlan &action : block->actions) {
+        mlir::Operation *source = action.sourceOperation();
+        if (auto send = mlir::dyn_cast_or_null<ac::TrySendOp>(source)) {
+          queueActions[QueueCalleeKey{
+                           ProcessHelperRole::QueueTrySend,
+                           "mlir:" + typeSpelling(send.getValue().getType())}]
+              .push_back(action);
+        } else if (auto recv = mlir::dyn_cast_or_null<ac::TryRecvOp>(source)) {
+          queueActions[QueueCalleeKey{
+                           ProcessHelperRole::QueueTryRecv,
+                           "mlir:" + typeSpelling(recv.getValue().getType())}]
+              .push_back(action);
+        }
+      }
+    }
+  }
+  for (auto &[key, actions] : queueActions) {
+    auto payload = std::make_shared<ProcessGeneratedCalleePayload::Impl>();
+    payload->role = key.role;
+    if (key.role == ProcessHelperRole::QueueTrySend) {
+      auto arm = std::make_shared<ProcessQueueTrySendPayload::Impl>();
+      arm->queue = "@queue";
+      arm->element = key.element;
+      payload->queueTrySend = ProcessQueueTrySendPayload(arm);
+    } else {
+      auto arm = std::make_shared<ProcessQueueTryRecvPayload::Impl>();
+      arm->queue = "@queue";
+      arm->element = key.element;
+      payload->queueTryRecv = ProcessQueueTryRecvPayload(arm);
+    }
+    auto callee = std::make_shared<ProcessGeneratedCalleePlan::Impl>();
+    callee->effect = ProcessEffectKind::Stateful;
+    callee->role = key.role;
+    callee->payload = ProcessGeneratedCalleePayload(payload);
+    callee->inputTypeKeyStorage = {"queue-ref:@queue"};
+    if (key.role == ProcessHelperRole::QueueTrySend)
+      callee->inputTypeKeyStorage.push_back(key.element);
+    callee->resultTypeKeyStorage =
+        key.role == ProcessHelperRole::QueueTrySend
+            ? std::vector<std::string>{"mlir:i1"}
+            : std::vector<std::string>{key.element, "mlir:i1"};
+    for (const std::string &value : callee->inputTypeKeyStorage)
+      callee->inputTypeKeys.push_back(value);
+    for (const std::string &value : callee->resultTypeKeyStorage)
+      callee->resultTypeKeys.push_back(value);
+    llvm::StringSet<> paths;
+    llvm::SmallPtrSet<mlir::Operation *, 4> sources;
+    llvm::SmallPtrSet<mlir::Operation *, 2> declarations;
+    for (const ProcessActionPlan &action : actions) {
+      mlir::Operation *source = action.sourceOperation();
+      sources.insert(source);
+      paths.insert(action.occurrence().original().operationPath());
+      mlir::FlatSymbolRefAttr queue =
+          mlir::isa<ac::TrySendOp>(source)
+              ? mlir::cast<ac::TrySendOp>(source).getQueueAttr()
+              : mlir::cast<ac::TryRecvOp>(source).getQueueAttr();
+      mlir::Operation *declaration =
+          mlir::SymbolTable::lookupNearestSymbolFrom(source, queue);
+      if (!declaration)
+        if (auto owner = source->getParentOfType<ac::ModuleOp>())
+          for (mlir::Operation &candidate : owner.getBody().front()) {
+            auto symbol = candidate.getAttrOfType<mlir::StringAttr>(
+                mlir::SymbolTable::getSymbolAttrName());
+            if (symbol && symbol.getValue() == queue.getValue()) {
+              declaration = &candidate;
+              break;
+            }
+          }
+      if (declaration)
+        declarations.insert(declaration);
+    }
+    callee->sourceOperations.assign(sources.begin(), sources.end());
+    callee->declarations.assign(declarations.begin(), declarations.end());
+    for (const auto &path : paths)
+      callee->sourcePathStorage.push_back(path.getKey().str());
+    llvm::sort(callee->sourcePathStorage);
+    for (const std::string &path : callee->sourcePathStorage)
+      callee->sourcePaths.push_back(path);
+    ProcessGeneratedCalleePlan value(callee);
+    auto canonical = canonicalGeneratedCalleeSpecialization(value);
+    if (!canonical) {
+      llvm::consumeError(canonical.takeError());
+      return mlir::failure();
+    }
+    callee->specializationBytes = std::move(*canonical);
+    callee->fingerprint =
+        bindings::sha256Fingerprint(callee->specializationBytes);
+    llvm::StringRef digest = llvm::StringRef(callee->fingerprint).drop_front(7);
+    callee->symbol =
+        ("@acir_impl_" + helperRoleSpelling(key.role) + "_" + digest).str();
+    callee->cpp =
+        ("acir::generated::impl_" + helperRoleSpelling(key.role) + "_" + digest)
+            .str();
+    callees.push_back(std::move(callee));
+  }
+
+  std::map<std::string, llvm::SmallVector<ProcessActionPlan>> assertActions;
+  for (const PendingProcess &item : pending)
+    for (const auto &block : item.control->blocks)
+      for (const ProcessActionPlan &action : block->actions)
+        if (auto assertion =
+                mlir::dyn_cast_or_null<ac::AssertOp>(action.sourceOperation()))
+          assertActions[assertion.getMessage().str()].push_back(action);
+  for (auto &[message, actions] : assertActions) {
+    auto arm = std::make_shared<ProcessContractAssertPayload::Impl>();
+    arm->message = message;
+    auto payload = std::make_shared<ProcessGeneratedCalleePayload::Impl>();
+    payload->role = ProcessHelperRole::ContractAssert;
+    payload->contractAssert = ProcessContractAssertPayload(arm);
+    auto callee = std::make_shared<ProcessGeneratedCalleePlan::Impl>();
+    callee->effect = ProcessEffectKind::Stateful;
+    callee->role = ProcessHelperRole::ContractAssert;
+    callee->payload = ProcessGeneratedCalleePayload(payload);
+    callee->inputTypeKeyStorage = {"mlir:i1"};
+    callee->inputTypeKeys = {callee->inputTypeKeyStorage.front()};
+    llvm::StringSet<> paths;
+    llvm::SmallPtrSet<mlir::Operation *, 4> sources;
+    for (const ProcessActionPlan &action : actions) {
+      sources.insert(action.sourceOperation());
+      paths.insert(action.occurrence().original().operationPath());
+    }
+    callee->sourceOperations.assign(sources.begin(), sources.end());
+    for (const auto &path : paths)
+      callee->sourcePathStorage.push_back(path.getKey().str());
+    llvm::sort(callee->sourcePathStorage);
+    for (const std::string &path : callee->sourcePathStorage)
+      callee->sourcePaths.push_back(path);
+    ProcessGeneratedCalleePlan value(callee);
+    auto canonical = canonicalGeneratedCalleeSpecialization(value);
+    if (!canonical) {
+      llvm::consumeError(canonical.takeError());
+      return mlir::failure();
+    }
+    callee->specializationBytes = std::move(*canonical);
+    callee->fingerprint =
+        bindings::sha256Fingerprint(callee->specializationBytes);
+    llvm::StringRef digest = llvm::StringRef(callee->fingerprint).drop_front(7);
+    callee->symbol = ("@acir_impl_contract_assert_" + digest).str();
+    callee->cpp = ("acir::generated::impl_contract_assert_" + digest).str();
+    callees.push_back(std::move(callee));
+  }
   llvm::SmallVector<mlir::Type> liveTypes;
   for (const PendingProcess &item : pending)
     for (const auto &slot : item.control->liveSlots)
@@ -376,7 +601,7 @@ detail::PlanSetBuilder::buildProduction(mlir::ModuleOp module,
         bindings::sha256Fingerprint(value->specializationBytes);
     llvm::StringRef digest = llvm::StringRef(value->fingerprint).drop_front(7);
     value->symbol = ("@acir_value_" + digest).str();
-    value->cpp = ("acir::generated::value_" + digest).str();
+    value->cpp = scalarStorageCppType(type);
     valueTypes.push_back(std::move(value));
   }
   llvm::sort(valueTypes, [](const auto &lhs, const auto &rhs) {
@@ -451,18 +676,8 @@ detail::PlanSetBuilder::buildProduction(mlir::ModuleOp module,
   llvm::sort(callees, [](const auto &lhs, const auto &rhs) {
     return lhs->specializationBytes < rhs->specializationBytes;
   });
-  std::array<ProcessCalleeId, 4> wakeCalleeIds = {
-      ProcessCalleeId(0), ProcessCalleeId(0), ProcessCalleeId(0),
-      ProcessCalleeId(0)};
   for (auto [index, callee] : llvm::enumerate(callees)) {
     callee->id = ProcessCalleeId(index);
-    if (callee->role >= ProcessHelperRole::WakeCondition &&
-        callee->role <= ProcessHelperRole::WakeNextDelta) {
-      unsigned kindIndex =
-          static_cast<unsigned>(callee->role) -
-          static_cast<unsigned>(ProcessHelperRole::WakeCondition);
-      wakeCalleeIds[kindIndex] = ProcessCalleeId(index);
-    }
   }
 
   auto set = std::make_shared<ProcessStatePlanSet::Impl>();
@@ -480,7 +695,19 @@ detail::PlanSetBuilder::buildProduction(mlir::ModuleOp module,
     for (auto &block : item.control->blocks)
       process->blocks.push_back(ProcessBlockPlan(block));
     for (auto &wake : item.control->wakes) {
-      wake->callee = wakeCalleeIds[static_cast<unsigned>(wake->kind)];
+      ProcessHelperRole role = wakeHelperRole(wake->kind);
+      auto found = llvm::find_if(callees, [&](const auto &callee) {
+        if (callee->role != role)
+          return false;
+        if (wake->kind != ProcessWakeKind::QueueReadable &&
+            wake->kind != ProcessWakeKind::QueueWritable)
+          return callee->inputTypeKeys.empty();
+        return callee->inputTypeKeys.size() == 1 &&
+               callee->inputTypeKeys.front() == "queue-ref:@queue";
+      });
+      if (found == callees.end())
+        return mlir::failure();
+      wake->callee = (*found)->id;
       process->wakes.push_back(ProcessWakePlan(wake));
     }
     for (auto &transition : item.control->transitions)
@@ -514,6 +741,53 @@ detail::PlanSetBuilder::buildProduction(mlir::ModuleOp module,
     }
     for (auto &block : item.control->blocks) {
       for (const ProcessActionPlan &action : block->actions) {
+        if (auto send = mlir::dyn_cast_or_null<ac::TrySendOp>(
+                action.sourceOperation())) {
+          std::string queueKey = "queue-ref:@queue";
+          std::string elementKey =
+              "mlir:" + typeSpelling(send.getValue().getType());
+          auto found = llvm::find_if(callees, [&](const auto &callee) {
+            return callee->role == ProcessHelperRole::QueueTrySend &&
+                   callee->inputTypeKeys.size() == 2 &&
+                   callee->inputTypeKeys[0] == queueKey &&
+                   callee->inputTypeKeys[1] == elementKey;
+          });
+          if (found == callees.end())
+            return mlir::failure();
+          std::const_pointer_cast<ProcessActionPlan::Impl>(action.impl_)
+              ->callee = (*found)->id;
+          continue;
+        }
+        if (auto recv = mlir::dyn_cast_or_null<ac::TryRecvOp>(
+                action.sourceOperation())) {
+          std::string queueKey = "queue-ref:@queue";
+          std::string elementKey =
+              "mlir:" + typeSpelling(recv.getValue().getType());
+          auto found = llvm::find_if(callees, [&](const auto &callee) {
+            return callee->role == ProcessHelperRole::QueueTryRecv &&
+                   callee->inputTypeKeys.size() == 1 &&
+                   callee->inputTypeKeys[0] == queueKey &&
+                   callee->resultTypeKeys.size() == 2 &&
+                   callee->resultTypeKeys[0] == elementKey;
+          });
+          if (found == callees.end())
+            return mlir::failure();
+          std::const_pointer_cast<ProcessActionPlan::Impl>(action.impl_)
+              ->callee = (*found)->id;
+          continue;
+        }
+        if (mlir::isa_and_nonnull<ac::AssertOp>(action.sourceOperation())) {
+          auto found = llvm::find_if(callees, [&](const auto &callee) {
+            return callee->role == ProcessHelperRole::ContractAssert &&
+                   llvm::is_contained(callee->sourceOperations,
+                                      action.sourceOperation());
+          });
+          if (found == callees.end())
+            return mlir::failure();
+          std::const_pointer_cast<ProcessActionPlan::Impl>(action.impl_)
+              ->callee = (*found)->id;
+          continue;
+        }
         if (action.kind() != ProcessActionKind::ScalarWrap &&
             action.kind() != ProcessActionKind::ScalarUnwrap)
           continue;
@@ -569,12 +843,12 @@ mlir::FailureOr<ProcessStatePlanSet>
 detail::PlanSetBuilder::buildFrozenFixture(mlir::ModuleOp module,
                                            bool requireYieldOnly) {
   auto frozenEpoch = module->getAttrOfType<mlir::StringAttr>("ac.freeze_epoch");
-  if (!frozenEpoch || frozenEpoch.getValue() != "0.1") {
+  if (!frozenEpoch || frozenEpoch.getValue() != "0.2") {
     module.emitError(requireYieldOnly
                          ? "yield-only process-state fixture requires a frozen "
-                           "v0.1 model"
+                           "v0.2 model"
                          : "loop-action process-state fixture requires a "
-                           "frozen v0.1 model");
+                           "frozen v0.2 model");
     return mlir::failure();
   }
 
@@ -1043,14 +1317,14 @@ ProcessStatePlanSet detail::PlanSetBuilder::cloneWithUnpairedLiveSlotCallee(
 
   llvm::json::Object specialization;
   specialization["acir_type"] = "i32";
-  specialization["contract_epoch"] = "0.1";
+  specialization["contract_epoch"] = "0.2";
   specialization["kind"] = "value";
   llvm::json::Object payloadObject;
   payloadObject["encoding"] = "i32";
   payloadObject["members"] = llvm::json::Array();
   payloadObject["width_bits"] = 32;
   specialization["payload"] = std::move(payloadObject);
-  specialization["schema"] = "acir-generated-value-type-0.1";
+  specialization["schema"] = "acir-generated-value-type-0.2";
   auto canonical =
       bindings::canonicalizeJson(llvm::json::Value(std::move(specialization)));
   assert(canonical && "literal value-type specialization must canonicalize");
@@ -2831,6 +3105,9 @@ detail::PlanSetBuilder::structuralError(const ProcessStatePlanSet &plans) {
       return present(p.wakeEventQueue);
     case ProcessHelperRole::WakeNextDelta:
       return present(p.wakeNextDelta);
+    case ProcessHelperRole::WakeQueueReadable:
+    case ProcessHelperRole::WakeQueueWritable:
+      return present(p.wakeEventQueue);
     case ProcessHelperRole::ScalarWrap:
       return present(p.scalarWrap);
     case ProcessHelperRole::ScalarUnwrap:
@@ -3479,7 +3756,7 @@ mlir::LogicalResult verifyProcessStatePlan(const ProcessStatePlanSet &plans,
         if (block.loads()[i - 1].slot().value() >=
             block.loads()[i].slot().value())
           return reject(plans, "process-state plan invariant violated: "
-                               "unsorted canonical order");
+                               "unsorted canonical order (block loads)");
       uint64_t expectedCost = block.loads().size();
       for (const ProcessActionPlan &action : block.actions())
         expectedCost += action.cost();
@@ -3519,6 +3796,8 @@ mlir::LogicalResult verifyProcessStatePlan(const ProcessStatePlanSet &plans,
         break;
       case ProcessWakeKind::Resource:
       case ProcessWakeKind::EventQueue:
+      case ProcessWakeKind::QueueReadable:
+      case ProcessWakeKind::QueueWritable:
         rawHandlesMatch = !wake.triggeringValue() &&
                           wake.declaration() != nullptr &&
                           !wake.target().empty();
@@ -3534,10 +3813,15 @@ mlir::LogicalResult verifyProcessStatePlan(const ProcessStatePlanSet &plans,
                       "process-state plan invariant violated: wrong type key");
       const ProcessGeneratedCalleePlan &callee =
           plans.callees()[wake.callee().value()];
-      ProcessHelperRole expectedRole = static_cast<ProcessHelperRole>(
-          static_cast<unsigned>(ProcessHelperRole::WakeCondition) +
-          static_cast<unsigned>(wake.kind()));
-      if (callee.role() != expectedRole || !callee.inputTypeKeys().empty() ||
+      ProcessHelperRole expectedRole = wakeHelperRole(wake.kind());
+      bool queueWake = wake.kind() == ProcessWakeKind::QueueReadable ||
+                       wake.kind() == ProcessWakeKind::QueueWritable;
+      bool inputsMatch = queueWake
+                             ? callee.inputTypeKeys().size() == 1 &&
+                                   callee.inputTypeKeys().front() ==
+                                       "queue-ref:@queue"
+                             : callee.inputTypeKeys().empty();
+      if (callee.role() != expectedRole || !inputsMatch ||
           callee.resultTypeKeys().size() != 1 ||
           callee.resultTypeKeys().front() != wake.typeKey())
         return reject(
@@ -3581,12 +3865,12 @@ mlir::LogicalResult verifyProcessStatePlan(const ProcessStatePlanSet &plans,
         if (transition.stores()[i - 1].slot().value() >=
             transition.stores()[i].slot().value())
           return reject(plans, "process-state plan invariant violated: "
-                               "unsorted canonical order");
+                               "unsorted canonical order (transition stores)");
       for (size_t i = 1; i < transition.loads().size(); ++i)
         if (transition.loads()[i - 1].slot().value() >=
             transition.loads()[i].slot().value())
           return reject(plans, "process-state plan invariant violated: "
-                               "unsorted canonical order");
+                               "unsorted canonical order (transition loads)");
     }
     uint64_t expectedFairness = 0;
     for (const ProcessPcPlan &pc : plan.pcs()) {
@@ -3704,7 +3988,8 @@ mlir::LogicalResult verifyProcessStatePlan(const ProcessStatePlanSet &plans,
     previousSpecialization = detail::generatedCalleeSpecializationBytes(callee);
     ProcessEffectKind expectedEffect =
         callee.role() <= ProcessHelperRole::TraceDecode ||
-                callee.role() >= ProcessHelperRole::ScalarWrap
+                callee.role() == ProcessHelperRole::ScalarWrap ||
+                callee.role() == ProcessHelperRole::ScalarUnwrap
             ? ProcessEffectKind::Pure
             : ProcessEffectKind::Stateful;
     if (callee.effect() != expectedEffect)
@@ -3787,7 +4072,10 @@ mlir::LogicalResult verifyProcessStatePlan(const ProcessStatePlanSet &plans,
     llvm::StringRef stem =
         type.kind() == ProcessValueTypeKind::Value ? "value" : "packet";
     std::string expectedSymbol = ("@acir_" + stem + "_" + digest).str();
-    std::string expectedCpp = ("acir::generated::" + stem + "_" + digest).str();
+    std::string expectedCpp = type.kind() == ProcessValueTypeKind::Value
+                                  ? scalarStorageCppType(type.acirType())
+                                  : ("acir::generated::" + stem + "_" + digest)
+                                        .str();
     if (type.kind() != type.payload().kind() || !type.acirType() ||
         *canonical != specialization || fingerprint != type.fingerprint() ||
         type.symbol() != expectedSymbol || type.cpp() != expectedCpp)

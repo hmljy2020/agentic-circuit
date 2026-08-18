@@ -1,14 +1,14 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:pto-isa:agentic-circuit:schema:diagnostic:0.1",
-  "title": "Agentic Circuit Diagnostic 0.1",
+  "$id": "urn:pto-isa:agentic-circuit:schema:diagnostic:0.2",
+  "title": "Agentic Circuit Diagnostic 0.2",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "version", "contract_epoch", "code", "stage", "severity", "source", "object_path", "message", "expected", "actual", "related", "fixits"],
   "properties": {
     "schema": {"const": "agentic-circuit-diagnostic"},
-    "version": {"const": "0.1"},
-    "contract_epoch": {"const": "0.1"},
+    "version": {"const": "0.2"},
+    "contract_epoch": {"const": "0.2"},
     "code": {"pattern": "^AC(PY|ELAB|IR-[A-Z]+|LOWER|BUILD|TRACE|RUN)-[A-Z0-9-]+$", "type": "string"},
     "stage": {"type": "string", "minLength": 1},
     "severity": {"enum": ["note", "warning", "error"]},

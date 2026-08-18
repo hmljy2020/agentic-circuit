@@ -59,7 +59,7 @@ using namespace mlir;
 namespace acir {
 namespace {
 
-constexpr llvm::StringLiteral kEpoch = "0.1";
+constexpr llvm::StringLiteral kEpoch = "0.2";
 constexpr llvm::StringLiteral kResultRoleIdentity = "acsim.result.role";
 constexpr uint64_t kMaxExpandedRows = 1U << 20;
 
@@ -175,6 +175,62 @@ std::string fingerprintJson(const llvm::json::Value &value) {
     return {};
   }
   return bindings::sha256Fingerprint(*canonical);
+}
+
+std::optional<std::string> nativeQueueCppType(Type payload, Operation *from) {
+  if (auto integer = dyn_cast<IntegerType>(payload)) {
+    if (!integer.isSignless())
+      return std::nullopt;
+    return llvm::StringSwitch<std::optional<std::string>>(
+               std::to_string(integer.getWidth()))
+        .Case("1", "bool")
+        .Case("8", "std::int8_t")
+        .Case("16", "std::int16_t")
+        .Case("32", "std::int32_t")
+        .Case("64", "std::int64_t")
+        .Default(std::nullopt);
+  }
+  if (payload.isIndex())
+    return std::string("std::size_t");
+  if (payload.isF32())
+    return std::string("float");
+  if (payload.isF64())
+    return std::string("double");
+  if (auto packet = dyn_cast<ac::PacketType>(payload)) {
+    Operation *packetDeclaration = nullptr;
+    SymbolRefAttr name = packet.getName();
+    if (name.getNestedReferences().size() == 1) {
+      auto root = FlatSymbolRefAttr::get(name.getRootReference());
+      Operation *scope = SymbolTable::lookupNearestSymbolFrom(from, root);
+      if (!scope)
+        if (auto module = from->getParentOfType<mlir::ModuleOp>())
+          scope = SymbolTable::lookupSymbolIn(module, root);
+      if (isa_and_nonnull<ac::TypeScopeOp>(scope))
+        packetDeclaration =
+            SymbolTable::lookupSymbolIn(scope, name.getLeafReference());
+    } else {
+      packetDeclaration = SymbolTable::lookupNearestSymbolFrom(from, name);
+    }
+    auto declaration = dyn_cast_or_null<ac::PacketOp>(packetDeclaration);
+    if (!declaration)
+      return std::nullopt;
+    auto scope = dyn_cast<ac::TypeScopeOp>(declaration->getParentOp());
+    if (!scope)
+      return std::nullopt;
+    DataLayoutSpecInterface spec = scope.getDataLayoutSpec();
+    if (!spec)
+      return std::nullopt;
+    FailureOr<Attribute> value = spec.query(DataLayoutEntryKey(payload));
+    if (failed(value))
+      return std::nullopt;
+    auto layout = dyn_cast<DictionaryAttr>(*value);
+    auto width = layout ? layout.getAs<IntegerAttr>("serialization_width")
+                        : IntegerAttr();
+    if (!width || width.getInt() <= 0)
+      return std::nullopt;
+    return "std::array<std::byte, " + std::to_string(width.getInt()) + ">";
+  }
+  return std::nullopt;
 }
 
 // ---------------------------------------------------------------------------
@@ -454,12 +510,13 @@ struct PortEndpointPlan {
 };
 
 struct PlacementPlan {
-  enum class Kind { Instance, Array, Process };
+  enum class Kind { Instance, Array, RuntimeObject, Process };
   Kind kind = Kind::Instance;
   std::string name;
   // Instance/array realization.
   std::string targetSymbol;
   bool targetIsBinding = false;
+  bool targetIsRuntimeObject = false;
   bool targetIsPure = false;
   std::string resultCppType;
   ArrayAttr staticArgs;
@@ -476,6 +533,7 @@ struct PlacementPlan {
   ac::ProcessOp process;
   std::string processDefinitionKey;
   uint64_t fairnessCap = 1;
+  ac::QueueOp queue;
 };
 
 struct BindingEdgePlan {
@@ -566,7 +624,8 @@ private:
   void publish(mlir::ModuleOp input, mlir::ModuleOp staged);
   void emitModuleBody(OpBuilder &builder, const ModulePlan &planned);
   void emitProcessBody(OpBuilder &builder, const PlacementPlan &placement,
-                       const llvm::DenseMap<Value, Value> &moduleValues);
+                       const llvm::DenseMap<Value, Value> &moduleValues,
+                       const llvm::StringMap<Value> &queueOwners);
 
   std::string moduleFingerprint(ac::ModuleOp module);
   std::string processFingerprint(const ModulePlan &module,
@@ -741,6 +800,23 @@ std::string ACIRToACSimPass::moduleFingerprint(ac::ModuleOp module) {
                                std::move(entry));
       continue;
     }
+    if (auto queue = dyn_cast<ac::QueueOp>(operation)) {
+      llvm::json::Object entry;
+      entry["kind"] = "runtime_queue";
+      entry["name"] = queue.getSymName();
+      entry["stable_id"] = queue.getStableId();
+      entry["path"] = queue.getPath();
+      entry["payload"] = typeSpelling(queue.getPayload());
+      entry["entry_capacity"] = queue.getEntryCapacity();
+      if (queue.getByteCapacityAttr())
+        entry["byte_capacity"] = queue.getByteCapacity();
+      entry["ordering"] = queue.getOrdering();
+      entry["ownership"] = queue.getOwnership();
+      entry["delay_ticks"] = queue.getDelayTicks();
+      definitions.emplace_back(("queue:" + queue.getSymName()).str(),
+                               std::move(entry));
+      continue;
+    }
     if (auto domain = dyn_cast<ac::TimeDomainOp>(operation)) {
       llvm::json::Object entry{
           {"kind", "time_domain"},
@@ -784,7 +860,8 @@ std::string ACIRToACSimPass::processFingerprint(const ModulePlan &module,
   descriptor["module"] = module.name;
   descriptor["module_specialization"] = module.specialization;
   descriptor["process"] = process.name;
-  descriptor["process_plan"] = processPlanBytes;
+  descriptor["process_plan"] =
+      bindings::sha256Fingerprint(processPlanBytes);
   return fingerprintJson(llvm::json::Value(std::move(descriptor)));
 }
 
@@ -838,7 +915,7 @@ mlir::LogicalResult ACIRToACSimPass::planInstanceTarget(
                       "placement static arguments must exactly equal the "
                       "frozen static parameters of '@" +
                           definition +
-                          "' (per-instance specialization is outside the v0.1 "
+                          "' (per-instance specialization is outside the v0.2 "
                           "lowering stage)");
 
   if (externIt != externByName.end()) {
@@ -1056,7 +1133,7 @@ mlir::LogicalResult ACIRToACSimPass::planModule(ac::ModuleOp module,
         else if (arguments != first)
           return lowerError(array, "ACLOWER-ARRAY",
                             "differently specialized array elements are "
-                            "outside the v0.1 lowering stage; lower them as "
+                            "outside the v0.2 lowering stage; lower them as "
                             "ordered named members instead");
       }
       if (failed(planInstanceTarget(array, array.getDefinition(), first,
@@ -1098,6 +1175,73 @@ mlir::LogicalResult ACIRToACSimPass::planModule(ac::ModuleOp module,
       processes.push_back(std::move(placement));
       continue;
     }
+    if (auto queue = dyn_cast<ac::QueueOp>(operation)) {
+      if (queue.getOrdering() != "fifo")
+        return lowerError(queue, "ACLOWER-UNSUPPORTED-CONSTRUCT",
+                          "native queues require ordering 'fifo'; per_key "
+                          "queues are not supported in v0.2");
+      if (queue.getOwnership() != "exclusive")
+        return lowerError(queue, "ACLOWER-UNSUPPORTED-CONSTRUCT",
+                          "native queues require exclusive ownership");
+      if (queue.getDelayTicks() != 1)
+        return lowerError(queue, "ACLOWER-UNSUPPORTED-CONSTRUCT",
+                          "native queues require delay_ticks = 1");
+      if (queue.getWatermarksAttr())
+        return lowerError(queue, "ACLOWER-UNSUPPORTED-CONSTRUCT",
+                          "configured queue watermarks are not supported in "
+                          "v0.2 lowering");
+      auto elementCpp = nativeQueueCppType(queue.getPayload(), queue);
+      if (!elementCpp)
+        return lowerError(queue, "ACLOWER-TYPE-MISMATCH",
+                          "native queue payload has no closed C++ "
+                          "realization");
+      llvm::json::Object typeDescriptor;
+      std::string payloadSpelling;
+      llvm::raw_string_ostream(payloadSpelling) << queue.getPayload();
+      typeDescriptor["contract_epoch"] = kEpoch;
+      typeDescriptor["kind"] = "runtime_object";
+      typeDescriptor["payload"] = payloadSpelling;
+      typeDescriptor["byte_capacity"] =
+          static_cast<bool>(queue.getByteCapacityAttr());
+      std::string typeFingerprint =
+          fingerprintJson(llvm::json::Value(std::move(typeDescriptor)));
+      if (typeFingerprint.empty())
+        return lowerError(queue, "ACLOWER-FINGERPRINT",
+                          "failed to fingerprint native queue type");
+      std::string identity =
+          "acir_queue_" + llvm::StringRef(typeFingerprint).drop_front(7).str();
+      if (failed(typeSymbols.intern(queue, identity, "runtime_object",
+                                    "gfsim::Queue<" + *elementCpp + ">",
+                                    typeFingerprint)))
+        return mlir::failure();
+
+      PlacementPlan placement;
+      placement.kind = PlacementPlan::Kind::RuntimeObject;
+      placement.name = queue.getSymName().str();
+      placement.targetSymbol = identity;
+      placement.targetIsRuntimeObject = true;
+      placement.queue = queue;
+      llvm::SmallVector<Attribute> args{
+          builder.getI64IntegerAttr(queue.getEntryCapacity())};
+      if (queue.getByteCapacityAttr())
+        args.push_back(builder.getI64IntegerAttr(*queue.getByteCapacity()));
+      placement.staticArgs = builder.getArrayAttr(args);
+      llvm::json::Object specialization;
+      specialization["contract_epoch"] = kEpoch;
+      specialization["kind"] = "queue";
+      specialization["type"] = typeFingerprint;
+      specialization["entry_capacity"] = queue.getEntryCapacity();
+      if (queue.getByteCapacityAttr())
+        specialization["byte_capacity"] = queue.getByteCapacity();
+      placement.specialization =
+          fingerprintJson(llvm::json::Value(std::move(specialization)));
+      placement.work = "gfsim::QueueRuntime::work";
+      placement.xfer = "gfsim::QueueRuntime::xfer";
+      placement.reset = "gfsim::QueueRuntime::reset";
+      placement.validate = "gfsim::QueueRuntime::validate";
+      planned.placements.push_back(std::move(placement));
+      continue;
+    }
     if (auto domain = dyn_cast<ac::TimeDomainOp>(operation)) {
       timeDomains.push_back(domain);
       continue;
@@ -1108,8 +1252,8 @@ mlir::LogicalResult ACIRToACSimPass::planModule(ac::ModuleOp module,
     }
     return lowerError(&operation, "ACLOWER-UNSUPPORTED-CONSTRUCT",
                       "operation '" + operation.getName().getStringRef() +
-                          "' has no ACSim realization in the v0.1 lowering "
-                          "stage (queues, resources, address maps, views, "
+                          "' has no ACSim realization in the v0.2 lowering "
+                          "stage (resources, address maps, views, "
                           "and instrumentation are rejected, "
                           "never silently dropped)");
   }
@@ -1167,6 +1311,28 @@ mlir::LogicalResult ACIRToACSimPass::planModule(ac::ModuleOp module,
                           "process capture has no lowered typed producer");
       planned.bindingEdges.push_back(
           {*sourceIndex, static_cast<unsigned>(targetIndex)});
+    }
+    llvm::StringSet<> referencedQueues;
+    target.process.walk([&](Operation *operation) {
+      if (auto send = dyn_cast<ac::TrySendOp>(operation))
+        referencedQueues.insert(send.getQueue());
+      else if (auto recv = dyn_cast<ac::TryRecvOp>(operation))
+        referencedQueues.insert(recv.getQueue());
+      else if (auto await = dyn_cast<ac::AwaitQueueOp>(operation))
+        referencedQueues.insert(await.getQueue());
+    });
+    for (const auto &queueName : referencedQueues) {
+      auto queue =
+          llvm::find_if(planned.placements, [&](const auto &candidate) {
+            return candidate.kind == PlacementPlan::Kind::RuntimeObject &&
+                   candidate.name == queueName.getKey();
+          });
+      if (queue == planned.placements.end())
+        return lowerError(target.process, "ACLOWER-OWNERSHIP",
+                          "process queue reference has no native owner");
+      planned.bindingEdges.push_back(
+          {static_cast<unsigned>(queue - planned.placements.begin()),
+           static_cast<unsigned>(targetIndex)});
     }
   }
 
@@ -1279,6 +1445,9 @@ mlir::LogicalResult ACIRToACSimPass::planProcesses(mlir::ModuleOp input) {
       placement.processDefinitionKey = key;
       placement.fairnessCap = plan->fairnessWork();
       placement.specialization = processFingerprint(module, placement);
+      if (placement.specialization.empty())
+        return lowerError(placement.process, "ACLOWER-FINGERPRINT",
+                          "failed to fingerprint process specialization");
     }
   return mlir::success();
 }
@@ -1288,13 +1457,13 @@ mlir::LogicalResult ACIRToACSimPass::plan(mlir::ModuleOp input) {
   if (!epoch || epoch.getValue() != kEpoch)
     return lowerError(input, "ACLOWER-EPOCH-MISMATCH",
                       "ac-lower-to-acsim requires ac.contract_epoch exactly "
-                      "\"0.1\"");
+                      "\"0.2\"");
   auto frozen = input->getAttrOfType<BoolAttr>("ac.topology_frozen");
   auto freezeEpoch = input->getAttrOfType<StringAttr>("ac.freeze_epoch");
   if (!frozen || !frozen.getValue() || !freezeEpoch ||
       freezeEpoch.getValue() != kEpoch)
     return lowerError(input, "ACLOWER-EPOCH-MISMATCH",
-                      "ac-lower-to-acsim requires a topology-frozen v0.1 "
+                      "ac-lower-to-acsim requires a topology-frozen v0.2 "
                       "model; run ac-freeze-topology first");
   auto frozenOwners = input->getAttrOfType<ArrayAttr>("ac.frozen_owners");
   if (!frozenOwners)
@@ -1342,7 +1511,7 @@ mlir::LogicalResult ACIRToACSimPass::plan(mlir::ModuleOp input) {
     if (isa<ac::ModuleGeneratedOp>(operation))
       return lowerError(&operation, "ACLOWER-UNSUPPORTED-CONSTRUCT",
                         "generator-based module declarations are outside the "
-                        "v0.1 lowering stage");
+                        "v0.2 lowering stage");
     if (isa<ac::SystemOp, ac::TypeScopeOp, ac::TypeAliasOp, ac::StructOp,
             ac::EnumOp, ac::UnionOp, ac::PacketOp, ac::TransactionOp,
             ac::InterfaceOp, ac::ProtocolOp>(operation))
@@ -1350,7 +1519,7 @@ mlir::LogicalResult ACIRToACSimPass::plan(mlir::ModuleOp input) {
     return lowerError(&operation, "ACLOWER-UNSUPPORTED-CONSTRUCT",
                       "top-level operation '" +
                           operation.getName().getStringRef() +
-                          "' has no ACSim realization in the v0.1 lowering "
+                          "' has no ACSim realization in the v0.2 lowering "
                           "stage");
   }
 
@@ -1567,7 +1736,7 @@ mlir::LogicalResult ACIRToACSimPass::plan(mlir::ModuleOp input) {
   if (constructionOrder.size() > maxExpandedRows ||
       runtimeRows.size() > maxExpandedRows)
     return lowerError(input, "ACLOWER-DISPATCH",
-                      "expanded hierarchy exceeds the v0.1 capability bound");
+                      "expanded hierarchy exceeds the v0.2 capability bound");
   if (llvm::any_of(constructionOrder,
                    [&](const std::string &path) {
                      return !frozenOwnerPaths.contains(path);
@@ -1597,6 +1766,7 @@ void ACIRToACSimPass::expandModule(unsigned moduleIndex, std::string pathPrefix,
       std::string path = elementPath(indices);
       constructionOrder.push_back(path);
       if (placement.kind == PlacementPlan::Kind::Process ||
+          placement.kind == PlacementPlan::Kind::RuntimeObject ||
           placement.targetIsBinding) {
         RuntimeRow row;
         row.moduleIndex = moduleIndex;
@@ -1714,7 +1884,8 @@ std::string plannedValueKey(const ProcessPlannedValue &value) {
 
 void ACIRToACSimPass::emitProcessBody(
     OpBuilder &builder, const PlacementPlan &placement,
-    const llvm::DenseMap<Value, Value> &moduleValues) {
+    const llvm::DenseMap<Value, Value> &moduleValues,
+    const llvm::StringMap<Value> &queueOwners) {
   MLIRContext *context = builder.getContext();
   const ProcessStatePlan *plan =
       processPlans->lookupByDefinitionKey(placement.processDefinitionKey);
@@ -1741,6 +1912,41 @@ void ACIRToACSimPass::emitProcessBody(
     captures.push_back(lowered);
     captureNames.push_back(builder.getStringAttr(capture.name()));
   }
+  std::vector<std::pair<std::string, std::string>> referencedQueues;
+  llvm::StringSet<> seenQueues;
+  ac::ProcessOp sourceProcess = placement.process;
+  sourceProcess.walk([&](Operation *operation) {
+    FlatSymbolRefAttr reference;
+    if (auto send = dyn_cast<ac::TrySendOp>(operation))
+      reference = send.getQueueAttr();
+    else if (auto recv = dyn_cast<ac::TryRecvOp>(operation))
+      reference = recv.getQueueAttr();
+    else if (auto await = dyn_cast<ac::AwaitQueueOp>(operation))
+      reference = await.getQueueAttr();
+    if (!reference || !seenQueues.insert(reference.getValue()).second)
+      return;
+    auto queue = dyn_cast_or_null<ac::QueueOp>(
+        SymbolTable::lookupNearestSymbolFrom(operation, reference));
+    if (!queue)
+      if (auto owner = operation->getParentOfType<ac::ModuleOp>())
+        for (Operation &candidate : owner.getBody().front())
+          if (auto candidateQueue = dyn_cast<ac::QueueOp>(candidate);
+              candidateQueue &&
+              candidateQueue.getSymName() == reference.getValue()) {
+            queue = candidateQueue;
+            break;
+          }
+    assert(queue && "validated queue reference must resolve");
+    referencedQueues.emplace_back(queue.getPath().str(),
+                                  reference.getValue().str());
+  });
+  llvm::sort(referencedQueues);
+  for (const auto &[path, name] : referencedQueues) {
+    Value owner = queueOwners.lookup(name);
+    assert(owner && "validated native queue owner must be emitted");
+    captures.push_back(owner);
+    captureNames.push_back(builder.getStringAttr("queue_" + name));
+  }
   auto process = acsim::ProcessOp::create(
       builder, placement.process->getLoc(), captures, placement.name,
       builder.getArrayAttr(captureNames), plan->pcs().front().name(),
@@ -1750,33 +1956,154 @@ void ACIRToACSimPass::emitProcessBody(
   llvm::SmallVector<Block *> blocks(plan->blocks().size());
   for (const ProcessPcPlan &pc : plan->pcs()) {
     Region &state = process.getStates()[pc.id().value()];
+    llvm::SmallVector<llvm::SmallVector<ProcessBlockId>> successors(
+        plan->blocks().size());
+    llvm::SmallVector<unsigned> indegree(plan->blocks().size(), 0);
     for (ProcessBlockId id : pc.blocks()) {
+      const ProcessControlEdgePlan &edge = plan->blocks()[id.value()].edge();
+      auto addSuccessor = [&](ProcessBlockId successor) {
+        successors[id.value()].push_back(successor);
+        ++indegree[successor.value()];
+      };
+      if (edge.kind() == ProcessControlEdgeKind::Branch) {
+        addSuccessor(edge.trueBlock());
+        addSuccessor(edge.falseBlock());
+      } else if (edge.kind() == ProcessControlEdgeKind::LocalContinue) {
+        addSuccessor(edge.targetBlock());
+      }
+    }
+    std::set<unsigned> ready;
+    for (ProcessBlockId id : pc.blocks())
+      if (indegree[id.value()] == 0)
+        ready.insert(id.value());
+    llvm::SmallVector<unsigned> blockOrder;
+    while (!ready.empty()) {
+      unsigned id = *ready.begin();
+      ready.erase(ready.begin());
+      blockOrder.push_back(id);
+      for (ProcessBlockId successor : successors[id])
+        if (--indegree[successor.value()] == 0)
+          ready.insert(successor.value());
+    }
+    assert(blockOrder.size() == pc.blocks().size() &&
+           "validated intra-PC graph must be acyclic");
+    for (unsigned id : blockOrder) {
       Block *block = new Block();
       state.push_back(block);
-      blocks[id.value()] = block;
+      blocks[id] = block;
     }
     Block *entry = blocks[pc.blocks().front().value()];
     for (Value capture : captures)
       entry->addArgument(capture.getType(), placement.process->getLoc());
   }
 
+  llvm::SmallVector<std::set<std::string>> localDefinitions(plan->blocks().size());
+  llvm::SmallVector<std::set<std::string>> neededValues(plan->blocks().size());
+  llvm::StringMap<ProcessPlannedValue> valueRepresentatives;
+  auto recordValue = [&](const ProcessPlannedValue &value) {
+    valueRepresentatives.try_emplace(plannedValueKey(value), value);
+  };
+  auto recordUse = [&](ProcessBlockId block, const ProcessPlannedValue &value) {
+    recordValue(value);
+    if (value.kind() != ProcessPlannedValueKind::Capture)
+      neededValues[block.value()].insert(plannedValueKey(value));
+  };
+  for (const ProcessBlockPlan &blockPlan : plan->blocks()) {
+    auto &definitions = localDefinitions[blockPlan.id().value()];
+    for (const ProcessTransitionLoadPlan &load : blockPlan.loads())
+      for (const ProcessPlannedValue &replacement : load.replacements()) {
+        recordValue(replacement);
+        definitions.insert(plannedValueKey(replacement));
+      }
+    for (const ProcessActionPlan &action : blockPlan.actions()) {
+      for (const ProcessPlannedValue &operand : action.operands())
+        recordUse(blockPlan.id(), operand);
+      for (const ProcessPlannedValue &result : action.results()) {
+        recordValue(result);
+        definitions.insert(plannedValueKey(result));
+      }
+    }
+    const ProcessControlEdgePlan &edge = blockPlan.edge();
+    if (edge.kind() == ProcessControlEdgeKind::Branch)
+      recordUse(blockPlan.id(), edge.condition());
+    if (edge.kind() == ProcessControlEdgeKind::Suspend)
+      for (const ProcessTransitionStorePlan &store :
+           plan->transitions()[edge.transition().value()].stores())
+        recordUse(blockPlan.id(), store.source());
+    for (const std::string &definition : definitions)
+      neededValues[blockPlan.id().value()].erase(definition);
+  }
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (const ProcessBlockPlan &blockPlan : llvm::reverse(plan->blocks())) {
+      llvm::SmallVector<ProcessBlockId, 2> successors;
+      const ProcessControlEdgePlan &edge = blockPlan.edge();
+      if (edge.kind() == ProcessControlEdgeKind::Branch) {
+        successors.push_back(edge.trueBlock());
+        successors.push_back(edge.falseBlock());
+      } else if (edge.kind() == ProcessControlEdgeKind::LocalContinue) {
+        successors.push_back(edge.targetBlock());
+      }
+      for (ProcessBlockId successor : successors)
+        for (const std::string &key : neededValues[successor.value()])
+          if (!localDefinitions[blockPlan.id().value()].contains(key))
+            changed |= neededValues[blockPlan.id().value()].insert(key).second;
+    }
+  }
+
+  llvm::SmallVector<llvm::StringMap<Value>> blockArguments(plan->blocks().size());
+  for (const ProcessPcPlan &pc : plan->pcs()) {
+    ProcessBlockId entryId = pc.blocks().front();
+    for (ProcessBlockId id : pc.blocks()) {
+      if (id == entryId)
+        continue;
+      for (const std::string &key : neededValues[id.value()]) {
+        auto representative = valueRepresentatives.find(key);
+        assert(representative != valueRepresentatives.end());
+        Value argument = blocks[id.value()]->addArgument(
+            representative->second.type(), placement.process->getLoc());
+        blockArguments[id.value()][key] = argument;
+      }
+    }
+  }
+
   OpBuilder::InsertionGuard guard(builder);
-  llvm::SmallVector<llvm::StringMap<Value>> valuesByPc(plan->pcs().size());
+  llvm::SmallVector<llvm::StringMap<Value>> valuesByBlock(plan->blocks().size());
+  llvm::SmallVector<llvm::StringMap<Value>> queueArgumentsByPc(
+      plan->pcs().size());
   for (const ProcessPcPlan &pc : plan->pcs()) {
     Block *entry = blocks[pc.blocks().front().value()];
-    auto &values = valuesByPc[pc.id().value()];
-    for (auto [capture, argument] :
-         llvm::zip_equal(plan->captures(), entry->getArguments())) {
+    auto &entryValues = valuesByBlock[pc.blocks().front().value()];
+    for (auto [capture, argument] : llvm::zip_equal(
+             plan->captures(),
+             entry->getArguments().take_front(plan->captures().size()))) {
+      std::string key = std::to_string(static_cast<unsigned>(
+                            ProcessPlannedValueKind::Capture)) +
+                        ":" + std::to_string(capture.id().value());
+      entryValues[key] = argument;
+    }
+    for (auto [queue, argument] : llvm::zip_equal(
+             referencedQueues,
+             entry->getArguments().drop_front(plan->captures().size())))
+      queueArgumentsByPc[pc.id().value()][queue.second] = argument;
+  }
+  for (const ProcessBlockPlan &blockPlan : plan->blocks()) {
+    Block *block = blocks[blockPlan.id().value()];
+    builder.setInsertionPointToStart(block);
+    auto &values = valuesByBlock[blockPlan.id().value()];
+    for (const auto &argument : blockArguments[blockPlan.id().value()])
+      values[argument.getKey()] = argument.getValue();
+    const ProcessPcPlan &owningPc = plan->pcs()[blockPlan.pc().value()];
+    Block *pcEntry = blocks[owningPc.blocks().front().value()];
+    for (auto [capture, argument] : llvm::zip_equal(
+             plan->captures(),
+             pcEntry->getArguments().take_front(plan->captures().size()))) {
       std::string key = std::to_string(static_cast<unsigned>(
                             ProcessPlannedValueKind::Capture)) +
                         ":" + std::to_string(capture.id().value());
       values[key] = argument;
     }
-  }
-  for (const ProcessBlockPlan &blockPlan : plan->blocks()) {
-    Block *block = blocks[blockPlan.id().value()];
-    builder.setInsertionPointToStart(block);
-    auto &values = valuesByPc[blockPlan.pc().value()];
 
     for (const ProcessTransitionLoadPlan &load : blockPlan.loads()) {
       const ProcessLiveSlotPlan &slot = plan->liveSlots()[load.slot().value()];
@@ -1809,7 +2136,8 @@ void ACIRToACSimPass::emitProcessBody(
 
     for (const ProcessActionPlan &action : blockPlan.actions()) {
       if (isa_and_nonnull<ac::WaitUntilOp, ac::WaitForOp, ac::AwaitEventOp,
-                          ac::YieldSimOp>(action.sourceOperation()))
+                          ac::AwaitQueueOp, ac::YieldSimOp>(
+              action.sourceOperation()))
         continue;
       bool resultRequired =
           action.emission() != ProcessEmissionClass::ForwardOnly;
@@ -1869,6 +2197,16 @@ void ACIRToACSimPass::emitProcessBody(
       } else if (action.emission() == ProcessEmissionClass::Invoke) {
         llvm::StringRef identity =
             generatedCalleeIdentities[action.callee()->value()];
+        if (auto send =
+                dyn_cast_or_null<ac::TrySendOp>(action.sourceOperation()))
+          operands.insert(operands.begin(),
+                          queueArgumentsByPc[blockPlan.pc().value()].lookup(
+                              send.getQueue()));
+        else if (auto recv =
+                     dyn_cast_or_null<ac::TryRecvOp>(action.sourceOperation()))
+          operands.insert(operands.begin(),
+                          queueArgumentsByPc[blockPlan.pc().value()].lookup(
+                              recv.getQueue()));
         auto invoke = acsim::InvokeOp::create(
             builder, placement.process->getLoc(), action.resultTypes(),
             operands,
@@ -1901,15 +2239,34 @@ void ACIRToACSimPass::emitProcessBody(
       auto condition = values.find(plannedValueKey(edge.condition()));
       assert(condition != values.end() &&
              "validated branch condition must be emitted");
-      cf::CondBranchOp::create(builder, placement.process->getLoc(),
-                               condition->second,
-                               blocks[edge.trueBlock().value()], ValueRange{},
-                               blocks[edge.falseBlock().value()], ValueRange{});
+      auto successorOperands = [&](ProcessBlockId target) {
+        llvm::SmallVector<Value> operands;
+        for (const std::string &key : neededValues[target.value()]) {
+          auto found = values.find(key);
+          assert(found != values.end() &&
+                 "validated successor value must reach branch");
+          operands.push_back(found->second);
+        }
+        return operands;
+      };
+      llvm::SmallVector<Value> trueOperands = successorOperands(edge.trueBlock());
+      llvm::SmallVector<Value> falseOperands = successorOperands(edge.falseBlock());
+      cf::CondBranchOp::create(
+          builder, placement.process->getLoc(), condition->second,
+          blocks[edge.trueBlock().value()], trueOperands,
+          blocks[edge.falseBlock().value()], falseOperands);
       continue;
     }
     if (edge.kind() == ProcessControlEdgeKind::LocalContinue) {
+      llvm::SmallVector<Value> operands;
+      for (const std::string &key : neededValues[edge.targetBlock().value()]) {
+        auto found = values.find(key);
+        assert(found != values.end() &&
+               "validated successor value must reach branch");
+        operands.push_back(found->second);
+      }
       cf::BranchOp::create(builder, placement.process->getLoc(),
-                           blocks[edge.targetBlock().value()]);
+                           blocks[edge.targetBlock().value()], operands);
       continue;
     }
     if (edge.kind() == ProcessControlEdgeKind::Terminate) {
@@ -1946,8 +2303,13 @@ void ACIRToACSimPass::emitProcessBody(
         FlatSymbolRefAttr::get(context, typeSymbols.symbolFor(typeIdentity)));
     llvm::StringRef calleeIdentity =
         generatedCalleeIdentities[wakePlan.callee().value()];
+    llvm::SmallVector<Value> wakeInputs;
+    if (wakePlan.kind() == ProcessWakeKind::QueueReadable ||
+        wakePlan.kind() == ProcessWakeKind::QueueWritable)
+      wakeInputs.push_back(
+          queueArgumentsByPc[blockPlan.pc().value()].lookup(wakePlan.target()));
     auto wake = acsim::InvokeOp::create(
-        builder, placement.process->getLoc(), TypeRange{wakeType}, ValueRange{},
+        builder, placement.process->getLoc(), TypeRange{wakeType}, wakeInputs,
         FlatSymbolRefAttr::get(context, typeSymbols.symbolFor(calleeIdentity)));
     acsim::SuspendOp::create(
         builder, placement.process->getLoc(), wake.getResults().front(),
@@ -2008,6 +2370,7 @@ void ACIRToACSimPass::emitModuleBody(OpBuilder &builder,
   builder.setInsertionPointToStart(body);
   llvm::DenseMap<Value, Value> emittedValues;
   llvm::SmallVector<Value> owners(planned.placements.size());
+  llvm::StringMap<Value> queueOwners;
   llvm::SmallVector<llvm::SmallVector<Value, 2>> inputProjections(
       planned.placements.size());
 
@@ -2038,6 +2401,20 @@ void ACIRToACSimPass::emitModuleBody(OpBuilder &builder,
               placement.staticArgs,
               builder.getStringAttr(placement.specialization), shape)
               .getResult();
+      break;
+    }
+    case PlacementPlan::Kind::RuntimeObject: {
+      auto target = SymbolRefAttr::get(
+          context, typeSymbols.symbolFor(placement.targetSymbol));
+      auto ownerType = acsim::OwnerType::get(context, target);
+      owners[placementIndex] =
+          acsim::InstanceOp::create(
+              builder, planned.source->getLoc(), ownerType,
+              builder.getStringAttr(placement.name), target,
+              placement.staticArgs,
+              builder.getStringAttr(placement.specialization))
+              .getResult();
+      queueOwners[placement.name] = owners[placementIndex];
       break;
     }
     case PlacementPlan::Kind::Process:
@@ -2118,7 +2495,7 @@ void ACIRToACSimPass::emitModuleBody(OpBuilder &builder,
   // Rank 8: stateful processes.
   for (const PlacementPlan &placement : planned.placements)
     if (placement.kind == PlacementPlan::Kind::Process)
-      emitProcessBody(builder, placement, emittedValues);
+      emitProcessBody(builder, placement, emittedValues, queueOwners);
 
   acsim::ReturnOp::create(builder, planned.source->getLoc(), returned);
 }

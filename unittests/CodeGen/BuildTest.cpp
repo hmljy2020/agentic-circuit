@@ -58,7 +58,7 @@ llvm::Expected<Fingerprint> jsonFingerprint(llvm::json::Value value) {
 
 FrontendProvenance makeFrontendProvenance() {
   const std::string acpy = "{\"schema\":\"agentic-circuit-acpy\"}\n";
-  const std::string acir = "module attributes {ac.contract_epoch = \"0.1\"}\n";
+  const std::string acir = "module attributes {ac.contract_epoch = \"0.2\"}\n";
   FrontendProvenance frontend;
   frontend.sourceFiles = {
       {"architecture.py", computeFingerprint("architecture source\n")}};
@@ -69,7 +69,7 @@ FrontendProvenance makeFrontendProvenance() {
                             computeFingerprint(acir)};
   frontend.canonicalAcirBytes = acir;
   frontend.pythonVersion = "CPython 3.12";
-  frontend.helperIdentities = {{"agentic-circuit", computeFingerprint("0.1")}};
+  frontend.helperIdentities = {{"agentic-circuit", computeFingerprint("0.2")}};
   return frontend;
 }
 
@@ -97,8 +97,8 @@ public:
 
     const std::string zero = kFingerprint.str();
     std::string source =
-        "builtin.module attributes {ac.contract_epoch = \"0.1\"} {\n"
-        "  acsim.model @minimal epoch \"0.1\" root @Top construction [] "
+        "builtin.module attributes {ac.contract_epoch = \"0.2\"} {\n"
+        "  acsim.model @minimal epoch \"0.2\" root @Top construction [] "
         "destruction [] fingerprints {frozen_acir = \"" +
         computeFingerprint(frozenBytes) + "\", binding_lock = \"" +
         computeFingerprint(lockBytes) + "\", provider = \"" + *emptySet +
@@ -180,7 +180,7 @@ TEST(BuildTest, CompilePlanIsClosedCanonicalAndArgumentVectorBased) {
   auto second = createCompilePlan(*request, makeSourceBundle());
   ASSERT_TRUE(static_cast<bool>(first));
   ASSERT_TRUE(static_cast<bool>(second));
-  EXPECT_EQ(first->schema, "acsim-compile-plan-0.1");
+  EXPECT_EQ(first->schema, "acsim-compile-plan-0.2");
   EXPECT_TRUE(isValidFingerprint(first->fingerprint));
   EXPECT_EQ(first->fingerprint, second->fingerprint);
   EXPECT_EQ(first->includeRoots,
@@ -229,7 +229,7 @@ TEST(BuildTest, RejectsToolchainOrPrebuiltProvenanceMismatch) {
                       .standardLibrary = request->toolchain.standardLibrary,
                       .abiMode = request->toolchain.abiMode,
                       .objectFormat = request->toolchain.objectFormat,
-                      .contractEpoch = "0.1",
+                      .contractEpoch = "0.2",
                       .contractFlags = request->toolchain.contractFlags,
                       .toolchainFingerprint = request->toolchain.fingerprint,
                       .sourceFingerprint = kFingerprint.str()}});

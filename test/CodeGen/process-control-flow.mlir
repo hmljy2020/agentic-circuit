@@ -1,7 +1,7 @@
 // RUN: %acir_opt %s -o /dev/null
 
-module attributes {ac.contract_epoch = "0.1"} {
-  acsim.model @soc epoch "0.1" root @Top construction ["root.workload"] destruction ["root.workload"] fingerprints {binding_lock = "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945", frozen_acir = "sha256:a2576d5d0598c9e71d4f09c4663e4d63c59950c0be81cf669b2024de9e74160e", profile = "sha256:079c9d12005aad817f722d2f0a34ccc3185b5ec0ce06ee243f945e4e1bb7b4c7", provider = "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945", schema_set = "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945", toolchain = "sha256:1db0fba21ec705a314dbbced115002a1c868a1c90beb0313edd03005070db9ac"} {
+module attributes {ac.contract_epoch = "0.2"} {
+  acsim.model @soc epoch "0.2" root @Top construction ["root.workload"] destruction ["root.workload"] fingerprints {binding_lock = "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945", frozen_acir = "sha256:a2576d5d0598c9e71d4f09c4663e4d63c59950c0be81cf669b2024de9e74160e", profile = "sha256:079c9d12005aad817f722d2f0a34ccc3185b5ec0ce06ee243f945e4e1bb7b4c7", provider = "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945", schema_set = "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945", toolchain = "sha256:1db0fba21ec705a314dbbced115002a1c868a1c90beb0313edd03005070db9ac"} {
     acsim.type @acir_impl_wake_condition cpp "acir::generated::impl_wake_condition" kind "implementation" fingerprint "sha256:45b3c3013f80d8a2402c692e1664935a088c00032f93510b39647faaecfe7fc5"
     acsim.type @acir_impl_wake_next_delta cpp "acir::generated::impl_wake_next_delta" kind "implementation" fingerprint "sha256:63cacba5c3eb82976464804b4aeaa17d43b445733efaddfad7c7bec1ab650269"
     acsim.type @acir_wake_condition cpp "acir::generated::wake_condition" kind "wake" fingerprint "sha256:698e1e5b1308d66e1487b9860c75ee4596c425662a471714d9d49fad05c1d371"

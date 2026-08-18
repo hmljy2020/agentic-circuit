@@ -40,6 +40,10 @@ bool isIdentifier(llvm::StringRef value) {
   });
 }
 
+bool isReferenceType(llvm::StringRef type) {
+  return type.starts_with("!acsim.ref<") || type.starts_with("!acsim.owner<");
+}
+
 const BindingPlan *findBinding(const ModelPlan &plan, llvm::StringRef symbol) {
   auto found = std::find_if(
       plan.bindings.begin(), plan.bindings.end(),
@@ -73,6 +77,10 @@ llvm::Expected<std::string> wakeKind(const TypePlan &implementation) {
     return std::string("EventQueue");
   if (symbol.starts_with("acir_impl_wake_next_delta"))
     return std::string("NextDelta");
+  if (symbol.starts_with("acir_impl_wake_queue_readable"))
+    return std::string("QueueReadable");
+  if (symbol.starts_with("acir_impl_wake_queue_writable"))
+    return std::string("QueueWritable");
   return processError("generated wake implementation has an unknown role");
 }
 
@@ -85,8 +93,38 @@ llvm::Error emitWakeHelper(std::ostringstream &output,
   auto kind = wakeKind(implementation);
   if (!kind)
     return kind.takeError();
-  output << "inline gfsim::ProcessWake " << name.str()
-         << "() { return {gfsim::ProcessWakeKind::" << *kind << ", 0}; }\n";
+  std::string guard = "ACIR_GENERATED_WAKE_" + implementation.symbol;
+  std::transform(guard.begin(), guard.end(), guard.begin(), [](char value) {
+    return static_cast<char>(std::toupper(static_cast<unsigned char>(value)));
+  });
+  output << "#ifndef " << guard << "\n#define " << guard << "\n";
+  const bool takesObjectRef =
+      *kind == "QueueReadable" || *kind == "QueueWritable";
+  if (takesObjectRef)
+    output << "template <typename QueueT> inline gfsim::ProcessWake "
+           << name.str()
+           << "(QueueT &queue) { return {gfsim::ProcessWakeKind::" << *kind
+           << ", queue.id()}; }\n";
+  else
+    output << "inline gfsim::ProcessWake " << name.str()
+           << "() { return {gfsim::ProcessWakeKind::" << *kind << ", 0}; }\n";
+  output << "#endif // " << guard << "\n";
+  return llvm::Error::success();
+}
+
+llvm::Error emitScalarStorageHelper(std::ostringstream &output,
+                                    const TypePlan &implementation) {
+  llvm::StringRef name(implementation.cppType);
+  if (!name.consume_front("acir::generated::") || !isIdentifier(name))
+    return processError("generated scalar storage helper has an invalid C++ name");
+  std::string guard = "ACIR_GENERATED_SCALAR_" + implementation.symbol;
+  std::transform(guard.begin(), guard.end(), guard.begin(), [](char value) {
+    return static_cast<char>(std::toupper(static_cast<unsigned char>(value)));
+  });
+  output << "#ifndef " << guard << "\n#define " << guard << "\n"
+         << "template <typename T> inline T " << name.str()
+         << "(const T &value) { return value; }\n"
+         << "#endif // " << guard << "\n";
   return llvm::Error::success();
 }
 
@@ -115,9 +153,12 @@ llvm::Expected<std::string> cppType(const ModelPlan &plan,
       symbolEnd == llvm::StringRef::npos)
     return processError("process value has no C++ type realization");
   const llvm::StringRef symbol = type.slice(symbolStart + 1, symbolEnd);
-  if (type.starts_with("!acsim.ref<")) {
+  if (type.starts_with("!acsim.ref<") || type.starts_with("!acsim.owner<")) {
     if (const BindingPlan *binding = findBinding(plan, symbol))
       return binding->cppSymbol;
+    if (const TypePlan *realization = findType(plan, symbol);
+        realization && realization->kind == TypeKind::RuntimeObject)
+      return realization->cppType;
   } else if (type.starts_with("!acsim.wake<")) {
     return std::string("gfsim::ProcessWake");
   } else if (const TypePlan *realization = findType(plan, symbol)) {
@@ -696,6 +737,28 @@ llvm::Error emitOperation(const ModelPlan &plan, const ProcessPlan &process,
           },
           [&](const InvokePlan &call) -> llvm::Error {
             emitResultAssignment(output, call.results);
+            llvm::StringRef calleeSymbol(call.callee);
+            if (calleeSymbol.starts_with("acir_impl_queue_try_send")) {
+              if (call.arguments.size() != 2)
+                return processError(
+                    "queue send helper requires queue and value");
+              output << call.arguments[0] << ".proposePush("
+                     << call.arguments[1] << ");\n";
+              return llvm::Error::success();
+            }
+            if (calleeSymbol.starts_with("acir_impl_queue_try_recv")) {
+              if (call.arguments.size() != 1)
+                return processError("queue recv helper requires one queue");
+              output << call.arguments[0] << ".tryRecv();\n";
+              return llvm::Error::success();
+            }
+            if (calleeSymbol.starts_with("acir_impl_contract_assert")) {
+              if (call.arguments.size() != 1 || !call.results.empty())
+                return processError("contract assert helper requires one condition");
+              output << "acir::generated::runtime_assert(" << call.arguments[0]
+                     << ");\n";
+              return llvm::Error::success();
+            }
             const BindingPlan *binding = findBinding(plan, call.callee);
             if (!binding)
               binding = findImplementationBinding(plan, call.callee);
@@ -748,10 +811,15 @@ generateProcessHeader(const ModelPlan &plan, const ProcessPlan &process) {
   for (const CapturePlan &capture : process.captures) {
     const size_t start = capture.type.find('@');
     const size_t end = capture.type.find('>', start);
-    if (start != std::string::npos && end != std::string::npos)
-      if (const BindingPlan *binding = findBinding(
-              plan, llvm::StringRef(capture.type).slice(start + 1, end)))
+    if (start != std::string::npos && end != std::string::npos) {
+      llvm::StringRef symbol =
+          llvm::StringRef(capture.type).slice(start + 1, end);
+      if (const BindingPlan *binding = findBinding(plan, symbol))
         headers.insert(binding->header);
+      else if (const TypePlan *type = findType(plan, symbol);
+               type && type->kind == TypeKind::RuntimeObject)
+        headers.insert("gfsim/queue.h");
+    }
   }
   for (const PcStatePlan &state : process.states)
     for (const ProcessOperationPlan &operation : state.operations) {
@@ -785,11 +853,21 @@ generateProcessHeader(const ModelPlan &plan, const ProcessPlan &process) {
   for (const std::string &header : headers)
     output << "#include \"" << header << "\"\n";
   output << "\n#include <cmath>\n#include <cstdint>\n#include <string>\n"
-            "#include <type_traits>\n\n"
+            "#include <stdexcept>\n#include <type_traits>\n\n"
          << "namespace acir::generated {\n";
+  output << "#ifndef ACIR_GENERATED_RUNTIME_ASSERT\n"
+            "#define ACIR_GENERATED_RUNTIME_ASSERT\n"
+            "inline void runtime_assert(bool condition) { if (!condition) "
+            "throw std::runtime_error(\"ac.assert failed\"); }\n"
+            "#endif\n";
   for (const auto &[symbol, implementation] : wakeHelpers)
     if (auto error = emitWakeHelper(output, *implementation))
       return std::move(error);
+  for (const TypePlan &implementation : plan.types)
+    if (implementation.kind == TypeKind::Implementation &&
+        llvm::StringRef(implementation.symbol).starts_with("acir_impl_scalar_"))
+      if (auto error = emitScalarStorageHelper(output, implementation))
+        return std::move(error);
   output << "} // namespace acir::generated\n\n"
          << "namespace acsim_generated {\n\nclass " << process.className
          << " final : public gfsim::ProcessRuntime<" << process.className
@@ -836,7 +914,8 @@ generateProcessSource(const ModelPlan &plan, const ProcessPlan &process) {
 
   std::ostringstream output;
   output << "#include \"generated/processes/" << process.className
-         << ".h\"\n\n#include <optional>\n\nnamespace acsim_generated {\n\n"
+         << ".h\"\n\n#include <functional>\n#include <optional>\n\nnamespace "
+            "acsim_generated {\n\n"
          << process.className << "::" << process.className
          << "(std::string name, gfsim::ObjectId id, gfsim::SimObject *parent";
   for (const CapturePlan &capture : process.captures) {
@@ -868,8 +947,12 @@ generateProcessSource(const ModelPlan &plan, const ProcessPlan &process) {
           auto type = cppType(plan, argument.type);
           if (!type)
             return type.takeError();
-          output << "    std::optional<" << *type << "> b" << block.ordinal
-                 << "_arg" << index << ";\n";
+          if (isReferenceType(argument.type))
+            output << "    std::optional<std::reference_wrapper<" << *type
+                   << ">> b" << block.ordinal << "_arg" << index << ";\n";
+          else
+            output << "    std::optional<" << *type << "> b" << block.ordinal
+                   << "_arg" << index << ";\n";
         }
       }
       output << "    auto block_" << state.name << " = Block_" << state.name
@@ -879,9 +962,14 @@ generateProcessSource(const ModelPlan &plan, const ProcessPlan &process) {
         output << "      case Block_" << state.name << "::b" << block.ordinal
                << ": {\n";
         if (block.ordinal != 0)
-          for (auto [index, argument] : llvm::enumerate(block.arguments))
-            output << "        auto " << argument.name << " = *b"
-                   << block.ordinal << "_arg" << index << ";\n";
+          for (auto [index, argument] : llvm::enumerate(block.arguments)) {
+            output << "        auto "
+                   << (isReferenceType(argument.type) ? "&" : "")
+                   << argument.name << " = b" << block.ordinal << "_arg"
+                   << index
+                   << (isReferenceType(argument.type) ? "->get()" : ".value()")
+                   << ";\n";
+          }
         for (const ProcessOperationPlan &operation : block.operations)
           if (auto error = emitOperation(plan, process, output, operation))
             return std::move(error);
@@ -893,7 +981,15 @@ generateProcessSource(const ModelPlan &plan, const ProcessPlan &process) {
                   for (auto [index, argument] :
                        llvm::enumerate(branch.arguments))
                     output << "        b" << target.ordinal << "_arg" << index
-                           << " = " << argument << ";\n";
+                           << " = "
+                           << (isReferenceType(target.arguments[index].type)
+                                   ? "std::ref("
+                                   : "")
+                           << argument
+                           << (isReferenceType(target.arguments[index].type)
+                                   ? ")"
+                                   : "")
+                           << ";\n";
                   output << "        block_" << state.name << " = Block_"
                          << state.name << "::b" << target.ordinal
                          << ";\n        continue;\n";
@@ -906,7 +1002,15 @@ generateProcessSource(const ModelPlan &plan, const ProcessPlan &process) {
                   for (auto [index, argument] :
                        llvm::enumerate(branch.trueArguments))
                     output << "          b" << trueTarget.ordinal << "_arg"
-                           << index << " = " << argument << ";\n";
+                           << index << " = "
+                           << (isReferenceType(trueTarget.arguments[index].type)
+                                   ? "std::ref("
+                                   : "")
+                           << argument
+                           << (isReferenceType(trueTarget.arguments[index].type)
+                                   ? ")"
+                                   : "")
+                           << ";\n";
                   output << "          block_" << state.name << " = Block_"
                          << state.name << "::b" << trueTarget.ordinal
                          << ";\n        } else {\n";
@@ -914,8 +1018,17 @@ generateProcessSource(const ModelPlan &plan, const ProcessPlan &process) {
                       state.blocks.at(branch.falseBlock);
                   for (auto [index, argument] :
                        llvm::enumerate(branch.falseArguments))
-                    output << "          b" << falseTarget.ordinal << "_arg"
-                           << index << " = " << argument << ";\n";
+                    output
+                        << "          b" << falseTarget.ordinal << "_arg"
+                        << index << " = "
+                        << (isReferenceType(falseTarget.arguments[index].type)
+                                ? "std::ref("
+                                : "")
+                        << argument
+                        << (isReferenceType(falseTarget.arguments[index].type)
+                                ? ")"
+                                : "")
+                        << ";\n";
                   output << "          block_" << state.name << " = Block_"
                          << state.name << "::b" << falseTarget.ordinal
                          << ";\n        }\n        continue;\n";

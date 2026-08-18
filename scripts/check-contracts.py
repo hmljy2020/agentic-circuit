@@ -10,7 +10,7 @@ from urllib.parse import unquote
 
 
 ROOT = Path(__file__).resolve().parents[1]
-EPOCH = "0.1"
+EPOCH = "0.2"
 GOVERNANCE_FILES = (
     "LICENSE",
     "CONTRIBUTING.md",
@@ -107,7 +107,7 @@ def check_epochs(errors):
     pyproject = (ROOT / "pyproject.toml").read_text()
     match = re.search(r'^contract-epoch\s*=\s*"([^"]+)"\s*$', pyproject, re.MULTILINE)
     if match is None or match.group(1) != EPOCH:
-        errors.append('pyproject.toml must declare contract-epoch = "0.1"')
+        errors.append('pyproject.toml must declare contract-epoch = "0.2"')
 
 
 def check_schemas(errors):
@@ -150,7 +150,7 @@ def check_stdlib_catalog(errors):
         return
     if (
         catalog["catalog"] != "ac.std"
-        or catalog["version"] != "0.1"
+        or catalog["version"] != "0.2"
         or catalog["contract_epoch"] != EPOCH
         or not isinstance(catalog["entries"], list)
     ):
@@ -249,7 +249,18 @@ def tracked_markdown_files():
         check=True,
         capture_output=True,
     )
-    return [ROOT / path.decode() for path in result.stdout.split(b"\0") if path]
+    paths = {
+        ROOT / path.decode()
+        for path in result.stdout.split(b"\0")
+        if path and (ROOT / path.decode()).is_file()
+    }
+    # A hard epoch migration renames the normative specifications before the
+    # caller necessarily stages those renames. Keep the read-only checker
+    # complete for that normal working-tree state.
+    paths.update((ROOT / "docs/specs").glob("*.md"))
+    if (ROOT / "README.md").is_file():
+        paths.add(ROOT / "README.md")
+    return sorted(paths)
 
 
 def markdown_destination(raw_target):
@@ -387,7 +398,7 @@ def main():
         return 1
     print(
         "repository contracts: OK "
-        "(10 public schemas, 36 stdlib components, epoch 0.1, LLVM 22.1.8)"
+        "(10 public schemas, 36 stdlib components, epoch 0.2, LLVM 22.1.8)"
     )
     return 0
 

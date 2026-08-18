@@ -1,13 +1,13 @@
-# Agentic Python and CLI v0.1 Specification
+# Agentic Python and CLI v0.2 Specification
 
 | Field | Value |
 | --- | --- |
 | Specification | Agent-facing Python frontend and command-line interface |
-| Version | 0.1 |
+| Version | 0.2 |
 | Status | Draft for review |
 | Primary command | `agentic-circuit` |
 | Optional short alias | `acirc` |
-| Global contract epoch | `0.1` |
+| Global contract epoch | `0.2` |
 
 ## Purpose
 
@@ -18,11 +18,11 @@ execution.
 
 Human-readable output is useful, but machine-readable behavior is normative.
 
-This specification consumes [ACIR Core v0.1](acir-core-v0.1.md), the
-[Python-to-ACIR Lowering v0.1](python-to-acir-lowering-v0.1.md), the
-[ACIR Standard Library v0.1](acir-stdlib-v0.1.md), the
-[gfsim Model Library Contract v0.1](gfsim-runtime-abi-v0.1.md), and the
-[PTO Trace Schema v0.1](pto-trace-schema-v0.1.md).
+This specification consumes [ACIR Core v0.2](acir-core-v0.2.md), the
+[Python-to-ACIR Lowering v0.2](python-to-acir-lowering-v0.2.md), the
+[ACIR Standard Library v0.2](acir-stdlib-v0.2.md), the
+[gfsim Model Library Contract v0.2](gfsim-runtime-abi-v0.2.md), and the
+[PTO Trace Schema v0.2](pto-trace-schema-v0.2.md).
 
 ## Agent-first principles
 
@@ -51,11 +51,11 @@ ambient working-directory state for normal automation.
 Python is a static elaboration and specialization language. The emitted ACIR is
 the canonical compiler boundary.
 
-The global `0.1` epoch fixes the exact public Python decorators, types, function
+The global `0.2` epoch fixes the exact public Python decorators, types, function
 signatures, keyword names, and CLI spellings. Implementations MUST NOT accept
 alternate public spellings as equivalent portable source. Every participating
 frontend, schema, ACIR, ACSim, generated-code source contract, trace reader, and
-CLI artifact declares exactly this current epoch; v0.1 does not negotiate
+CLI artifact declares exactly this current epoch; v0.2 does not negotiate
 version ranges.
 
 Python control flow that changes topology runs during elaboration. Runtime
@@ -94,7 +94,7 @@ The Python API MUST expose these exact public names:
 
 The frontend SHOULD prefer explicit handles and named arguments over ambient
 builder stacks and reflection-based magic. Explicit `ins()`, `outs()`, and
-`connect()` calls are not part of the normal v0.1 authoring surface. The
+`connect()` calls are not part of the normal v0.2 authoring surface. The
 frontend MUST reject:
 
 - use of a handle outside its owning elaboration context;
@@ -376,8 +376,8 @@ Every diagnostic has a stable code and includes:
 ```json
 {
   "schema": "agentic-circuit-diagnostic",
-  "version": "0.1",
-  "contract_epoch": "0.1",
+  "version": "0.2",
+  "contract_epoch": "0.2",
   "code": "ACIR-PROTOCOL-004",
   "stage": "ac-resolve-protocols",
   "severity": "error",
@@ -537,11 +537,11 @@ Python elaboration executes code and therefore is not inherently sandboxed.
 The CLI MUST clearly distinguish trusted project execution from parsing ACIR.
 
 A future sandbox mode may restrict imports, filesystem access, environment, and
-network access. ACIR v0.1 does not claim safe execution of untrusted Python.
+network access. ACIR v0.2 does not claim safe execution of untrusted Python.
 
 ## Acceptance criteria
 
-The v0.1 CLI conforms when an agent can:
+The v0.2 CLI conforms when an agent can:
 
 - discover components and their schemas as JSON;
 - generate a Python architecture without undocumented parameters;

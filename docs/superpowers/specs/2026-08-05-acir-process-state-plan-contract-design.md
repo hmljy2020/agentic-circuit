@@ -1686,7 +1686,7 @@ independently of private-helper and CLI coverage.
 
 Task 2 owns extraction from `ModelAnalysis.cpp` and its internal helper,
 creation of the neutral dialect helper, affected `ACIROps` verification, and
-the normative `acir-core-v0.1.md` hard-break wording. A non-suspending
+the normative `acir-core-v0.2.md` hard-break wording. A non-suspending
 `scf.for` is legal only when lower, upper, and positive step give an exact
 finite static trip count. Otherwise every reachable backedge must suspend.
 There is no compatibility path.

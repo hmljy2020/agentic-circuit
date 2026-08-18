@@ -59,7 +59,14 @@ ACIR_DECLARE_PROCESS_ID(ProcessWakeId);
 ACIR_DECLARE_PROCESS_ID(ProcessTransitionId);
 #undef ACIR_DECLARE_PROCESS_ID
 
-enum class ProcessWakeKind { Condition, Resource, EventQueue, NextDelta };
+enum class ProcessWakeKind {
+  Condition,
+  Resource,
+  EventQueue,
+  NextDelta,
+  QueueReadable,
+  QueueWritable
+};
 enum class ProcessSubscriptionSourceKind { Capture, Value, Symbol };
 enum class ProcessActionKind {
   Original,
@@ -134,7 +141,9 @@ enum class ProcessHelperRole {
   WakeEventQueue,
   WakeNextDelta,
   ScalarWrap,
-  ScalarUnwrap
+  ScalarUnwrap,
+  WakeQueueReadable,
+  WakeQueueWritable
 };
 enum class ProcessValueTypeMemberKind { Field, Element };
 enum class ProcessStorageSignedness { Signless, Signed, Unsigned };

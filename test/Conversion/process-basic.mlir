@@ -1,13 +1,13 @@
 // RUN: %acir_opt_public --verify-each=false --pass-pipeline='builtin.module(ac-freeze-topology)' %s -o %t.frozen
 // RUN: %acir_opt_public --ac-lower-to-acsim --ac-binding-profile=fast --ac-binding-target=arm64-apple-darwin %t.frozen | %FileCheck %s
 
-// Process lowering at the v0.1 stage boundary: a yield-only process body
+// Process lowering at the v0.2 stage boundary: a yield-only process body
 // lowers to a single-state acsim.process whose entry state suspends on the
 // generated next-delta wake. The generated implementation symbol and wake
 // type carry the exact plan fingerprints, and the dispatch thunks point at
 // the deterministic acsim_generated namespace.
 
-builtin.module attributes {ac.contract_epoch = "0.1"} {
+builtin.module attributes {ac.contract_epoch = "0.2"} {
   ac.system @soc root @Top as "root" tick 0 "cycle"
       workload @Top::@workload seed {kind = "fixed", value = 7 : i64}
       instrumentation [] results {id = "default", format = "json"} selected true

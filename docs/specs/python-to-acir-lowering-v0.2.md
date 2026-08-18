@@ -1,14 +1,14 @@
-# Python-to-ACIR Lowering v0.1 Specification
+# Python-to-ACIR Lowering v0.2 Specification
 
 | Field | Value |
 | --- | --- |
 | Specification | Agentic Python source semantics and lowering to ACIR |
-| Version | 0.1 |
+| Version | 0.2 |
 | Status | Draft for review |
 | Source model | Restricted Python AST |
 | Semantic intermediate form | `acpy` |
-| Portable output | ACIR Core v0.1 |
-| Global contract epoch | `0.1` |
+| Portable output | ACIR Core v0.2 |
+| Global contract epoch | `0.2` |
 
 ## Purpose
 
@@ -22,10 +22,10 @@ The frontend is an executable architecture generation language, but it is not a
 general Python-to-MLIR compiler. Only the subset defined here has portable ACIR
 meaning.
 
-This specification consumes [ACIR Core v0.1](acir-core-v0.1.md) and
-[ACIR Standard Library v0.1](acir-stdlib-v0.1.md). Command behavior and
+This specification consumes [ACIR Core v0.2](acir-core-v0.2.md) and
+[ACIR Standard Library v0.2](acir-stdlib-v0.2.md). Command behavior and
 diagnostics conform to
-[Agentic Python and CLI v0.1](agentic-python-cli-v0.1.md).
+[Agentic Python and CLI v0.2](agentic-python-cli-v0.2.md).
 
 ## Normative language
 
@@ -33,7 +33,7 @@ The words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY** are
 normative requirements when written in uppercase.
 
 The public Python decorators, types, call syntax, and keyword names shown in
-this specification are exact for the global `0.1` epoch. Implementations MUST
+this specification are exact for the global `0.2` epoch. Implementations MUST
 reject aliases or alternate spellings unless this specification lists them.
 MLIR examples remain illustrative; their semantics are normative.
 
@@ -160,7 +160,7 @@ one of these kinds and controls call binding and ACIR lowering. No model or
 component parameter remains runtime-tunable after specialization.
 
 Classification MUST be unambiguous before the function body is lowered.
-Unannotated public parameters are errors in portable v0.1 source.
+Unannotated public parameters are errors in portable v0.2 source.
 
 ### Returns
 
@@ -260,7 +260,7 @@ A fixed tuple, named result, or statically shaped collection crossing a scope
 boundary is recursively decomposed into ordered symbolic leaves. The outlined
 module exposes those leaves as ports or results, and the parent reconstructs an
 immutable source-level bundle. Shape and field metadata remain in ACPy and
-source maps. Dynamically shaped collections cannot cross a v0.1 scope boundary.
+source maps. Dynamically shaped collections cannot cross a v0.2 scope boundary.
 
 Nested `scope` blocks recursively create nested hierarchy. Moving a statement
 across a strong scope boundary may therefore change ownership and canonical
@@ -270,7 +270,7 @@ paths and is not semantics-preserving by default.
 
 ### Static values
 
-Static values are fully known during elaboration. Portable v0.1 static values
+Static values are fully known during elaboration. Portable v0.2 static values
 include:
 
 - `None`, booleans, integers, strings, and enums;
@@ -369,7 +369,7 @@ state, queues, resources, events, or other core operations.
 
 ### Excluded constructs
 
-Portable v0.1 module construction excludes:
+Portable v0.2 module construction excludes:
 
 - `async`, `await`, `yield`, and generators;
 - `eval`, `exec`, dynamic code generation, and dynamic imports;
@@ -419,7 +419,7 @@ to make inference, normalization, validation, and diagnostics explicit.
 ACPy is not the portable architecture interchange format, but its emitted JSON
 is a public inspection and compiler-debugging contract. It MUST validate against
 [`acpy.schema.json`](../../schemas/acpy.schema.json), declare exact global epoch
-`"0.1"`, and evolve in lockstep with every other public surface. There is no
+`"0.2"`, and evolve in lockstep with every other public surface. There is no
 independent compatibility rule.
 
 ### Required information
@@ -435,7 +435,7 @@ Every ACPy entity records:
 
 ### Conceptual operations
 
-ACPy v0.1 contains exactly these public entity kinds:
+ACPy v0.2 contains exactly these public entity kinds:
 
 - `acpy.system` for a selected root entry;
 - `acpy.module` for a captured module definition;
@@ -867,7 +867,7 @@ explicit because replication and fan-in are architectural behavior.
 
 ## Acceptance criteria
 
-The Python-to-ACIR frontend conforms to v0.1 when it can:
+The Python-to-ACIR frontend conforms to v0.2 when it can:
 
 - lower assignment-and-call module code without visible input/output or
   connection builders;

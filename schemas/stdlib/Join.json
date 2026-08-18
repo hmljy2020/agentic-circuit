@@ -1,7 +1,7 @@
 {
   "schema_kind": "agentic-circuit-component",
-  "schema_version": "0.1",
-  "contract_epoch": "0.1",
+  "schema_version": "0.2",
+  "contract_epoch": "0.2",
   "canonical_name": "ac.std.Join",
   "family": "synchronization",
   "provider_namespace": "ac.std",
@@ -11,7 +11,7 @@
     "symbol": "gfsim::Join",
     "language": "c++20",
     "concept": "gfsim::Component",
-    "toolchain_target": "ac-gfsim-cxx20-v0.1",
+    "toolchain_target": "ac-gfsim-cxx20-v0.2",
     "functional_policy": "none"
   },
   "static_parameters": [
@@ -123,5 +123,5 @@
     "gauges": [],
     "histograms": []
   },
-  "schema_fingerprint": "sha256:93e1ffee76ea92a5dc0a6b882674ce0db484be63ffc24ab01d2cd9191160a913"
+  "schema_fingerprint": "sha256:8d7d0726d9db8f6dfb30d87ac03082d00c72405331ba11719db293fde76d4b97"
 }

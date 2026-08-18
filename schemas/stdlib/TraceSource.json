@@ -1,7 +1,7 @@
 {
   "schema_kind": "agentic-circuit-component",
-  "schema_version": "0.1",
-  "contract_epoch": "0.1",
+  "schema_version": "0.2",
+  "contract_epoch": "0.2",
   "canonical_name": "ac.std.TraceSource",
   "family": "workload",
   "provider_namespace": "ac.std",
@@ -11,7 +11,7 @@
     "symbol": "gfsim::TraceSource",
     "language": "c++20",
     "concept": "gfsim::Component",
-    "toolchain_target": "ac-gfsim-cxx20-v0.1",
+    "toolchain_target": "ac-gfsim-cxx20-v0.2",
     "functional_policy": "none"
   },
   "static_parameters": [
@@ -101,5 +101,5 @@
     ],
     "histograms": []
   },
-  "schema_fingerprint": "sha256:4e80c2e6e35a638347397233cea96f25754feb8bf8aedd5c9bf6e5531dddaa2c"
+  "schema_fingerprint": "sha256:46014f6519e6cfd3e3c00b29235804073a3a08397e53f6f54afb2ae9201607b0"
 }

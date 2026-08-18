@@ -1,7 +1,7 @@
 {
   "schema_kind": "agentic-circuit-component",
-  "schema_version": "0.1",
-  "contract_epoch": "0.1",
+  "schema_version": "0.2",
+  "contract_epoch": "0.2",
   "canonical_name": "ac.std.Tlb",
   "family": "storage",
   "provider_namespace": "ac.std",
@@ -11,7 +11,7 @@
     "symbol": "gfsim::Tlb",
     "language": "c++20",
     "concept": "gfsim::Component",
-    "toolchain_target": "ac-gfsim-cxx20-v0.1",
+    "toolchain_target": "ac-gfsim-cxx20-v0.2",
     "functional_policy": "none"
   },
   "static_parameters": [
@@ -149,5 +149,5 @@
     ],
     "histograms": []
   },
-  "schema_fingerprint": "sha256:b93f7f0c6cf24c0159a73d8adf1414031a56ab1c67dc90d7e6031d77e63c0839"
+  "schema_fingerprint": "sha256:30d995a5a885c081ce2c4987ec36015c1aec5b6ac8159ee2a79d96a1ac0b5903"
 }

@@ -1,7 +1,7 @@
 {
   "schema_kind": "agentic-circuit-component",
-  "schema_version": "0.1",
-  "contract_epoch": "0.1",
+  "schema_version": "0.2",
+  "contract_epoch": "0.2",
   "canonical_name": "ac.std.Compute",
   "family": "compute",
   "provider_namespace": "ac.std",
@@ -11,7 +11,7 @@
     "symbol": "gfsim::Compute",
     "language": "c++20",
     "concept": "gfsim::Component",
-    "toolchain_target": "ac-gfsim-cxx20-v0.1",
+    "toolchain_target": "ac-gfsim-cxx20-v0.2",
     "functional_policy": "optional"
   },
   "static_parameters": [
@@ -129,5 +129,5 @@
     "gauges": [],
     "histograms": []
   },
-  "schema_fingerprint": "sha256:8ddfc69b751016688f6a434a6c9ea15c6557c017a7775b62bb927d0fc1429d1e"
+  "schema_fingerprint": "sha256:1d3d344207d3fa71b40d782d5f279e496bd6880c7cc43e5cad08713ce002f5ee"
 }

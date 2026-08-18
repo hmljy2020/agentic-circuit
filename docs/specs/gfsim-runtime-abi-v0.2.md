@@ -1,12 +1,12 @@
-# gfsim Model Library Contract v0.1
+# gfsim Model Library Contract v0.2
 
 | Field | Value |
 | --- | --- |
 | Specification | Graph Flow Simulator model-library and runtime contract |
-| Version | 0.1 |
+| Version | 0.2 |
 | Status | Draft for review |
-| Global contract epoch | `0.1` |
-| Contract identifier | `gfsim-cxx20@0.1` |
+| Global contract epoch | `0.2` |
+| Contract identifier | `gfsim-cxx20@0.2` |
 | Language boundary | Same-toolchain C++20 source and templates |
 
 ## Purpose and authority
@@ -24,7 +24,7 @@ cycle compatibility with either system.
 
 ## C++20 integration boundary
 
-v0.1 is a same-toolchain source/template contract, not a stable binary ABI.
+v0.2 is a same-toolchain source/template contract, not a stable binary ABI.
 Generated code, the runtime, packet definitions, and component libraries MUST
 be compiled together with a compatible C++20 toolchain and build definition.
 The contract does not define:
@@ -128,7 +128,7 @@ snapshot. Each execution writes only to a private proposal buffer associated
 with its stable object ID. It MUST NOT expose a proposal, provisional
 reservation, or local mutation to another Work execution at that epoch.
 
-Order-independent Work executions MAY run concurrently. The v0.1 reference
+Order-independent Work executions MAY run concurrently. The v0.2 reference
 implementation is single-threaded, but the API and component contract MUST be
 parallel-safe. A future parallel implementation given the same generated model
 and trace MUST produce bit-identical committed state, trace output, statistics,
@@ -174,7 +174,7 @@ Entries contain typed or type-erased thunks with statically verified signatures
 for the operations an object supports. The hot path does not require virtual
 dispatch, dynamic type discovery, string lookup, or plugin indirection.
 
-For contract epoch `0.1`, the generated/runtime C++20 boundary is the following
+For contract epoch `0.2`, the generated/runtime C++20 boundary is the following
 logical layout (the declarations in `gfsim/dispatch.h` are canonical):
 
 ```cpp
@@ -216,6 +216,11 @@ are scheduled at `(time + 1, 0)`; no stateful result is exposed in a same-tick
 causal delta. Multiple edges and wake causes for one target are deduplicated by
 the scheduler.
 
+A Work object may submit proposals to a different object. Such an object is
+registered as a commit participant for the current epoch. Arbitration and Xfer
+operate on the ordered union of the Work frontier and commit participants,
+sorted by object ID. An object commits at most once per integer tick.
+
 Virtual functions MAY be used outside the hot path as an implementation detail,
 but they are not part of the contract and cannot alter deterministic ordering.
 
@@ -232,6 +237,13 @@ but they are not part of the contract and cannot alter deterministic ordering.
 
 An enqueue succeeds only if all declared capacities permit it. FIFO data queues
 and time-ordered event queues are distinct types.
+
+`tryRecv()` returns `{T{}, false}` when the committed snapshot is empty.
+Accepted queue proposals register the queue as a cross-object commit
+participant. Queue commits activate only statically adjacent processes at
+`(time + 1, 0)`; queue-readable and queue-writable subscriptions additionally
+match the exact queue object ID. Pending pops never make capacity available to
+same-epoch pushes.
 
 The standard-library `Queue<T>` is the public finite FIFO component contract
 over the `SimQueue<T>` primitive. The standard-library `Scheduler<T>` is a
@@ -370,7 +382,7 @@ never loaded, replaced, or configured at runtime.
 
 Every executable baseline template exposes `contractName` and `componentKind`
 as compile-time constants and satisfies the `gfsim::Component` concept. The
-exact v0.1 identities are the matching `ac.std.*` catalog names; protocol
+exact v0.2 identities are the matching `ac.std.*` catalog names; protocol
 templates use `ac.std.ready_valid` and `ac.std.request_response`.
 
 The generated build MUST fail compilation or static preflight if an exact
@@ -395,10 +407,10 @@ Exactly one `TraceSourceModel` owns the trace cursor. It peeks the next record
 and holds the decoded offer unchanged while downstream backpressure persists.
 The cursor advances only when that offer commits at Xfer. Decode, retries,
 Work reevaluation, and rejected proposals never advance it. Detailed identity
-and dependency rules are defined by the PTO Trace Schema v0.1 specification.
+and dependency rules are defined by the PTO Trace Schema v0.2 specification.
 
 The runtime `PtoTraceDocument` is move-only cursor input. `parsePtoTrace`
-validates the exact closed `pto-trace@0.1` envelope into typed metadata,
+validates the exact closed `pto-trace@0.2` envelope into typed metadata,
 records, operands, attributes, dependencies, issue time, and source location;
 all failures use stable `ACTRACE-*` diagnostics and JSON Pointers.
 `PtoTraceStream` accepts bounded chunks and applies the identical preflight and
@@ -413,7 +425,7 @@ Future issue-time constraints schedule one exact self event and never poll.
 
 ## Static preflight and build profiles
 
-The generated model selects exactly one static build profile. v0.1 defines:
+The generated model selects exactly one static build profile. v0.2 defines:
 
 - `fast`: every required representation verifier, static preflight, memory and
   time safety, capacity checks, protocol legality, unique identity,
@@ -526,7 +538,7 @@ Python frontend, or a dynamic component/plugin service at runtime.
 
 ## Acceptance criteria
 
-The v0.1 contract conforms when it can:
+The v0.2 contract conforms when it can:
 
 - compile a generated hierarchy and exact component set with one C++20
   toolchain;

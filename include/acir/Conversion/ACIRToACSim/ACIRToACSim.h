@@ -22,7 +22,7 @@ struct ACIRToACSimPassOptions {
   std::vector<bindings::BindingRequest> requests;
   std::string profile;
   std::string target;
-  /// Test hook: when non-zero, replaces the built-in v0.1 expanded-row
+  /// Test hook: when non-zero, replaces the built-in v0.2 expanded-row
   /// capability bound so the ACLOWER-DISPATCH overflow path is observable
   /// without a million-row input. Production drivers leave this at zero.
   uint64_t maxExpandedRows = 0;
@@ -30,13 +30,13 @@ struct ACIRToACSimPassOptions {
 
 /// Create the atomic `ac-lower-to-acsim` pass.
 ///
-/// The pass converts one frozen, verified ACIR file (contract epoch "0.1",
+/// The pass converts one frozen, verified ACIR file (contract epoch "0.2",
 /// `ac.topology_frozen = true`, exactly one selected ac.system) into one
 /// canonical ACSim model in a single transaction. Every validation failure
 /// is diagnosed with an ACLOWER-* code before any mutation, so a failed
 /// lowering never publishes a partial acsim.model.
 ///
-/// The v0.1 lowering covers generated ownership, homogeneous arrays, exact
+/// The v0.2 lowering covers generated ownership, homogeneous arrays, exact
 /// pure/stateful bindings, typed endpoint graph edges and exports, and the
 /// complete public ProcessStatePlan state machine. Unsupported topology kinds
 /// and heterogeneous specializations fail with an explicit diagnostic and are

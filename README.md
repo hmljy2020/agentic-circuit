@@ -2,7 +2,7 @@
 
 Agentic Circuit is a Python and MLIR-based architecture construction system
 that generates a structured, pure C++ graph-flow simulator named `gfsim`.
-Its public v0.1 contracts use exact global contract epoch `0.1`.
+Its public v0.2 contracts use exact global contract epoch `0.2`.
 
 ## Development baseline
 
@@ -25,15 +25,15 @@ in `toolchains/llvm.lock.json`.
 
 Normative specifications:
 
-- [Interface Evolution v0.1](docs/specs/interface-evolution-v0.1.md)
-- [ACIR Core v0.1](docs/specs/acir-core-v0.1.md)
-- [Python-to-ACIR Lowering v0.1](docs/specs/python-to-acir-lowering-v0.1.md)
-- [Agentic Python and CLI v0.1](docs/specs/agentic-python-cli-v0.1.md)
-- [ACIR Standard Library v0.1](docs/specs/acir-stdlib-v0.1.md)
-- [ACSim and gfsim Lowering v0.1](docs/specs/acsim-gfsim-lowering-v0.1.md)
-- [gfsim Model Library Contract v0.1](docs/specs/gfsim-runtime-abi-v0.1.md)
-- [PTO Trace Schema v0.1](docs/specs/pto-trace-schema-v0.1.md)
-- [ACIR Process-State Plan v0.1](docs/specs/acir-process-state-plan-v0.1.md)
+- [Interface Evolution v0.2](docs/specs/interface-evolution-v0.2.md)
+- [ACIR Core v0.2](docs/specs/acir-core-v0.2.md)
+- [Python-to-ACIR Lowering v0.2](docs/specs/python-to-acir-lowering-v0.2.md)
+- [Agentic Python and CLI v0.2](docs/specs/agentic-python-cli-v0.2.md)
+- [ACIR Standard Library v0.2](docs/specs/acir-stdlib-v0.2.md)
+- [ACSim and gfsim Lowering v0.2](docs/specs/acsim-gfsim-lowering-v0.2.md)
+- [gfsim Model Library Contract v0.2](docs/specs/gfsim-runtime-abi-v0.2.md)
+- [PTO Trace Schema v0.2](docs/specs/pto-trace-schema-v0.2.md)
+- [ACIR Process-State Plan v0.2](docs/specs/acir-process-state-plan-v0.2.md)
 
 Canonical machine-readable schemas:
 

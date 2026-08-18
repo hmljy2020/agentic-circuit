@@ -12,7 +12,7 @@ ACIR/ACSim implementation and the Phase 2 runtime.
 This design implements Phase 3 of the
 [Agentic Circuit roadmap](../plans/2026-08-04-agentic-circuit-roadmap.md) and
 the normative
-[ACSim and ACIR-to-gfsim lowering specification](../../specs/acsim-gfsim-lowering-v0.1.md).
+[ACSim and ACIR-to-gfsim lowering specification](../../specs/acsim-gfsim-lowering-v0.2.md).
 Those documents remain authoritative. This document fixes the implementation
 architecture, internal APIs, artifact flow, and verification strategy.
 

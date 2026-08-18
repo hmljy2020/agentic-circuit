@@ -525,6 +525,11 @@ public:
   static mlir::FailureOr<std::unique_ptr<ControlPlan>>
   planProcessContinuation(const ExpandedProcess &expanded,
                           const ProcessStateLimits &limits);
+  static ProcessActionPlan makePlannedAction(const ExpandedAction &expanded,
+                                             uint32_t id);
+  static mlir::FailureOr<std::unique_ptr<ControlPlan>>
+  planStructuredIfContinuation(const ExpandedProcess &expanded,
+                               const ProcessStateLimits &limits);
   static mlir::FailureOr<std::unique_ptr<ControlPlan>>
   planProcessWakes(std::unique_ptr<ControlPlan> control,
                    const ProcessStateLimits &limits);

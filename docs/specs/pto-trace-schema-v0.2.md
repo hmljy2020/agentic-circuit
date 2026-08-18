@@ -1,12 +1,12 @@
-# PTO Trace Schema v0.1 Specification
+# PTO Trace Schema v0.2 Specification
 
 | Field | Value |
 | --- | --- |
 | Specification | PTO trace JSON and decoded runtime boundary |
-| Version | 0.1 |
+| Version | 0.2 |
 | Status | Draft for review |
-| Schema identity | `pto-trace@0.1` |
-| Global contract epoch | `0.1` |
+| Schema identity | `pto-trace@0.2` |
+| Global contract epoch | `0.2` |
 
 ## Purpose
 
@@ -17,7 +17,7 @@ NOT parse JSON directly.
 
 ## Exact schema contract
 
-Conformance requires the exact schema identity `pto-trace@0.1`. Producers and
+Conformance requires the exact schema identity `pto-trace@0.2`. Producers and
 consumers MUST NOT negotiate a version range, infer compatibility, accept a
 nearby version, or apply additive compatibility rules.
 
@@ -27,7 +27,7 @@ defines additional ordering, identity, cursor, and completion constraints that
 JSON Schema cannot express.
 
 Every accepted field, opcode, operand kind, attribute, and extension is declared
-by the exact machine-readable v0.1 schema selected by the generated binary. An
+by the exact machine-readable v0.2 schema selected by the generated binary. An
 unknown field or extension is a validation error, even if a consumer could
 ignore it. A new optional field, new extension, or changed interpretation
 requires a distinct declared schema identity and a global contract-epoch
@@ -40,22 +40,22 @@ A trace document contains:
 ```json
 {
   "schema": "pto-trace",
-  "version": "0.1",
-  "contract_epoch": "0.1",
+  "version": "0.2",
+  "contract_epoch": "0.2",
   "metadata": {},
   "records": []
 }
 ```
 
 `schema`, `version`, `contract_epoch`, `metadata`, and `records` are required.
-The epoch MUST equal `"0.1"`. Their JSON types and allowed members are closed by
-the exact v0.1 schema. Duplicate object keys, numbers outside declared integer
+The epoch MUST equal `"0.2"`. Their JSON types and allowed members are closed by
+the exact v0.2 schema. Duplicate object keys, numbers outside declared integer
 bounds, non-canonical numeric forms where the schema requires integers, and
 trailing non-JSON data are errors.
 
 ## Metadata
 
-The exact v0.1 metadata object may declare fields defined by its machine-readable
+The exact v0.2 metadata object may declare fields defined by its machine-readable
 schema, including producer identity, PTO ISA or IR identity, source program
 identity, address spaces, data layout, record count, and content hash.
 
@@ -84,7 +84,7 @@ replace, merge, reorder, or redefine `sequence_id`.
 
 ## Record representation
 
-Each v0.1 record contains exactly the fields permitted by the machine-readable
+Each v0.2 record contains exactly the fields permitted by the machine-readable
 schema. Its required semantic fields are:
 
 - `sequence_id`: canonical root transaction identity;
@@ -95,7 +95,7 @@ schema. Its required semantic fields are:
 
 The exact schema may declare source location, an integer issue-time constraint,
 stream/thread/tile identity, packetization data, or an expected validation
-result. Such fields have only their declared v0.1 meaning.
+result. Such fields have only their declared v0.2 meaning.
 
 An illustrative conforming record shape is:
 
@@ -127,7 +127,7 @@ machine-readable definition.
 ## Operand, tile, and address representation
 
 An operand has a required `kind` and the exact kind-specific fields declared by
-v0.1. Initial kinds are `immediate`, `buffer`, `tile`, `address`, `symbol`, and
+v0.2. Initial kinds are `immediate`, `buffer`, `tile`, `address`, `symbol`, and
 `record_result`.
 
 Tile and shape data use explicit named dimensions, layout, and data type.
@@ -144,7 +144,7 @@ Dependencies express logical readiness between root transactions. Every
 dependency value MUST equal the `sequence_id` of a record that appears earlier
 in the same document. Self-dependencies, forward references, duplicate entries,
 external dependencies, symbolic dependency identifiers, and dependency cycles
-are invalid in v0.1.
+are invalid in v0.2.
 
 The trace source does not issue a root transaction until every listed root
 transaction has reached the dependency-complete state declared by the generated
@@ -175,7 +175,7 @@ at committed Xfer. A retry retains the first four fields and increments only
 
 ## Issue time
 
-If v0.1 declares an issue-time field for an opcode, it is an exact non-negative
+If v0.2 declares an issue-time field for an opcode, it is an exact non-negative
 integer simulation tick. It is a lower bound on issue and never overrides
 dependencies, resource legality, protocol legality, or the global epoch rules.
 There is no runtime option that changes its interpretation. A contradictory or
@@ -185,7 +185,7 @@ out-of-range value is a validation error.
 
 The trace subsystem produces an exact-version `PtoTraceRecord` containing the
 canonical root sequence ID, normalized opcode, typed operands, earlier
-dependency IDs, typed attributes, and any other explicitly declared v0.1 data.
+dependency IDs, typed attributes, and any other explicitly declared v0.2 data.
 `ac.trace.decode` maps it to a declared ACIR transaction type selected statically
 by the generated `TraceSourceModel` decoder.
 
@@ -259,9 +259,9 @@ integer values.
 
 ## Versioning and extensions
 
-`pto-trace@0.1` is a distinct local schema identity, but it participates in the
+`pto-trace@0.2` is a distinct local schema identity, but it participates in the
 same global epoch as ACIR and the model library. A generated simulator declares
-the exact identity tuple it accepts. v0.1 has no additive compatibility rule and
+the exact identity tuple it accepts. v0.2 has no additive compatibility rule and
 no facility for ignored unknown extensions.
 
 A producer that needs a new field, opcode, operand kind, attribute, extension,
@@ -287,7 +287,7 @@ known, and a structured diagnostic code.
 
 ## Acceptance criteria
 
-The v0.1 trace boundary conforms when:
+The v0.2 trace boundary conforms when:
 
 - the exact closed schema is validated before simulation;
 - every root record has one canonical, strictly increasing `sequence_id`;

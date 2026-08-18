@@ -124,8 +124,8 @@ class SchemaCallableTest(unittest.TestCase):
         )
         catalog = {
             "catalog": "ac.std",
-            "version": "0.1",
-            "contract_epoch": "0.1",
+            "version": "0.2",
+            "contract_epoch": "0.2",
             "entries": [
                 {
                     "canonical_name": "ac.std.Queue",

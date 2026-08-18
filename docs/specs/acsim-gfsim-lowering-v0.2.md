@@ -1,11 +1,11 @@
-# ACSim and ACIR-to-gfsim Lowering v0.1 Specification
+# ACSim and ACIR-to-gfsim Lowering v0.2 Specification
 
 | Field | Value |
 | --- | --- |
 | Specification | ACSim construction IR and ACIR-to-gfsim lowering |
-| Version | 0.1 |
+| Version | 0.2 |
 | Status | Draft for review |
-| Global contract epoch | `0.1` |
+| Global contract epoch | `0.2` |
 | ACSim namespace | `acsim` |
 | C++ boundary | Same-toolchain C++20 source and templates |
 | Generated target | Statically specialized gfsim executable |
@@ -16,16 +16,16 @@ This specification defines the target-specific construction IR between frozen
 ACIR and generated C++, exact C++20 binding resolution, structured code
 generation, and the static dispatch and activation plans used by gfsim.
 
-[ACIR Core v0.1](acir-core-v0.1.md) defines portable architecture semantics.
-[ACIR Standard Library v0.1](acir-stdlib-v0.1.md) defines component schemas.
-[gfsim Model Library Contract v0.1](gfsim-runtime-abi-v0.1.md) defines runtime
-execution. [Agentic Python and CLI v0.1](agentic-python-cli-v0.1.md) defines
-artifact publication. [Interface Evolution v0.1](interface-evolution-v0.1.md)
+[ACIR Core v0.2](acir-core-v0.2.md) defines portable architecture semantics.
+[ACIR Standard Library v0.2](acir-stdlib-v0.2.md) defines component schemas.
+[gfsim Model Library Contract v0.2](gfsim-runtime-abi-v0.2.md) defines runtime
+execution. [Agentic Python and CLI v0.2](agentic-python-cli-v0.2.md) defines
+artifact publication. [Interface Evolution v0.2](interface-evolution-v0.2.md)
 defines hard-break evolution.
 
 The words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY** are
 normative when uppercase. The type and operation names in this specification
-are the exact public ACSim v0.1 inventory. Generic MLIR syntax is not an
+are the exact public ACSim v0.2 inventory. Generic MLIR syntax is not an
 alternate public spelling.
 
 ## Architectural boundary
@@ -55,7 +55,7 @@ normalize an already fixed construction plan.
 
 Lowering accepts only ACIR for which:
 
-- `ac.contract_epoch` is exactly `"0.1"` and one `ac.system` is selected;
+- `ac.contract_epoch` is exactly `"0.2"` and one `ac.system` is selected;
 - topology, hierarchy paths, ownership, collection shapes, and model parameters
   are frozen and concrete;
 - types, schemas, providers, interfaces, protocols, roles, and policies resolve;
@@ -173,8 +173,8 @@ machine.
 `ac-resolve-gfsim-bindings` emits immutable
 `acsim-bindings.lock.json`. Each record contains exactly:
 
-- `binding_schema` equal to `acsim-binding-0.1`;
-- `contract_epoch` equal to the string `"0.1"`;
+- `binding_schema` equal to `acsim-binding-0.2`;
+- `contract_epoch` equal to the string `"0.2"`;
 - binding, component-schema, provider, and implementation identities;
 - component-schema and provider-implementation fingerprints;
 - availability equal to `available`;
@@ -206,8 +206,8 @@ or mutable registry.
 | --- | --- |
 | `!acsim.value<@cpp_type>` | Concrete typed C++ value in generated state or a library call |
 | `!acsim.expr<@cpp_type>` | Pure effect-free inline expression |
-| `!acsim.owner<@realization>` | Unique owning placement of a generated module or stateful library object |
-| `!acsim.ref<@realization>` | Statically resolved non-owning reference to that exact realization |
+| `!acsim.owner<@realization>` | Unique owning placement of a generated module, stateful library object, or compiler-native runtime object |
+| `!acsim.ref<@realization>` | Statically resolved non-owning reference to that exact realization, including compiler-native runtime objects |
 | `!acsim.port<@interface, @role, @payload, @protocol>` | Typed construction-time port |
 | `!acsim.resource<@resource, @role>` | Typed construction-time resource capability |
 | `!acsim.array<[shape], element_type>` | Statically shaped homogeneous collection |
@@ -225,7 +225,7 @@ reflection, or untyped port type.
 | Operation | Contract |
 | --- | --- |
 | `acsim.model` | One selected system, exact fingerprints, object registry, and activation plan |
-| `acsim.type` | One resolved C++ value, packet, interface, protocol, or policy realization |
+| `acsim.type` | One resolved C++ value, packet, interface, protocol, policy, or compiler-native `runtime_object` realization |
 | `acsim.binding` | One exact binding-lock record |
 | `acsim.module` | One generated owner class for one specialized ACIR module |
 | `acsim.instance` | One owned generated submodule or stateful library specialization |
@@ -250,7 +250,7 @@ reflection, or untyped port type.
 Process regions may use `builtin`, `arith`, `index`, and `cf` for constants,
 pure arithmetic, indexing, and intra-state control flow, and may use the
 effect-free `acsim.inline` operation. No other dialect is legal in canonical
-ACSim v0.1. Every process block has one PC attribute; an ordinary `cf` edge
+ACSim v0.2. Every process block has one PC attribute; an ordinary `cf` edge
 cannot cross a suspension boundary.
 
 Changing this inventory changes the public schema and requires a global epoch
@@ -258,7 +258,7 @@ increment.
 
 ## Verifier invariants
 
-Canonical ACSim has exactly one `acsim.model` with epoch `"0.1"` and exact
+Canonical ACSim has exactly one `acsim.model` with epoch `"0.2"` and exact
 frozen-ACIR, binding-lock, provider, profile, toolchain, and schema-set
 fingerprints. It contains no unresolved type, symbol, parameter, view,
 generator, or component schema.
@@ -279,11 +279,18 @@ generator, or component schema.
   specialization and cache fingerprints.
 - Owner expansion is deterministic, iterative, and bounded. It includes
   generated-module placements, stateful binding placements, every array
-  element, and every process, and drives construction, destruction, paths, and
-  recursive child expansion.
+  element, compiler-native `runtime_object` placements, and every process, and
+  drives construction, destruction, paths, and recursive child expansion.
 - A placement targeting `acsim.module` is an ownership-only wrapper. It remains
   in construction/destruction order and recursively exposes its children but
   receives no runtime object ID, activation ID, or dispatch row.
+- A placement targeting an `acsim.type` of kind `runtime_object` is a
+  compiler-native member or array element. It receives ownership, a dense
+  object/activation ID, and exact dispatch thunks, but no `acsim.binding`,
+  provider fingerprint, concept check, or external header lookup.
+- `runtime_object` is forbidden as an `acsim.inline` target. Its static
+  constructor arguments are one positive entry capacity and an optional
+  positive byte capacity.
 
 ### Collections
 
@@ -346,13 +353,16 @@ generator, or component schema.
   generated `executeProcessStep` switch returns an explicit continue, suspend,
   terminate, or fail action for every closed PC case. Runtime continuation and
   wake matching are exact; generated step dispatch is statically bound.
+- Native queue send/receive helpers take `[queue_ref, element]` and
+  `[queue_ref]` respectively. Queue-readable/writable wake helpers take the
+  same typed queue reference and materialize its object ID in the wake handle.
 
 ### Dispatch and activation
 
 - Runtime expansion is a separate deterministic, iterative, bounded analysis.
-  It contains only stateful `acsim.binding`-targeted placements and array
-  elements plus one row for every process in every concrete generated-module
-  context.
+  It contains stateful `acsim.binding` placements, compiler-native
+  `runtime_object` placements and array elements, plus one row for every
+  process in every concrete generated-module context.
 - Every runtime row has one dense object ID and activation ID in canonical path
   order and exactly one typed dispatch row. Generated-module wrapper
   placements never receive a runtime row.
@@ -427,7 +437,7 @@ object IDs. Due events and process subscriptions address object IDs directly.
 The scheduler may deduplicate wake causes for one epoch but cannot scan all
 objects to discover work.
 
-For v0.1, activation-source IDs equal their dense object IDs. The generated
+For v0.2, activation-source IDs equal their dense object IDs. The generated
 offset array therefore has `dispatch_row_count + 1` entries. Targets within
 each source range are sorted and deduplicated, and the generated byte sequence
 is independent of input edge order. A stateful source is committed exactly
@@ -455,7 +465,7 @@ the cold harness path and never enter generated Work/Xfer dispatch.
 
 ## Same-toolchain C++20 source contract
 
-v0.1 defines a source/template contract, not a stable binary or plugin ABI.
+v0.2 defines a source/template contract, not a stable binary or plugin ABI.
 Generated code, `runtime/`, `stdlib/`, provider sources, packets, and the harness
 are compiled with identical:
 

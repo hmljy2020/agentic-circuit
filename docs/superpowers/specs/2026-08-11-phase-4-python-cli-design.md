@@ -12,9 +12,9 @@
 ## 1. Purpose
 
 Phase 4 makes the contracts in
-[`python-to-acir-lowering-v0.1.md`](../../specs/python-to-acir-lowering-v0.1.md)
+[`python-to-acir-lowering-v0.2.md`](../../specs/python-to-acir-lowering-v0.2.md)
 and
-[`agentic-python-cli-v0.1.md`](../../specs/agentic-python-cli-v0.1.md)
+[`agentic-python-cli-v0.2.md`](../../specs/agentic-python-cli-v0.2.md)
 executable. It adds the public Python construction surface, deterministic ACPy
 frontend, ACPy-to-ACIR lowering, and the public `agentic-circuit` command while
 composing the ACIR, ACSim, binding, code-generation, and gfsim work completed in

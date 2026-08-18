@@ -15,7 +15,7 @@
 
 - Global contract epoch is exactly `0.1`; public CLI identity is exactly `agentic-circuit-cli@0.1`.
 - The exact commands are `init`, `schema`, `check`, `elaborate`, `compile`, `build`, `run`, `inspect`, `explain`, and `doctor`; no alias is accepted.
-- Exact public exit codes are `0`, `2`, `3`, `4`, `5`, `6`, `7`, and `130` with the meanings fixed by `agentic-python-cli-v0.1.md`.
+- Exact public exit codes are `0`, `2`, `3`, `4`, `5`, `6`, `7`, and `130` with the meanings fixed by `agentic-python-cli-v0.2.md`.
 - Relevant commands implement exact common options `--json`, `--diagnostic-format text|json|jsonl`, `--no-color`, `--quiet`, `--output-dir`, `--project`, `--system`, `--jobs`, and `--seed`; warnings change status only under `--warnings-as-errors`.
 - `--json` writes exactly one JSON value to stdout; JSONL modes write one JSON object per line; prose and project output never contaminate structured stdout.
 - The Phase 3 library is called through the compiler façade. `acir-opt` and `acir-cxxgen` remain internal developer/test drivers.
@@ -460,7 +460,7 @@ git commit -m "feat(cli): add workspace parser and output policy"
 - Create: `src/agentic_circuit/_commands/schema.py`
 - Create: `src/agentic_circuit/_commands/explain.py`
 - Create: `src/agentic_circuit/_commands/doctor.py`
-- Create: `resources/diagnostics-v0.1.json`
+- Create: `resources/diagnostics-v0.2.json`
 - Create: `tests/cli/test_discovery_commands.py`
 - Modify: `tests/contracts/test_contracts.py`
 
@@ -877,8 +877,8 @@ git commit -m "feat(cli): build with exact frontend provenance"
 - Modify: `lib/CodeGen/ModelPlan.cpp`
 - Modify: `lib/CodeGen/Generator.cpp`
 - Modify: `lib/Conversion/ACIRToACSim/ACIRToACSim.cpp`
-- Modify: `docs/specs/acsim-gfsim-lowering-v0.1.md`
-- Modify: `contracts/acsim-v0.1.yaml`
+- Modify: `docs/specs/acsim-gfsim-lowering-v0.2.md`
+- Modify: `contracts/acsim-v0.2.yaml`
 - Modify: `unittests/gfsim/core_test.cpp`
 - Modify: `unittests/CodeGen/GeneratorTest.cpp`
 - Modify: `unittests/CodeGen/GeneratedModelRuntimeTest.cpp`

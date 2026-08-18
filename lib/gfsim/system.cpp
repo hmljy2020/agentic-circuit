@@ -19,6 +19,7 @@ struct SimSystem::Impl {
   uint64_t committedEventCount = 0;
   bool executingEpoch = false;
   std::optional<ObjectId> activeProposalOwner;
+  std::set<ObjectId> commitParticipants;
   NoProgressReport noProgress;
   size_t traceOwnerCount = 0;
   bool traceEof = true;
@@ -219,6 +220,16 @@ void SimSystem::registerObject(SimObject *obj) {
   }
   impl_->objects[obj->id()] = obj;
   impl_->preflightValidated = false;
+}
+
+bool SimSystem::registerCommitParticipant(ObjectId id) {
+  if (terminated_ || !impl_->executingEpoch || !impl_->activeProposalOwner)
+    return false;
+  if (!lookup(id))
+    return fail("unknown_commit_participant",
+                "commit participant is absent from the static dispatch table");
+  impl_->commitParticipants.insert(id);
+  return true;
 }
 
 bool SimSystem::setDispatchTable(std::span<const DispatchRow> rows) {
@@ -432,6 +443,7 @@ bool SimSystem::step() {
   }
 
   impl_->executingEpoch = true;
+  impl_->commitParticipants.clear();
   for (ObjectId id : currentWork) {
     impl_->activeProposalOwner = id;
     if (const DispatchRow *row = impl_->dispatch.lookup(id))
@@ -443,7 +455,11 @@ bool SimSystem::step() {
       return false;
   }
 
-  for (ObjectId id : currentWork) {
+  std::set<ObjectId> xferObjects = currentWork;
+  xferObjects.insert(impl_->commitParticipants.begin(),
+                     impl_->commitParticipants.end());
+
+  for (ObjectId id : xferObjects) {
     impl_->activeProposalOwner = id;
     if (const DispatchRow *row = impl_->dispatch.lookup(id))
       row->xfer(row->object, epoch_, XferPhase::Arbitrate);
@@ -455,7 +471,7 @@ bool SimSystem::step() {
   }
 
   std::vector<ObjectId> committedSources;
-  for (ObjectId id : currentWork) {
+  for (ObjectId id : xferObjects) {
     SimObject *object = lookup(id);
     const DispatchRow *row = impl_->dispatch.lookup(id);
     bool willCommit = row ? row->xfer(row->object, epoch_, XferPhase::Probe)
@@ -505,14 +521,52 @@ bool SimSystem::step() {
   }
   impl_->eventQueue.doXfer(epoch_);
 
+  // A voluntary next-delta yield normally has a self-activation below.  Once
+  // the unique trace owner reaches EOF, mark those suspended processes for
+  // deterministic shutdown before applying activation, so the self-edge
+  // schedules termination rather than another yield.
+  refreshRuntimeSummary();
+  std::vector<ObjectId> traceEndProcesses;
+  if (impl_->traceOwnerCount == 1 && impl_->traceEof) {
+    for (SimObject *object : runtimeObjects())
+      if (object->requestTraceEnd())
+        traceEndProcesses.push_back(object->id());
+    if (!traceEndProcesses.empty()) {
+      if (epoch_.time == std::numeric_limits<Tick>::max())
+        return fail("tick_overflow",
+                    "trace-end process termination exceeds tick range");
+      if (epoch_.time + 1 >= maxTicks_) {
+        epoch_ = {maxTicks_, 0};
+        terminated_ = true;
+        result_.classification = TerminationClass::Incomplete;
+        result_.finalEpoch = epoch_;
+        result_.committedEventCount = impl_->committedEventCount;
+        result_.terminationCap = maxTicks_;
+        result_.domainCycles = impl_->domainCycles;
+        result_.diagnosticCode = "max_ticks_reached";
+        return false;
+      }
+    }
+  }
+
   if (!committedSources.empty() && !impl_->activation.empty()) {
     if (epoch_.time == std::numeric_limits<Tick>::max())
       return fail("tick_overflow", "activation would overflow simulation time");
     Epoch activationEpoch{epoch_.time + 1, 0};
     for (ObjectId source : committedSources)
-      for (ObjectId target : impl_->activation.targetsFor(source))
+      for (ObjectId target : impl_->activation.targetsFor(source)) {
+        SimObject *targetObject = lookup(target);
+        if (targetObject && !targetObject->activateFrom(source))
+          continue;
         if (!scheduleWork(target, activationEpoch))
           return false;
+      }
+  }
+  if (!traceEndProcesses.empty()) {
+    Epoch shutdownEpoch{epoch_.time + 1, 0};
+    for (ObjectId id : traceEndProcesses)
+      if (!scheduleWork(id, shutdownEpoch))
+        return false;
   }
 
   // An event committed for the active epoch is a causal continuation. Its
@@ -533,6 +587,7 @@ bool SimSystem::step() {
   }
   impl_->executingEpoch = false;
   impl_->activeProposalOwner.reset();
+  impl_->commitParticipants.clear();
 
   std::optional<Epoch> nextEpoch;
   bool nextEpochIsEvent = false;
@@ -547,35 +602,6 @@ bool SimSystem::step() {
   if (!nextEpoch) {
     if (stopAtTraceCap())
       return false;
-    refreshRuntimeSummary();
-    if (impl_->traceOwnerCount == 1 && impl_->traceEof) {
-      std::vector<ObjectId> traceEndProcesses;
-      for (SimObject *object : runtimeObjects())
-        if (object->requestTraceEnd())
-          traceEndProcesses.push_back(object->id());
-      if (!traceEndProcesses.empty()) {
-        if (epoch_.time == std::numeric_limits<Tick>::max())
-          return fail("tick_overflow",
-                      "trace-end process termination exceeds tick range");
-        Epoch shutdownEpoch{epoch_.time + 1, 0};
-        if (shutdownEpoch.time >= maxTicks_) {
-          epoch_ = {maxTicks_, 0};
-          terminated_ = true;
-          result_.classification = TerminationClass::Incomplete;
-          result_.finalEpoch = epoch_;
-          result_.committedEventCount = impl_->committedEventCount;
-          result_.terminationCap = maxTicks_;
-          result_.domainCycles = impl_->domainCycles;
-          result_.diagnosticCode = "max_ticks_reached";
-          return false;
-        }
-        for (ObjectId id : traceEndProcesses)
-          if (!scheduleWork(id, shutdownEpoch))
-            return false;
-        epoch_ = shutdownEpoch;
-        return true;
-      }
-    }
     if (!impl_->noProgress.blockedObjects.empty() && impl_->deadlockWindow) {
       const Tick window = *impl_->deadlockWindow;
       if (impl_->lastProgressTick > std::numeric_limits<Tick>::max() - window)

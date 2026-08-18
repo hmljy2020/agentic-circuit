@@ -52,5 +52,33 @@ TEST(ProcessStatePlanWakeTest, TransitionSourceIsEntryPc) {
   EXPECT_EQ(process.transitions()[0].targetPc().value(), 0u);
 }
 
+TEST(ProcessStatePlanWakeTest, QueueWakesRetainExactQueueAndMode) {
+  mlir::DialectRegistry registry;
+  registerAllDialects(registry);
+  mlir::MLIRContext context(registry);
+  auto module = test::parseAndFreezeQueueActions(context);
+  ASSERT_TRUE(module);
+  auto built = planProcessState(*module);
+  ASSERT_TRUE(mlir::succeeded(built));
+  ASSERT_EQ(built->processes().size(), 1u);
+
+  bool sawReadable = false;
+  bool sawWritable = false;
+  for (const ProcessWakePlan &wake : built->processes()[0].wakes()) {
+    if (wake.kind() == ProcessWakeKind::QueueReadable) {
+      sawReadable = true;
+      EXPECT_EQ(wake.target(), "fifo_queue");
+      EXPECT_EQ(wake.typeKey(), "@acir_wake_queue_readable");
+    }
+    if (wake.kind() == ProcessWakeKind::QueueWritable) {
+      sawWritable = true;
+      EXPECT_EQ(wake.target(), "fifo_queue");
+      EXPECT_EQ(wake.typeKey(), "@acir_wake_queue_writable");
+    }
+  }
+  EXPECT_TRUE(sawReadable);
+  EXPECT_TRUE(sawWritable);
+}
+
 } // namespace
 } // namespace acir

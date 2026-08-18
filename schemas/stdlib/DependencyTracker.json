@@ -1,7 +1,7 @@
 {
   "schema_kind": "agentic-circuit-component",
-  "schema_version": "0.1",
-  "contract_epoch": "0.1",
+  "schema_version": "0.2",
+  "contract_epoch": "0.2",
   "canonical_name": "ac.std.DependencyTracker",
   "family": "control",
   "provider_namespace": "ac.std",
@@ -11,7 +11,7 @@
     "symbol": "gfsim::DependencyTracker",
     "language": "c++20",
     "concept": "gfsim::Component",
-    "toolchain_target": "ac-gfsim-cxx20-v0.1",
+    "toolchain_target": "ac-gfsim-cxx20-v0.2",
     "functional_policy": "none"
   },
   "static_parameters": [
@@ -145,5 +145,5 @@
     ],
     "histograms": []
   },
-  "schema_fingerprint": "sha256:2fb2d11f2263ff8b9730aaec203f2cf22bbe9f6122ecf4575fa2154d3a8a04c0"
+  "schema_fingerprint": "sha256:351cbbadbc5e7c27f0bf0d7046f3504fa19139b6fe64b8ec466b897c20d22cd2"
 }

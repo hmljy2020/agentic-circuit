@@ -1,8 +1,8 @@
-contract_epoch = "0.1"
+contract_epoch = "0.2"
 
 [project]
 name = "phase5-producer-queue-consumer"
-version = "0.1.0"
+version = "0.2.0"
 architecture = "architecture.py"
 system = "main"
 

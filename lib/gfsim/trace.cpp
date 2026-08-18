@@ -155,12 +155,12 @@ private:
     if (!schema || *schema != "pto-trace")
       return fail("ACTRACE-SCHEMA", "/schema", std::nullopt,
                   "schema must equal pto-trace");
-    if (!version || *version != "0.1")
+    if (!version || *version != "0.2")
       return fail("ACTRACE-SCHEMA", "/version", std::nullopt,
-                  "version must equal 0.1");
-    if (!epoch || *epoch != "0.1")
+                  "version must equal 0.2");
+    if (!epoch || *epoch != "0.2")
       return fail("ACTRACE-SCHEMA", "/contract_epoch", std::nullopt,
-                  "contract_epoch must equal 0.1");
+                  "contract_epoch must equal 0.2");
 
     const Object *metadata = root.getObject("metadata");
     if (!metadata)

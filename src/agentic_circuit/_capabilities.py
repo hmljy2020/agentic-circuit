@@ -13,17 +13,17 @@ from ._package_data import resource_directory
 
 
 EXACT_CONTRACT_IDENTITIES: dict[str, str] = {
-    "acpy": "acpy@0.1",
-    "acir": "acir@0.1",
-    "acsim": "acsim@0.1",
-    "cli": "agentic-circuit-cli@0.1",
-    "component_schema": "agentic-circuit-component@0.1",
-    "cxx_source_contract": "gfsim-cxx20@0.1",
-    "pto_trace": "pto-trace@0.1",
-    "diagnostic": "agentic-circuit-diagnostic@0.1",
-    "build_manifest": "agentic-circuit-build-manifest@0.1",
-    "run_manifest": "agentic-circuit-run-manifest@0.1",
-    "run_result": "agentic-circuit-run-result@0.1",
+    "acpy": "acpy@0.2",
+    "acir": "acir@0.2",
+    "acsim": "acsim@0.2",
+    "cli": "agentic-circuit-cli@0.2",
+    "component_schema": "agentic-circuit-component@0.2",
+    "cxx_source_contract": "gfsim-cxx20@0.2",
+    "pto_trace": "pto-trace@0.2",
+    "diagnostic": "agentic-circuit-diagnostic@0.2",
+    "build_manifest": "agentic-circuit-build-manifest@0.2",
+    "run_manifest": "agentic-circuit-run-manifest@0.2",
+    "run_result": "agentic-circuit-run-result@0.2",
 }
 
 
@@ -32,7 +32,7 @@ def schema_root() -> Path:
 
 
 def diagnostics_catalog_path() -> Path:
-    return resource_directory("resources") / "diagnostics-v0.1.json"
+    return resource_directory("resources") / "diagnostics-v0.2.json"
 
 
 def load_json(path: Path) -> dict[str, JsonValue]:
@@ -60,8 +60,8 @@ class CapabilityDocument:
     def to_json(self) -> dict[str, JsonValue]:
         return {
             "schema": "agentic-circuit-capabilities",
-            "version": "0.1",
-            "contract_epoch": "0.1",
+            "version": "0.2",
+            "contract_epoch": "0.2",
             "contract_identities": dict(self.contract_identities),
             "items": [dict(item) for item in self.items],
             "compiler_build_id": self.compiler_build_id,
@@ -70,7 +70,7 @@ class CapabilityDocument:
 
 
 def _synthetic_fingerprint(kind: str, name: str) -> str:
-    return sha256_bytes(f"{kind}:{name}@0.1".encode("utf-8"))
+    return sha256_bytes(f"{kind}:{name}@0.2".encode("utf-8"))
 
 
 def _base_items(catalog: dict[str, JsonValue]) -> list[dict[str, JsonValue]]:

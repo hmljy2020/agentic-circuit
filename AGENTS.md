@@ -1,0 +1,1 @@
+Be careful when building or running, use minimal resource, try not to run out DRAM on this computer (use less than 1.6 GB) or it leads to crash.

@@ -2,7 +2,7 @@
 
 ## Decision
 
-Phase 4A passes its planned local exit matrix for the implemented v0.1 closed
+Phase 4A passes its planned local exit matrix for the implemented v0.2 closed
 subset. The exact Python surface is importable, frontend failures are atomic,
 canonical ACPy and ACIR are root- and hash-seed-independent, native ACIR accepts
 the emitted goldens, and canonical ACSim multi-block processes survive model-plan
@@ -23,7 +23,7 @@ than implicit promises of support.
 | LLVM/MLIR | Homebrew LLVM 22.1.8 |
 | Development preset | `build/dev-llvm22` |
 | Release preset | `build/release-llvm22` |
-| Contract epoch | `0.1` |
+| Contract epoch | `0.2` |
 
 The release preset was configured with the repository virtual environment's
 `lit` executable because it is not installed on the ambient shell `PATH`.

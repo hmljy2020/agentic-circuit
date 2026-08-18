@@ -123,7 +123,7 @@ plan is never left as an untracked Task 7 cleanup item.
 - Modify: `unittests/Analysis/CMakeLists.txt`
 - Modify: `tests/contracts/test_contracts.py`
 - Modify: `scripts/check-contracts.py`
-- Create: `docs/specs/acir-process-state-plan-v0.1.md`
+- Create: `docs/specs/acir-process-state-plan-v0.2.md`
 - Modify: `README.md`
 - Modify: `docs/superpowers/plans/2026-08-04-agentic-circuit-roadmap.md`
 
@@ -260,7 +260,7 @@ cmake --build build/dev-llvm22 --target ACIRProcessStatePlanTests -j4
   missing/one lookup, PC width, yield-to-entry wake/transition, generated
   next-delta descriptor, empty/yield invariant validation, canonical
   serialization, and complete closed schema. Copy the complete
-  approved contract into `docs/specs/acir-process-state-plan-v0.1.md` and link
+  approved contract into `docs/specs/acir-process-state-plan-v0.2.md` and link
   it from `README.md`; update the roadmap's specification count and table.
 
 - [ ] **Step 4: Run GREEN and mutations**
@@ -313,7 +313,7 @@ git commit -m "feat(lowering): define process-state plan API"
 - Create: `test/Analysis/raw-structure-preflight.mlir`
 - Modify: `test/ACIR/process-invalid.mlir`
 - Modify: `unittests/Analysis/CMakeLists.txt`
-- Modify: `docs/specs/acir-core-v0.1.md`
+- Modify: `docs/specs/acir-core-v0.2.md`
 
 **Interfaces:**
 
@@ -392,7 +392,7 @@ git commit -m "feat(lowering): define process-state plan API"
   malformed raw fixtures must record only Normalize entry and failure, then
   return failure with the exact first and only diagnostic category, raw
   structural preflight nested-region-depth capability, and exact text
-  `whole-model region nesting exceeds ACIR v0.1 capability limit 512`. They
+  `whole-model region nesting exceeds ACIR v0.2 capability limit 512`. They
   must not recurse, crash, overflow the stack, start normalization, or emit an
   epoch/canonical-file/downstream verifier diagnostic. The isolated manager
   contains no default `VerifyACIRFilePass`; this unit suite, rather than an
@@ -454,7 +454,7 @@ build/dev-llvm22/bin/ACIRProcessStatePlanTests \
   Expand calls/returns and constant loops iteratively with explicit forwarding;
   emit no `func` action. Dynamic loops produce exact initialize/condition/
   increment phase actions using signed-less-than `arith.cmpi` and `arith.addi`.
-  Amend `docs/specs/acir-core-v0.1.md` in the same commit with the exact static-
+  Amend `docs/specs/acir-core-v0.2.md` in the same commit with the exact static-
   trip or every-backedge-suspends `scf.for` hard break.
 
 - [ ] **Step 4: Run GREEN and mutations**
@@ -722,8 +722,8 @@ git commit -m "feat(lowering): bound and atomically publish process plans"
 - Create: `test/Analysis/check-process-state-schema.py`
 - Modify: `lib/Analysis/ProcessStatePlanTestHooks.h`
 - Modify: `test/CMakeLists.txt`
-- Modify: `docs/specs/acir-process-state-plan-v0.1.md`
-- Modify: `docs/specs/acsim-gfsim-lowering-v0.1.md`
+- Modify: `docs/specs/acir-process-state-plan-v0.2.md`
+- Modify: `docs/specs/acsim-gfsim-lowering-v0.2.md`
 - Modify:
   `docs/superpowers/specs/2026-08-05-acsim-generated-call-contract-design.md`
 - Modify: `docs/superpowers/plans/2026-08-04-acir-acsim-implementation.md`
@@ -825,7 +825,7 @@ git commit -m "feat(lowering): expose canonical process-state reports"
   real uncovered contract
 - Create: `unittests/Analysis/ProcessStatePlanTask13ConsumerTest.cpp`
 - Modify: `unittests/Analysis/CMakeLists.txt`
-- Modify: `docs/specs/acir-process-state-plan-v0.1.md` only for factual closure
+- Modify: `docs/specs/acir-process-state-plan-v0.2.md` only for factual closure
   corrections discovered by testing
 
 **Interfaces:**

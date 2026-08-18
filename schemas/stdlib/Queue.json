@@ -1,7 +1,7 @@
 {
   "schema_kind": "agentic-circuit-component",
-  "schema_version": "0.1",
-  "contract_epoch": "0.1",
+  "schema_version": "0.2",
+  "contract_epoch": "0.2",
   "canonical_name": "ac.std.Queue",
   "family": "transport",
   "provider_namespace": "ac.std",
@@ -11,7 +11,7 @@
     "symbol": "gfsim::Queue",
     "language": "c++20",
     "concept": "gfsim::Component",
-    "toolchain_target": "ac-gfsim-cxx20-v0.1",
+    "toolchain_target": "ac-gfsim-cxx20-v0.2",
     "functional_policy": "none"
   },
   "static_parameters": [
@@ -160,5 +160,5 @@
     ],
     "histograms": []
   },
-  "schema_fingerprint": "sha256:768b2ef2642e5f933c680802413a3360c0ccaaf8d4b76a3a79f4c25bcafd8426"
+  "schema_fingerprint": "sha256:28d8bb2480d5a045b36017e2c74879769af9ff61dcbfbefa72021a8c916215f4"
 }

@@ -51,7 +51,7 @@ template <> struct PacketTraits<InvalidPacket> {
 
 template <> struct PacketTraits<TestPacket> {
   static constexpr bool isPacket = true;
-  static constexpr std::string_view schema = "test.Packet@0.1";
+  static constexpr std::string_view schema = "test.Packet@0.2";
   static constexpr size_t serializedSize = 6;
   static constexpr size_t maximumSerializedSize = serializedSize;
   static constexpr size_t alignment = alignof(TestPacket);
@@ -130,26 +130,26 @@ private:
 };
 
 std::string harnessBuildManifest() {
-  return R"json({"schema":"agentic-circuit-build-manifest","version":"0.1","contract_epoch":"0.1","project":{"name":"project","identity":"project:test"},"system":{"name":"system","identity":"system:test"},"source_files":[],"normalized_acir_sha256":"sha256:0000000000000000000000000000000000000000000000000000000000000000","compiler":{"name":"clang","build_id":"clang test","toolchain_target":"test-target"},"pass_pipeline":["compile","link"],"providers":[],"component_specializations":[],"protocol_identities":[],"artifacts":[],"validation_gates":[],"build_profile":"fast","instrumentation_layers":[],"specialization_inputs":[],"build_fingerprint":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"})json";
+  return R"json({"schema":"agentic-circuit-build-manifest","version":"0.2","contract_epoch":"0.2","project":{"name":"project","identity":"project:test"},"system":{"name":"system","identity":"system:test"},"source_files":[],"normalized_acir_sha256":"sha256:0000000000000000000000000000000000000000000000000000000000000000","compiler":{"name":"clang","build_id":"clang test","toolchain_target":"test-target"},"pass_pipeline":["compile","link"],"providers":[],"component_specializations":[],"protocol_identities":[],"artifacts":[],"validation_gates":[],"build_profile":"fast","instrumentation_layers":[],"specialization_inputs":[],"build_fingerprint":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"})json";
 }
 
 std::string harnessTrace() {
-  return R"json({"schema":"pto-trace","version":"0.1","contract_epoch":"0.1","metadata":{"record_count":0},"records":[]})json";
+  return R"json({"schema":"pto-trace","version":"0.2","contract_epoch":"0.2","metadata":{"record_count":0},"records":[]})json";
 }
 
 std::string harnessTraceWithOneRecord() {
-  return R"json({"schema":"pto-trace","version":"0.1","contract_epoch":"0.1","metadata":{"record_count":1},"records":[{"sequence_id":17,"opcode":"pto.test","operands":[],"dependencies":[],"attributes":{}}]})json";
+  return R"json({"schema":"pto-trace","version":"0.2","contract_epoch":"0.2","metadata":{"record_count":1},"records":[{"sequence_id":17,"opcode":"pto.test","operands":[],"dependencies":[],"attributes":{}}]})json";
 }
 
 std::string harnessRunManifest(std::string_view buildHash,
                                std::string_view traceHash,
                                std::string_view eventLog = "disabled") {
-  return "{\"schema\":\"agentic-circuit-run-manifest\",\"version\":\"0.1\","
-         "\"contract_epoch\":\"0.1\",\"build_manifest\":{\"path\":"
+  return "{\"schema\":\"agentic-circuit-run-manifest\",\"version\":\"0.2\","
+         "\"contract_epoch\":\"0.2\",\"build_manifest\":{\"path\":"
          "\"build-manifest.json\",\"sha256\":\"" +
          std::string(buildHash) +
          "\"},\"trace\":{\"path\":\"trace.json\",\"schema\":\"pto-trace\","
-         "\"version\":\"0.1\",\"sha256\":\"" +
+         "\"version\":\"0.2\",\"sha256\":\"" +
          std::string(traceHash) +
          "\"},\"seed\":1,\"output_directory\":\"run\",\"deadlock_window\":null,"
          "\"max_ticks\":100,\"max_domain_cycles\":{\"core\":25},"
@@ -1598,8 +1598,8 @@ TEST(GfsimProtocolTest, ProtocolStatePreservesCreditAndPhaseInvariants) {
 
 constexpr std::string_view ValidPtoTrace = R"json({
   "schema": "pto-trace",
-  "version": "0.1",
-  "contract_epoch": "0.1",
+  "version": "0.2",
+  "contract_epoch": "0.2",
   "metadata": {
     "producer": "gfsim-test",
     "address_spaces": ["global"],
@@ -1691,7 +1691,7 @@ TEST(GfsimTraceTest, StreamingAndBufferedParsingProduceIdenticalDocument) {
 
 TEST(GfsimTraceTest, RejectsForwardDependencyWithStableDiagnostic) {
   constexpr std::string_view invalid = R"json({
-    "schema":"pto-trace","version":"0.1","contract_epoch":"0.1",
+    "schema":"pto-trace","version":"0.2","contract_epoch":"0.2",
     "metadata":{},"records":[
       {"sequence_id":1,"opcode":"pto.a","operands":[],
        "dependencies":[2],"attributes":{}},
@@ -1709,7 +1709,7 @@ TEST(GfsimTraceTest, RejectsForwardDependencyWithStableDiagnostic) {
 
 TEST(GfsimTraceTest, RejectsUnknownFieldsAndRepresentationCaps) {
   constexpr std::string_view unknown = R"json({
-    "schema":"pto-trace","version":"0.1","contract_epoch":"0.1",
+    "schema":"pto-trace","version":"0.2","contract_epoch":"0.2",
     "metadata":{"extension":true},"records":[]})json";
   TraceLoadResult closed = parsePtoTrace(unknown);
   ASSERT_FALSE(closed.succeeded());
@@ -1725,7 +1725,7 @@ TEST(GfsimTraceTest, RejectsUnknownFieldsAndRepresentationCaps) {
 
 TEST(GfsimTraceTest, ValidatesDuplicateKeysRecordCountAndContentHash) {
   constexpr std::string_view validEmpty = R"json({
-    "schema":"pto-trace","version":"0.1","contract_epoch":"0.1",
+    "schema":"pto-trace","version":"0.2","contract_epoch":"0.2",
     "metadata":{
       "record_count":0,
       "content_hash":"sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
@@ -1733,15 +1733,15 @@ TEST(GfsimTraceTest, ValidatesDuplicateKeysRecordCountAndContentHash) {
   EXPECT_TRUE(parsePtoTrace(validEmpty).succeeded());
 
   constexpr std::string_view wrongCount = R"json({
-    "schema":"pto-trace","version":"0.1","contract_epoch":"0.1",
+    "schema":"pto-trace","version":"0.2","contract_epoch":"0.2",
     "metadata":{"record_count":1},"records":[]})json";
   TraceLoadResult count = parsePtoTrace(wrongCount);
   ASSERT_FALSE(count.succeeded());
   EXPECT_EQ(count.diagnostics.front().code, "ACTRACE-METADATA");
 
   constexpr std::string_view duplicateKey = R"json({
-    "schema":"pto-trace","schema":"pto-trace","version":"0.1",
-    "contract_epoch":"0.1","metadata":{},"records":[]})json";
+    "schema":"pto-trace","schema":"pto-trace","version":"0.2",
+    "contract_epoch":"0.2","metadata":{},"records":[]})json";
   TraceLoadResult duplicate = parsePtoTrace(duplicateKey);
   ASSERT_FALSE(duplicate.succeeded());
   EXPECT_EQ(duplicate.diagnostics.front().code, "ACTRACE-JSON");
@@ -2193,7 +2193,7 @@ private:
 TEST(GfsimComponentObservationTest,
      ProtocolBackpressureRequestsResponsesAndTraceCursorAreCommitted) {
   constexpr std::string_view oneRecord = R"json({
-    "schema":"pto-trace","version":"0.1","contract_epoch":"0.1",
+    "schema":"pto-trace","version":"0.2","contract_epoch":"0.2",
     "metadata":{"record_count":1},"records":[{
       "sequence_id":17,"opcode":"pto.done","operands":[],
       "dependencies":[],"attributes":{}}]})json";
@@ -2309,7 +2309,7 @@ TEST(GfsimSystemTest, TraceLimitIsIncompleteAndReportsExactPosition) {
 
 TEST(GfsimSystemTest, ExhaustedTraceCompletesWithCommittedCursorIdentity) {
   constexpr std::string_view oneRecord = R"json({
-    "schema":"pto-trace","version":"0.1","contract_epoch":"0.1",
+    "schema":"pto-trace","version":"0.2","contract_epoch":"0.2",
     "metadata":{"record_count":1},"records":[{
       "sequence_id":9,"opcode":"pto.done","operands":[],
       "dependencies":[],"attributes":{}}]})json";
@@ -2515,6 +2515,50 @@ private:
   const uint64_t &state_;
 };
 
+class QueueProducer : public SimObject {
+public:
+  QueueProducer(ObjectId id, SimQueue<int> &queue, int value,
+                SimSystem *system = nullptr, bool repeatSameTick = false)
+      : SimObject(ObjectKind::Process, "producer", id), queue_(queue),
+        value_(value), system_(system), repeatSameTick_(repeatSameTick) {}
+
+  void doWork(Epoch epoch) override {
+    proposals.push_back(queue_.proposePush(value_));
+    if (repeatSameTick_)
+      ASSERT_TRUE(system_->scheduleWork(id(), epoch));
+  }
+  bool validate() const { return true; }
+
+  std::vector<bool> proposals;
+
+private:
+  SimQueue<int> &queue_;
+  int value_;
+  SimSystem *system_;
+  bool repeatSameTick_;
+};
+
+class QueueConsumer final : public ProcessRuntime<QueueConsumer> {
+public:
+  QueueConsumer(ObjectId id, SimQueue<int> &queue)
+      : ProcessRuntime("consumer", id, nullptr, 0, 1), queue_(queue) {}
+
+  ProcessStep executeProcessStep(uint32_t, Epoch) {
+    auto value = queue_.proposePop();
+    if (!value)
+      return ProcessStep::suspendAt(
+          0, {.kind = ProcessWakeKind::QueueReadable, .id = queue_.id()}, 1);
+    received.push_back(*value);
+    return ProcessStep::terminate();
+  }
+  bool validate() const { return ProcessRuntime::validate(); }
+
+  std::vector<int> received;
+
+private:
+  SimQueue<int> &queue_;
+};
+
 TEST(GfsimSystemTest, StaticDispatchUsesDenseStableOrderAndBarrierPhases) {
   for (unsigned seed = 0; seed < 32; ++seed) {
     SimSystem system("test");
@@ -2636,6 +2680,80 @@ TEST(GfsimSystemTest, WorkPhaseReadsOneImmutableCommittedSnapshot) {
   system.step();
   EXPECT_EQ(reader.observed, (std::vector<uint64_t>{0}));
   EXPECT_EQ(committedState, 1u);
+}
+
+TEST(GfsimSystemTest, CrossObjectQueueProposalsJoinXferInStableObjectIdOrder) {
+  SimSystem system("test");
+  SimQueue<int> queue("queue", 2, nullptr, 2);
+  QueueProducer first(0, queue, 10);
+  QueueProducer second(1, queue, 20);
+  std::vector<std::string> targetLog;
+  RecordingDispatchObject target(3, targetLog);
+  std::array rows = {makeDispatchRow(&first), makeDispatchRow(&second),
+                     makeDispatchRow(&queue), makeDispatchRow(&target)};
+  constexpr std::array<uint32_t, 5> offsets = {0, 0, 0, 1, 1};
+  constexpr std::array<ObjectId, 1> targets = {3};
+  queue.bindSystem(&system);
+  ASSERT_TRUE(system.setDispatchTable(rows));
+  ASSERT_TRUE(system.setActivationPlan(offsets, targets));
+  ASSERT_TRUE(system.scheduleWork(1, {0, 0}));
+  ASSERT_TRUE(system.scheduleWork(0, {0, 0}));
+
+  ASSERT_TRUE(system.step());
+  ASSERT_EQ(queue.committedSize(), 2u);
+  queue.bindSystem(nullptr);
+  auto firstValue = queue.proposePop();
+  auto secondValue = queue.proposePop();
+  ASSERT_TRUE(firstValue);
+  ASSERT_TRUE(secondValue);
+  EXPECT_EQ(*firstValue, 10);
+  EXPECT_EQ(*secondValue, 20);
+}
+
+TEST(GfsimSystemTest, QueueCommitWakesMatchingReaderOnNextTick) {
+  SimSystem system("test");
+  SimQueue<int> queue("queue", 1, nullptr, 1);
+  QueueProducer producer(0, queue, 10);
+  QueueConsumer consumer(2, queue);
+  std::array rows = {makeDispatchRow(&producer), makeDispatchRow(&queue),
+                     makeDispatchRow(&consumer)};
+  constexpr std::array<uint32_t, 4> offsets = {0, 0, 1, 1};
+  constexpr std::array<ObjectId, 1> targets = {2};
+  queue.bindSystem(&system);
+  ASSERT_TRUE(system.setDispatchTable(rows));
+  ASSERT_TRUE(system.setActivationPlan(offsets, targets));
+  ASSERT_TRUE(system.scheduleWork(consumer.id(), {0, 0}));
+  ASSERT_TRUE(system.scheduleWork(producer.id(), {0, 0}));
+
+  ASSERT_TRUE(system.step());
+  EXPECT_EQ(system.currentEpoch(), (Epoch{1, 0}));
+  EXPECT_EQ(consumer.status(), ProcessStatus::Runnable);
+  EXPECT_TRUE(consumer.received.empty());
+  EXPECT_EQ(queue.committedSize(), 1u);
+
+  EXPECT_FALSE(system.step());
+  EXPECT_EQ(system.terminationResult().classification,
+            TerminationClass::Completed);
+  EXPECT_EQ(consumer.received, (std::vector<int>{10}));
+  EXPECT_TRUE(queue.isEmpty());
+  EXPECT_EQ(queue.totalPushes(), 1u);
+  EXPECT_EQ(queue.totalPops(), 1u);
+}
+
+TEST(GfsimSystemTest, CrossObjectQueueCannotCommitTwiceInOneTick) {
+  SimSystem system("test");
+  SimQueue<int> queue("queue", 1, nullptr, 2);
+  QueueProducer producer(0, queue, 7, &system, true);
+  std::array rows = {makeDispatchRow(&producer), makeDispatchRow(&queue)};
+  queue.bindSystem(&system);
+  ASSERT_TRUE(system.setDispatchTable(rows));
+  ASSERT_TRUE(system.scheduleWork(producer.id(), {0, 0}));
+
+  ASSERT_TRUE(system.step());
+  EXPECT_EQ(system.currentEpoch(), (Epoch{0, 1}));
+  EXPECT_FALSE(system.step());
+  EXPECT_EQ(system.terminationResult().diagnosticCode,
+            "multiple_stateful_commits");
 }
 
 TEST(GfsimSystemTest, SameTimeFutureDeltaEventRemainsPending) {
@@ -2893,6 +3011,17 @@ public:
   }
 };
 
+TEST(GfsimProcessTest, NextDeltaActivationRequiresTheProcessSelfEdge) {
+  YieldingProcess process;
+  process.doWork({0, 0});
+  process.doXfer({0, 0});
+  ASSERT_EQ(process.status(), ProcessStatus::Suspended);
+
+  EXPECT_FALSE(process.activateFrom(1));
+  EXPECT_TRUE(process.activateFrom(process.id()));
+  EXPECT_TRUE(process.isRunnable({1, 0}));
+}
+
 TEST(GfsimProcessTest, SuspensionCommitsContinuationAndRequiresExactWake) {
   SuspendingProcess process;
   EXPECT_TRUE(process.isRunnable({0, 0}));
@@ -2933,6 +3062,12 @@ TEST(GfsimProcessTest, TraceEndTerminatesOnlyVoluntaryYieldSuspension) {
     TraceSource<> trace("trace", 1, nullptr);
     std::array rows = {makeDispatchRow(&process), makeDispatchRow(&trace)};
     ASSERT_TRUE(system.setDispatchTable(rows));
+    const std::array<uint32_t, 3> offsets = {0, 1, 1};
+    const std::array<ObjectId, 1> targets = {process.id()};
+    ASSERT_TRUE(system.setActivationPlan(offsets, targets));
+    RuntimeLimits limits;
+    limits.maxTicks = 10;
+    ASSERT_TRUE(system.setRuntimeLimits(limits));
 
     const TerminationResult result = system.run();
     EXPECT_EQ(result.classification, TerminationClass::Completed);

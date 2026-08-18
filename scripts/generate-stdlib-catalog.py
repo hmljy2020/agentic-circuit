@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the frozen ac.std v0.1 component catalog deterministically."""
+"""Generate the frozen ac.std v0.2 component catalog deterministically."""
 
 import argparse
 import hashlib
@@ -295,8 +295,8 @@ def component_record(name, family, shape, header):
     }
     record = {
         "schema_kind": "agentic-circuit-component",
-        "schema_version": "0.1",
-        "contract_epoch": "0.1",
+        "schema_version": "0.2",
+        "contract_epoch": "0.2",
         "canonical_name": f"ac.std.{name}",
         "family": family,
         "provider_namespace": "ac.std",
@@ -306,7 +306,7 @@ def component_record(name, family, shape, header):
             "symbol": f"gfsim::{symbol_names.get(name, name)}",
             "language": "c++20",
             "concept": "gfsim::Component",
-            "toolchain_target": "ac-gfsim-cxx20-v0.1",
+            "toolchain_target": "ac-gfsim-cxx20-v0.2",
             "functional_policy": "optional" if name == "Compute" else "none",
         },
         "static_parameters": static_parameters_for(name, shape),
@@ -371,8 +371,8 @@ def rendered_files():
     catalog_entries.sort(key=lambda entry: entry["canonical_name"])
     catalog = {
         "catalog": "ac.std",
-        "version": "0.1",
-        "contract_epoch": "0.1",
+        "version": "0.2",
+        "contract_epoch": "0.2",
         "entries": catalog_entries,
     }
     records[OUTPUT / "catalog.json"] = (

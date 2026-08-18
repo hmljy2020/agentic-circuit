@@ -94,8 +94,8 @@ struct SpecializationInput {
 /// Typed representation of schemas/build-manifest.schema.json.
 struct BuildManifest {
   std::string schema = "agentic-circuit-build-manifest";
-  std::string version = "0.1";
-  std::string contractEpoch = "0.1";
+  std::string version = "0.2";
+  std::string contractEpoch = "0.2";
   Identity project;
   Identity system;
   std::vector<FileHash> sourceFiles;

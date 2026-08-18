@@ -257,8 +257,8 @@ def _placeholder_result(
 ) -> dict[str, object]:
     return {
         "schema": "agentic-circuit-command-result",
-        "version": "0.1",
-        "contract_epoch": "0.1",
+        "version": "0.2",
+        "contract_epoch": "0.2",
         "command": arguments.command,
         "project": project,
         "status": "accepted",

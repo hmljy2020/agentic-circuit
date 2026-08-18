@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed for the ACIR v0.1 implementation. The activation commit, push, and
+Proposed for the ACIR v0.2 implementation. The activation commit, push, and
 green push/PR CI freeze this public ProcessStatePlan contract before production
 implementation begins. Every
 producer, consumer, test, schema, and specification changes together when this
@@ -91,6 +91,8 @@ The C++ enumerators and JSON spellings are closed to the following values.
 |  | `Resource` | `resource` |
 |  | `EventQueue` | `event_queue` |
 |  | `NextDelta` | `next_delta` |
+|  | `QueueReadable` | `queue_readable` |
+|  | `QueueWritable` | `queue_writable` |
 | `ProcessSubscriptionSourceKind` | `Capture` | `capture` |
 |  | `Value` | `value` |
 |  | `Symbol` | `symbol` |
@@ -541,8 +543,9 @@ together when present.
 
 Wake provenance handles are omitted from JSON. The triggering value is non-null
 only for a value-triggered wake; the declaration is non-null only for a
-resolved resource or event queue. `target()` is always serialized: condition
-value path, exact resource/event symbol, or the empty string for next delta.
+resolved resource, event queue, or native queue. `target()` is always
+serialized: condition value path, exact resource/event/queue symbol, or the
+empty string for next delta.
 
 Subscription-source JSON is a closed kind union:
 
@@ -805,15 +808,19 @@ The type-key namespace is closed:
 mlir:<canonical generic MLIR type spelling>
 storage:value:<64 lowercase hex SHA-256>
 storage:packet:<64 lowercase hex SHA-256>
+queue-ref:@<queue-symbol>
 @acir_wake_condition
 @acir_wake_resource
 @acir_wake_event_queue
 @acir_wake_next_delta
+@acir_wake_queue_readable
+@acir_wake_queue_writable
 ```
 
 `mlir:` identifies an existing builtin, MLIR, or ACIR type represented
 directly. `storage:value:` and `storage:packet:` identify entries in the
-generated value-type table. Wake keys are four built-in wake types; they do not
+generated value-type table. `queue-ref:` is the exact native queue reference
+input namespace. Wake keys are six built-in wake types; they do not
 create value-type descriptors or accept another prefix. Task 13 maps each
 literal directly to `!acsim.wake<@kind>`.
 
@@ -823,14 +830,14 @@ Every generated callee uses this canonical specialization record:
 
 ```json
 {
-  "contract_epoch":"0.1",
+  "contract_epoch":"0.2",
   "effect":"pure|stateful",
   "inputs":["<type-key>","..."],
   "kind":"implementation",
   "payload":{},
   "results":["<type-key>","..."],
   "role":"<closed-role>",
-  "schema":"acir-generated-implementation-0.1",
+  "schema":"acir-generated-implementation-0.2",
   "source_paths":["<stable-path>","..."]
 }
 ```
@@ -885,12 +892,14 @@ enum class ProcessHelperRole {
   WakeEventQueue,
   WakeNextDelta,
   ScalarWrap,
-  ScalarUnwrap
+  ScalarUnwrap,
+  WakeQueueReadable,
+  WakeQueueWritable
 };
 ```
 
 JSON converts each enumerator to its lower-snake-case spelling, from
-`record_create` through `scalar_unwrap`, in the same order.
+`record_create` through `wake_queue_writable`, in the same order.
 
 ### Closed helper payloads
 
@@ -1075,11 +1084,13 @@ Payload JSON keys are exact:
 - wake helpers: `{wake_kind,wake_type}`;
 - scalar helpers: `{direction,scalar,value_type}`.
 
-Wake payloads use their matching wake kind and literal wake type. Scalar wrap
+Wake payloads use their matching wake kind and literal wake type. Queue wake
+helpers additionally take the exact `queue-ref:@symbol` input. Scalar wrap
 serializes direction `wrap`; scalar unwrap serializes `unwrap`. Input type keys,
 result type keys, and effect remain separate role semantics and participate in
-the specialization digest. Wake helpers are stateful, have no inputs, and
-return their matching wake type. Inactive payload arms are absent, never null.
+the specialization digest. Non-queue wake helpers are stateful and have no
+inputs; queue wake helpers have one exact queue reference. All return their
+matching wake type. Inactive payload arms are absent, never null.
 
 ### Payload value domains
 
@@ -1116,8 +1127,8 @@ reinterprets a field.
 | `probe.target` | Canonical resolved target `FlatSymbolRefAttr`, including `@`. |
 | `stat_add.stat` | Canonical resolved stat `FlatSymbolRefAttr`, including `@`. |
 | `stat_add.value_type` | Stat-add value operand type key. |
-| wake `wake_kind` | Role-fixed `condition`, `resource`, `event_queue`, or `next_delta`. |
-| wake `wake_type` | Matching unprefixed literal `@acir_wake_condition`, `@acir_wake_resource`, `@acir_wake_event_queue`, or `@acir_wake_next_delta`. |
+| wake `wake_kind` | Role-fixed `condition`, `resource`, `event_queue`, `next_delta`, `queue_readable`, or `queue_writable`. |
+| wake `wake_type` | Matching unprefixed literal from the closed six wake keys. |
 | scalar `direction` | `wrap` for scalar-wrap; `unwrap` for scalar-unwrap. |
 | scalar `scalar` | Exact `mlir:` key of the builtin scalar. |
 | scalar `value_type` | Exact `storage:value:` key of the generated realization. |
@@ -1140,8 +1151,8 @@ pointer order.
 | `packet_serialize` | `pure` | `inline` | One `packet_type` input; one exact original result type key. |
 | `packet_deserialize` | `pure` | `inline` | One exact original bytes input type key; one `packet_type` result. |
 | `trace_decode` | `pure` | `inline` | One `entry` input; one `result`. |
-| `queue_try_send` | `stateful` | `invoke` | One `element` input; exact original accepted-result key. |
-| `queue_try_recv` | `stateful` | `invoke` | No SSA input; exact original element and received-flag result keys. |
+| `queue_try_send` | `stateful` | `invoke` | Inputs `queue-ref:@queue,element`; exact original accepted-result key. |
+| `queue_try_recv` | `stateful` | `invoke` | One `queue-ref:@queue` input; exact original element and received-flag result keys. |
 | `event_schedule` | `stateful` | `invoke` | Inputs `value,delay` in original order; no result. |
 | `trace_open` | `stateful` | `invoke` | No SSA input; exact original cursor result key. |
 | `trace_next` | `stateful` | `invoke` | Original cursor input; cursor, `entry`, advanced-flag results in original order. |
@@ -1158,6 +1169,8 @@ pointer order.
 | `wake_next_delta` | `stateful` | suspend-edge wake invoke | No helper input; one `@acir_wake_next_delta` result. |
 | `scalar_wrap` | `pure` | `wrap` | One `scalar` input; one `value_type` result. |
 | `scalar_unwrap` | `pure` | `unwrap` | One `value_type` input; one `scalar` result. |
+| `wake_queue_readable` | `stateful` | suspend-edge wake invoke | One `queue-ref:@queue` input; one `@acir_wake_queue_readable` result. |
+| `wake_queue_writable` | `stateful` | suspend-edge wake invoke | One `queue-ref:@queue` input; one `@acir_wake_queue_writable` result. |
 
 Condition subscriptions stay in the wake record, not helper operands. Wake
 helpers are never ordinary actions; their invoke cost belongs to the suspend
@@ -1170,10 +1183,10 @@ Every generated value type uses this canonical specialization record:
 ```json
 {
   "acir_type":"<canonical ACIR type spelling>",
-  "contract_epoch":"0.1",
+  "contract_epoch":"0.2",
   "kind":"value|packet",
   "payload":{},
-  "schema":"acir-generated-value-type-0.1"
+  "schema":"acir-generated-value-type-0.2"
 }
 ```
 
@@ -1271,6 +1284,8 @@ Suspension mapping is exact:
 | `ac.wait_until` | `condition` | `@acir_wake_condition` | exact condition value |
 | `ac.wait_for` | `resource` | `@acir_wake_resource` | exact resolved resource |
 | `ac.await_event` | `event_queue` | `@acir_wake_event_queue` | exact resolved event queue |
+| `ac.await_queue ... until "readable"` | `queue_readable` | `@acir_wake_queue_readable` | exact resolved queue |
+| `ac.await_queue ... until "writable"` | `queue_writable` | `@acir_wake_queue_writable` | exact resolved queue |
 | `ac.yield_sim` | `next_delta` | `@acir_wake_next_delta` | entry PC |
 
 Every wake references one generated stateful wake callee. A suspension is not
@@ -1332,7 +1347,7 @@ backedge crosses `acsim.suspend`. Fairness zero, arithmetic overflow, a graph
 cycle, or a result above `maxFairnessWork` fails. Task 13 asserts its emitted
 count equals the stored block cost and writes `fairnessWork()` directly.
 
-Task 13 emits no `acsim.continue` for ACIR v0.1. Non-suspending control uses
+Task 13 emits no `acsim.continue` for ACIR v0.2. Non-suspending control uses
 `cf.br` or `cf.cond_br` inside the current PC; PC changes occur only through a
 planned suspension.
 
@@ -1353,7 +1368,7 @@ The generated callee specialization preimage is exactly this single-line
 UTF-8 byte sequence with no trailing newline:
 
 ```json
-{"contract_epoch":"0.1","effect":"stateful","inputs":[],"kind":"implementation","payload":{"wake_kind":"next_delta","wake_type":"@acir_wake_next_delta"},"results":["@acir_wake_next_delta"],"role":"wake_next_delta","schema":"acir-generated-implementation-0.1","source_paths":[]}
+{"contract_epoch":"0.2","effect":"stateful","inputs":[],"kind":"implementation","payload":{"wake_kind":"next_delta","wake_type":"@acir_wake_next_delta"},"results":["@acir_wake_next_delta"],"role":"wake_next_delta","schema":"acir-generated-implementation-0.2","source_paths":[]}
 ```
 
 Its SHA-256 digest is:
@@ -1391,9 +1406,9 @@ The top-level JSON object is closed and contains exactly:
 ```json
 {
   "callees":[],
-  "contract_epoch":"0.1",
+  "contract_epoch":"0.2",
   "processes":[],
-  "schema":"acir-process-state-plan-0.1",
+  "schema":"acir-process-state-plan-0.2",
   "value_types":[]
 }
 ```
@@ -1401,7 +1416,7 @@ The top-level JSON object is closed and contains exactly:
 An empty frozen model serializes to these exact bytes with no trailing newline:
 
 ```text
-{"callees":[],"contract_epoch":"0.1","processes":[],"schema":"acir-process-state-plan-0.1","value_types":[]}
+{"callees":[],"contract_epoch":"0.2","processes":[],"schema":"acir-process-state-plan-0.2","value_types":[]}
 ```
 
 The Draft 2020-12 schema closes every object with
@@ -1640,7 +1655,7 @@ succeeds, and asserts an observable post-normalization fact. The depth-`513`
 and `10,000`-deep cases record only Normalize entry and failure, then fail
 through the raw structural preflight nested-region-depth capability with the
 exact first and only diagnostic
-`whole-model region nesting exceeds ACIR v0.1 capability limit 512`. They do
+`whole-model region nesting exceeds ACIR v0.2 capability limit 512`. They do
 not enter recursive normalization, crash, overflow the stack, or emit an
 epoch, canonical-file, or other downstream verifier diagnostic. This suite is
 the factory-only ordering proof; private-helper unit coverage is not a
@@ -1686,7 +1701,7 @@ independently of private-helper and CLI coverage.
 
 Task 2 owns extraction from `ModelAnalysis.cpp` and its internal helper,
 creation of the neutral dialect helper, affected `ACIROps` verification, and
-the normative `acir-core-v0.1.md` hard-break wording. A non-suspending
+the normative `acir-core-v0.2.md` hard-break wording. A non-suspending
 `scf.for` is legal only when lower, upper, and positive step give an exact
 finite static trip count. Otherwise every reachable backedge must suspend.
 There is no compatibility path.

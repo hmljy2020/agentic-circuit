@@ -27,7 +27,7 @@ namespace acir::bindings {
 namespace {
 
 constexpr llvm::StringLiteral kRecordFingerprint =
-    "sha256:075f9a6bf582cdf6f16b599d654c3126085ea15aa38a1937f6af63e57bbc2392";
+    "sha256:b4079650d45cd32a70c7a41e25d3ab0db94de0a236e2516afffcd1f08260db6a";
 
 std::string takeError(llvm::Error error) {
   return llvm::toString(std::move(error));
@@ -55,11 +55,11 @@ std::string recordJson(llvm::StringRef fingerprint = kRecordFingerprint,
     "activation_sources": [],
     "availability": "available",
     "binding": "Leaf",
-    "binding_schema": "acsim-binding-0.1",
+    "binding_schema": "acsim-binding-0.2",
     "component_schema": "ac.std.Leaf",
     "component_schema_fingerprint": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
     "construction": {"arguments": [8], "kind": "constructor"},
-    "contract_epoch": "0.1",
+    "contract_epoch": "0.2",
     "cpp": {
       "concept": "gfsim::PureModel",
       "entry_points": {"pure": "gfsim::leaf", "reset": "", "validate": "", "work": "", "xfer": ""},
@@ -123,11 +123,11 @@ std::string requestJson(
   return (llvm::Twine(R"json({
     "activation_sources": [],
     "binding": "Leaf",
-    "binding_schema": "acsim-binding-0.1",
+    "binding_schema": "acsim-binding-0.2",
     "component_schema": ")json") +
           componentSchema + R"json(",
     "component_schema_fingerprint": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
-    "contract_epoch": "0.1",
+    "contract_epoch": "0.2",
     "effect": "pure",
     "function_type": ")json" +
           functionType + R"json(",
@@ -584,8 +584,8 @@ TEST(BindingRecordTest, ParsesTheClosedTypedMetadataRecord) {
   auto candidates = parseCandidates(registryJson({candidateJson()}));
   ASSERT_EQ(1U, candidates.size());
   const BindingRecord &record = candidates.front().record();
-  EXPECT_EQ("acsim-binding-0.1", record.bindingSchema());
-  EXPECT_EQ("0.1", record.contractEpoch());
+  EXPECT_EQ("acsim-binding-0.2", record.bindingSchema());
+  EXPECT_EQ("0.2", record.contractEpoch());
   EXPECT_EQ("Leaf", record.binding());
   EXPECT_EQ("pure", record.effect());
   EXPECT_EQ("gfsim::Leaf", record.cpp().symbol);
@@ -612,7 +612,7 @@ TEST(BindingRecordTest, RejectsUnknownFieldsAndBehavioralCppFragments) {
       {candidateJson("fast", "arm64-apple-darwin", true, unknown)}));
   ASSERT_FALSE(static_cast<bool>(parsedUnknown));
   EXPECT_TRUE(containsText(takeError(parsedUnknown.takeError()),
-                           "exactly the acsim-binding-0.1 fields"));
+                           "exactly the acsim-binding-0.2 fields"));
 
   for (llvm::StringRef raw : {"gfsim::Leaf()", "Leaf{x}", "#define Leaf X",
                               "leaf = callback", "emit(%s)"}) {
@@ -839,10 +839,10 @@ TEST(BindingRegistryTest,
   };
   const Malformed malformed[] = {
       {"ACLOWER-EPOCH-MISMATCH",
-       [](BindingRequest &request) { request.contractEpoch = "0.2"; }},
+       [](BindingRequest &request) { request.contractEpoch = "0.1"; }},
       {"ACLOWER-SCHEMA-MISMATCH",
        [](BindingRequest &request) {
-         request.bindingSchema = "acsim-binding-0.2";
+         request.bindingSchema = "acsim-binding-0.1";
        }},
       {"ACLOWER-INLINE-EFFECT",
        [](BindingRequest &request) { request.effect = "invalid"; }},
@@ -955,7 +955,7 @@ TEST(BindingLockTest, EmitsStableCanonicalBytesAndProjectHashVector) {
                                 "arm64-apple-darwin");
   ASSERT_TRUE(static_cast<bool>(result)) << takeError(result.takeError());
   EXPECT_EQ(
-      "sha256:2fb6dab878129c1900393b41bcd1881b60807024502f2f63b68d6da1f63a9dc3",
+      "sha256:4b3da868923febb89cbe188550766d10b17d85aa2980bdf452ad5d655c214350",
       result->lockFingerprint());
   EXPECT_EQ('[', result->canonicalLock().front());
   EXPECT_EQ(']', result->canonicalLock().back());
@@ -1032,7 +1032,7 @@ TEST(ResolveBindingsApiTest, ReturnsTypedResultWithoutMutatingFrozenTopology) {
   context.loadAllAvailableDialects();
   acir::ac::getStructuralProviderRegistry(&context).registerExternal("Leaf");
   constexpr llvm::StringLiteral source = R"mlir(
-    builtin.module attributes {ac.contract_epoch = "0.1"} {
+    builtin.module attributes {ac.contract_epoch = "0.2"} {
       ac.system @soc root @Top as "root" tick 0 "cycle"
           workload @Top::@workload seed {kind = "fixed", value = 0 : i64}
           instrumentation [] results {id = "default", format = "json"}

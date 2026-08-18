@@ -8,7 +8,10 @@ function(add_acir_library target)
 
   add_library(${target} ${ARG_SOURCES})
   target_compile_features(${target} PUBLIC cxx_std_20)
-  set_target_properties(${target} PROPERTIES CXX_EXTENSIONS OFF)
+  set_target_properties(${target} PROPERTIES
+    CXX_EXTENSIONS OFF
+    POSITION_INDEPENDENT_CODE ON
+  )
   target_link_libraries(
     ${target}
     PUBLIC

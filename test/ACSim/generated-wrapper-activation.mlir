@@ -1,7 +1,7 @@
 // RUN: %acir_opt_public %s | %FileCheck %s
 
-builtin.module attributes {ac.contract_epoch = "0.1"} {
-  acsim.model @wrapper_activation epoch "0.1" root @Top
+builtin.module attributes {ac.contract_epoch = "0.2"} {
+  acsim.model @wrapper_activation epoch "0.2" root @Top
       construction ["Top.left", "Top.left.child", "Top.port_sink", "Top.resource_sink"]
       destruction ["Top.resource_sink", "Top.port_sink", "Top.left.child", "Top.left"]
       fingerprints {
@@ -28,13 +28,13 @@ builtin.module attributes {ac.contract_epoch = "0.1"} {
     acsim.type @role cpp "Producer" kind "role" fingerprint "sha256:0e00000000000000000000000000000000000000000000000000000000000000"
     acsim.type @schema cpp "schema" kind "schema" fingerprint "sha256:0f00000000000000000000000000000000000000000000000000000000000000"
     acsim.type @target cpp "Target" kind "role" fingerprint "sha256:1000000000000000000000000000000000000000000000000000000000000000"
-    acsim.type @value cpp "bool" kind "value" fingerprint "sha256:1100000000000000000000000000000000000000000000000000000000000000"
+    acsim.type @value cpp "bool" kind "value" fingerprint "sha256:ee9bb81c62699bddda09c4e3483a75fe442ae49ccfa59eaa59621d5b2be84c74"
 
     acsim.binding @endpoint_binding record {
       activation_sources = [], availability = "available", binding = "endpoint_binding",
-      binding_schema = "acsim-binding-0.1", component_schema = @schema,
+      binding_schema = "acsim-binding-0.2", component_schema = @schema,
       component_schema_fingerprint = "sha256:0f00000000000000000000000000000000000000000000000000000000000000",
-      construction = {arguments = [], kind = "constructor"}, contract_epoch = "0.1",
+      construction = {arguments = [], kind = "constructor"}, contract_epoch = "0.2",
       cpp = {concept = "StatefulComponent", entry_points = {pure = "", reset = "endpoint_reset", validate = "endpoint_validate", work = "endpoint_work", xfer = "endpoint_xfer"}, header = "endpoint.hpp", symbol = "Endpoint", target = "model"},
       cpp_type = @value, effect = "stateful", fingerprint = "sha256:1200000000000000000000000000000000000000000000000000000000000000",
       implementation = @impl, ownership = {kind = "unique", placement = "member_or_array"},

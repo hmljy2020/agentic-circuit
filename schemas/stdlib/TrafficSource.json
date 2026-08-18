@@ -1,7 +1,7 @@
 {
   "schema_kind": "agentic-circuit-component",
-  "schema_version": "0.1",
-  "contract_epoch": "0.1",
+  "schema_version": "0.2",
+  "contract_epoch": "0.2",
   "canonical_name": "ac.std.TrafficSource",
   "family": "workload",
   "provider_namespace": "ac.std",
@@ -11,7 +11,7 @@
     "symbol": "gfsim::TrafficSource",
     "language": "c++20",
     "concept": "gfsim::Component",
-    "toolchain_target": "ac-gfsim-cxx20-v0.1",
+    "toolchain_target": "ac-gfsim-cxx20-v0.2",
     "functional_policy": "none"
   },
   "static_parameters": [
@@ -92,5 +92,5 @@
     "gauges": [],
     "histograms": []
   },
-  "schema_fingerprint": "sha256:2c38b59d80d82d10a9a4948b77bb0c1dda0016106af0637ba3fdb827e3c447f4"
+  "schema_fingerprint": "sha256:63ebb48f56e62fed0c9621769ebee70c2dd3e35d82a85cc2f7c016634dfb4e2c"
 }

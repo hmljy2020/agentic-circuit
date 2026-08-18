@@ -1348,6 +1348,9 @@ verifyRuntimeReferences(ModuleOp module,
       } else if (auto await = dyn_cast<AwaitEventOp>(operation)) {
         (void)lookupExpected(await, await.getEventQueue(),
                              EventQueueOp::getOperationName());
+      } else if (auto await = dyn_cast<AwaitQueueOp>(operation)) {
+        (void)lookupExpected(await, await.getQueue(),
+                             QueueOp::getOperationName());
       } else if (auto probe = dyn_cast<ProbeOp>(operation)) {
         StringRef expected =
             llvm::StringSwitch<StringRef>(probe.getKind())
@@ -1398,10 +1401,10 @@ LogicalResult verifyProcessOperations(ModuleOp module) {
       result =
           TypeSwitch<Operation *, LogicalResult>(operation)
               .Case<TrySendOp, TryRecvOp, ScheduleOp, WaitUntilOp, WaitForOp,
-                    AwaitEventOp, YieldSimOp, TraceOpenOp, TraceNextOp,
-                    TraceDecodeOp, TraceEofOp, TracePositionOp, RequireOp,
-                    EnsureOp, AssertOp, ProbeOp, StatAddOp, InstrumentationOp>(
-                  [](auto op) { return op.verify(); })
+                    AwaitEventOp, AwaitQueueOp, YieldSimOp, TraceOpenOp,
+                    TraceNextOp, TraceDecodeOp, TraceEofOp, TracePositionOp,
+                    RequireOp, EnsureOp, AssertOp, ProbeOp, StatAddOp,
+                    InstrumentationOp>([](auto op) { return op.verify(); })
               .Default([](Operation *) { return success(); });
       return failed(result) ? WalkResult::interrupt() : WalkResult::advance();
     });
@@ -2335,7 +2338,8 @@ std::string traceOwnerIdentity(Operation *operation, StringRef trace) {
 }
 
 bool isSuspension(Operation *operation) {
-  return isa<WaitUntilOp, WaitForOp, AwaitEventOp, YieldSimOp>(operation);
+  return isa<WaitUntilOp, WaitForOp, AwaitEventOp, AwaitQueueOp, YieldSimOp>(
+      operation);
 }
 
 bool isLinearAcrossSuspension(Type type) {
@@ -2351,9 +2355,10 @@ bool isAllowedProcessOperation(Operation *operation) {
     return true;
   return isa<RecordCreateOp, RecordGetOp, RecordWithOp, PacketSerializeOp,
              PacketDeserializeOp, TrySendOp, TryRecvOp, ScheduleOp, WaitUntilOp,
-             WaitForOp, AwaitEventOp, YieldSimOp, TraceOpenOp, TraceNextOp,
-             TraceDecodeOp, TraceEofOp, TracePositionOp, RequireOp, EnsureOp,
-             AssertOp, ProbeOp, StatAddOp, InstrumentationOp>(operation);
+             WaitForOp, AwaitEventOp, AwaitQueueOp, YieldSimOp, TraceOpenOp,
+             TraceNextOp, TraceDecodeOp, TraceEofOp, TracePositionOp, RequireOp,
+             EnsureOp, AssertOp, ProbeOp, StatAddOp, InstrumentationOp>(
+      operation);
 }
 
 std::optional<bool> constantBool(Value value) {
@@ -2969,6 +2974,40 @@ LogicalResult WaitUntilOp::verify() { return requireProcess(*this); }
 LogicalResult WaitForOp::verify() { return requireProcess(*this); }
 LogicalResult AwaitEventOp::verify() { return requireProcess(*this); }
 
+LogicalResult AwaitQueueOp::verify() {
+  if (failed(requireProcess(*this)))
+    return failure();
+  if (!llvm::is_contained({StringRef("readable"), StringRef("writable")},
+                          getUntil()))
+    return emitOpError("until must be exactly 'readable' or 'writable'");
+
+  Operation *nested = getOperation();
+  for (Operation *parent = nested->getParentOp(); parent;
+       nested = parent, parent = parent->getParentOp()) {
+    auto ifOp = dyn_cast<scf::IfOp>(parent);
+    if (!ifOp)
+      continue;
+    Region *containing = nested->getParentRegion();
+    if (containing != &ifOp.getElseRegion())
+      continue;
+    Value condition = ifOp.getCondition();
+    if (getUntil() == "writable") {
+      auto send = condition.getDefiningOp<TrySendOp>();
+      if (send && condition == send.getAccepted() &&
+          send.getQueueAttr() == getQueueAttr())
+        return success();
+    } else {
+      auto recv = condition.getDefiningOp<TryRecvOp>();
+      if (recv && condition == recv.getReceived() &&
+          recv.getQueueAttr() == getQueueAttr())
+        return success();
+    }
+  }
+  return emitOpError() << "must be in the false branch of the matching ac.try_"
+                       << (getUntil() == "writable" ? "send" : "recv")
+                       << " for queue '" << getQueueAttr() << "'";
+}
+
 LogicalResult YieldSimOp::verify() {
   ProcessOp process = enclosingProcess(*this);
   if (!process || (*this)->getParentOp() != process)
@@ -3051,8 +3090,8 @@ LogicalResult InstrumentationOp::verify() {
   walkOperationsIterative(getBody(), [&](Operation *operation) {
     if (isa<ObservationOpInterface>(operation) || isMemoryEffectFree(operation))
       if (!isa<TrySendOp, TryRecvOp, ScheduleOp, WaitUntilOp, WaitForOp,
-               AwaitEventOp, YieldSimOp, TraceOpenOp, TraceNextOp, TraceEofOp,
-               TracePositionOp>(operation))
+               AwaitEventOp, AwaitQueueOp, YieldSimOp, TraceOpenOp, TraceNextOp,
+               TraceEofOp, TracePositionOp>(operation))
         return WalkResult::advance();
     operation->emitOpError(
         "instrumentation may contain only removable observation operations");
@@ -3125,6 +3164,16 @@ void AwaitEventOp::getEffects(
     return;
   addEffect(effects, *this, MemoryEffects::Read::get(), getEventQueue(),
             "event_queue", EventQueueStateResource::get());
+  addEffect(effects, *this, MemoryEffects::Write::get(), processIdentity(*this),
+            "module", ModuleStateResource::get());
+}
+
+void AwaitQueueOp::getEffects(
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  if (!isa_and_nonnull<QueueOp>(resolvedRuntimeTarget(*this, getQueue())))
+    return;
+  addEffect(effects, *this, MemoryEffects::Read::get(), getQueue(), "queue",
+            QueueStateResource::get());
   addEffect(effects, *this, MemoryEffects::Write::get(), processIdentity(*this),
             "module", ModuleStateResource::get());
 }

@@ -2,7 +2,7 @@
 
 ## Decision
 
-Phase 4 passes its combined local exit gate for contract epoch `0.1`. The
+Phase 4 passes its combined local exit gate for contract epoch `0.2`. The
 repository now provides the closed Python construction surface, deterministic
 ACPy-to-ACIR frontend, reusable native compiler facade, exact ten-command CLI,
 immutable build and run manifests, Python-free generated runtime, replay, and
@@ -31,7 +31,7 @@ implementation, and tests already used the correct closed set.
 | Development preset | `build/dev-llvm22` |
 | Release preset | `build/release-llvm22` |
 | Sanitizer presets | `build/asan-llvm22`, `build/ubsan-llvm22` |
-| Contract epoch | `0.1` |
+| Contract epoch | `0.2` |
 
 The local ASan run used
 `ASAN_OPTIONS=allow_user_poisoning=0:detect_container_overflow=0`. Homebrew's

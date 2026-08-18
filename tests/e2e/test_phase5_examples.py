@@ -85,7 +85,7 @@ def _selected_result(run_directory: Path) -> dict[str, object]:
     }
     return {
         "schema": "phase5-showcase-result",
-        "version": "0.1",
+        "version": "0.2",
         "status": result["status"],
         "termination_reason": result["termination_reason"],
         "simulated_ticks": result["simulated_ticks"],
@@ -140,7 +140,7 @@ class Phase5ExampleTest(unittest.TestCase):
                 self.assertIn(f'name = "phase5-{name.replace("_", "-")}"', manifest)
                 trace = json.loads((root / "trace.pto.json").read_text())
                 self.assertEqual("pto-trace", trace["schema"])
-                self.assertEqual("0.1", trace["version"])
+                self.assertEqual("0.2", trace["version"])
 
     def test_davincioo_sources_reproduce_the_checked_in_canonical_trace(self) -> None:
         adapter = REPOSITORY / "tools" / "import-davincioo-pto-trace.py"

@@ -1,12 +1,12 @@
-# ACIR Standard Library v0.1 Specification
+# ACIR Standard Library v0.2 Specification
 
 | Field | Value |
 | --- | --- |
 | Specification | Agentic Circuit Standard Component Library |
-| Version | 0.1 |
+| Version | 0.2 |
 | Status | Draft for review |
 | Namespace | `ac.std` |
-| Global contract epoch | `0.1` |
+| Global contract epoch | `0.2` |
 | C++ language contract | C++20 |
 
 ## Purpose
@@ -16,16 +16,16 @@ their statically bound C++20 realizations. It provides reusable interfaces,
 protocols, packets, component templates, and policies without extending ACIR
 Core for each architecture component.
 
-The library conforms to [ACIR Core v0.1](acir-core-v0.1.md), the
-[Python-to-ACIR Lowering v0.1](python-to-acir-lowering-v0.1.md), and the
-[gfsim Model Library Contract v0.1](gfsim-runtime-abi-v0.1.md).
+The library conforms to [ACIR Core v0.2](acir-core-v0.2.md), the
+[Python-to-ACIR Lowering v0.2](python-to-acir-lowering-v0.2.md), and the
+[gfsim Model Library Contract v0.2](gfsim-runtime-abi-v0.2.md).
 
 The canonical machine-readable component record is
 [`component.schema.json`](../../schemas/component.schema.json). This Markdown
 specification defines the semantic constraints that JSON Schema alone cannot
 express.
 
-The frozen epoch `0.1` component records and their explicit profile
+The frozen epoch `0.2` component records and their explicit profile
 availability are published in
 [`schemas/stdlib/catalog.json`](../../schemas/stdlib/catalog.json). Every
 catalog entry names exactly one `ComponentSchema` file and repeats its verified
@@ -50,7 +50,7 @@ connection, ownership, liveness, or cycle verification.
 ## Global contract epoch
 
 Every schema, provider, compiler, generated source tree, and runtime participating
-in one build MUST declare the exact global contract epoch `"0.1"`. Compatibility is
+in one build MUST declare the exact global contract epoch `"0.2"`. Compatibility is
 exact equality; epoch ranges, minimum versions, maximum versions, and additive
 compatibility rules are forbidden.
 
@@ -70,8 +70,8 @@ The canonical machine-readable `ComponentSchema` has exactly these top-level
 fields; providers MUST NOT add provider-specific fields:
 
 - `schema_kind`: the literal `agentic-circuit-component`;
-- `schema_version`: the literal `0.1`;
-- `contract_epoch`: the string literal `0.1`;
+- `schema_version`: the literal `0.2`;
+- `contract_epoch`: the string literal `0.2`;
 - `canonical_name` and `family`;
 - `provider_namespace`;
 - `stability`: `experimental`, `provisional`, or `stable`;
@@ -127,7 +127,7 @@ The compiler resolves and validates every parameter before topology freeze.
 Generated C++ maps the normalized value to the declared template argument,
 `constexpr` argument, or immutable constructor constant. A constructor constant
 MUST NOT be mutated after construction. Runtime tuning of model parameters is
-outside v0.1.
+outside v0.2.
 
 ### Bindings
 
@@ -224,8 +224,8 @@ The fingerprint is the SHA-256 digest of the RFC 8785 canonical JSON record with
 ```json
 {
   "schema_kind": "agentic-circuit-component",
-  "schema_version": "0.1",
-  "contract_epoch": "0.1",
+  "schema_version": "0.2",
+  "contract_epoch": "0.2",
   "canonical_name": "ac.std.Sink",
   "family": "workload",
   "provider_namespace": "ac.std",
@@ -235,7 +235,7 @@ The fingerprint is the SHA-256 digest of the RFC 8785 canonical JSON record with
     "symbol": "gfsim::std::Sink",
     "language": "c++20",
     "concept": "gfsim::StdStatefulComponent",
-    "toolchain_target": "ac-gfsim-cxx20-v0.1",
+    "toolchain_target": "ac-gfsim-cxx20-v0.2",
     "functional_policy": "optional"
   },
   "static_parameters": [
@@ -356,13 +356,13 @@ detail of the compiler and is not a component extensibility surface.
 
 Third-party providers use names such as `vendor.package.ComponentName` and MUST
 NOT register definitions in `ac.std`. A third-party schema still uses global
-contract epoch `"0.1"`; any schema evolution waits for and participates in the next
+contract epoch `"0.2"`; any schema evolution waits for and participates in the next
 global epoch.
 
 ## Static build profiles
 
 A build profile is selected before schema resolution and is immutable for the
-build. v0.1 profiles are `fast`, `validated`, and explicit `custom`. A profile
+build. v0.2 profiles are `fast`, `validated`, and explicit `custom`. A profile
 declares the exact toolchain target, provider/build fingerprint, available
 component implementations, enabled functional-policy implementations,
 instrumentation layers, validation hooks, and compile/link options. A `custom`
@@ -376,7 +376,7 @@ schemas, component semantics, callable signatures, or topology.
 
 ## Shared standard types and protocols
 
-The epoch `0.1` catalog freezes schemas for:
+The epoch `0.2` catalog freezes schemas for:
 
 - `ac.std.TileShape` and `ac.std.TileDescriptor`;
 - `ac.std.ComputeRequest` and `ac.std.ComputeResponse`;
@@ -386,7 +386,7 @@ The epoch `0.1` catalog freezes schemas for:
 
 Tile is a payload/schema concept, not a component family.
 
-The available epoch `0.1` protocols are `ac.std.ready_valid` and
+The available epoch `0.2` protocols are `ac.std.ready_valid` and
 `ac.std.request_response`. Ready-valid transfers one immutable packet exactly
 once when producer validity and consumer readiness coincide; an unaccepted
 packet remains stable and producer-owned. Request-response defines requester and
@@ -413,7 +413,7 @@ All type and protocol arguments resolve statically before topology freeze.
 
 ## Two-tier component catalog
 
-Epoch `0.1` freezes complete schemas for every component named below, independent
+Epoch `0.2` freezes complete schemas for every component named below, independent
 of implementation availability. The initial executable baseline is:
 
 - `ac.std.TraceSource`;
@@ -491,10 +491,10 @@ observation requires a global epoch increment.
 
 ## Acceptance criteria
 
-The epoch `0.1` Standard Library conforms when:
+The epoch `0.2` Standard Library conforms when:
 
 - every catalog entry has one complete, unique, machine-readable frozen schema;
-- all artifacts declare global contract epoch `"0.1"` and exact schema,
+- all artifacts declare global contract epoch `"0.2"` and exact schema,
   provider/build, and toolchain fingerprints;
 - every available component binds statically to its declared C++20 symbol and
   concept with all parameters resolved before topology freeze;

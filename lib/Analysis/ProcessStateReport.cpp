@@ -43,6 +43,10 @@ llvm::StringRef spelling(ProcessWakeKind value) {
     return "event_queue";
   case ProcessWakeKind::NextDelta:
     return "next_delta";
+  case ProcessWakeKind::QueueReadable:
+    return "queue_readable";
+  case ProcessWakeKind::QueueWritable:
+    return "queue_writable";
   }
   llvm_unreachable("unknown wake kind");
 }
@@ -207,7 +211,9 @@ llvm::StringRef spelling(ProcessHelperRole value) {
                                                   "wake_event_queue",
                                                   "wake_next_delta",
                                                   "scalar_wrap",
-                                                  "scalar_unwrap"};
+                                                  "scalar_unwrap",
+                                                  "wake_queue_readable",
+                                                  "wake_queue_writable"};
   return names[static_cast<unsigned>(value)];
 }
 
@@ -437,6 +443,11 @@ Value json(const ProcessGeneratedCalleePayload &payload) {
     two("wake_kind", spelling(payload.wakeNextDelta().wakeKind()), "wake_type",
         payload.wakeNextDelta().wakeType());
     break;
+  case ProcessHelperRole::WakeQueueReadable:
+  case ProcessHelperRole::WakeQueueWritable:
+    two("wake_kind", spelling(payload.wakeEventQueue().wakeKind()), "wake_type",
+        payload.wakeEventQueue().wakeType());
+    break;
   case ProcessHelperRole::ScalarWrap:
     object["direction"] = spelling(payload.scalarWrap().direction());
     object["scalar"] = payload.scalarWrap().scalar();
@@ -664,7 +675,7 @@ detail::hashProcessOccurrence(const ProcessOccurrenceId &occurrence) {
 llvm::Expected<std::string> detail::canonicalGeneratedCalleeSpecialization(
     const ProcessGeneratedCalleePlan &callee) {
   Object object;
-  object["contract_epoch"] = "0.1";
+  object["contract_epoch"] = "0.2";
   object["effect"] = spelling(callee.effect());
   object["inputs"] = mapArray(callee.inputTypeKeys(),
                               [](llvm::StringRef key) { return Value(key); });
@@ -673,7 +684,7 @@ llvm::Expected<std::string> detail::canonicalGeneratedCalleeSpecialization(
   object["results"] = mapArray(callee.resultTypeKeys(),
                                [](llvm::StringRef key) { return Value(key); });
   object["role"] = spelling(callee.role());
-  object["schema"] = "acir-generated-implementation-0.1";
+  object["schema"] = "acir-generated-implementation-0.2";
   object["source_paths"] = mapArray(
       callee.sourcePaths(), [](llvm::StringRef path) { return Value(path); });
   return bindings::canonicalizeJson(Value(std::move(object)));
@@ -686,8 +697,8 @@ detail::canonicalValueTypeSpecialization(const ProcessValueTypePlan &type) {
   descriptor.erase("fingerprint");
   descriptor.erase("ordinal");
   descriptor.erase("symbol");
-  descriptor["contract_epoch"] = "0.1";
-  descriptor["schema"] = "acir-generated-value-type-0.1";
+  descriptor["contract_epoch"] = "0.2";
+  descriptor["schema"] = "acir-generated-value-type-0.2";
   return bindings::canonicalizeJson(Value(std::move(descriptor)));
 }
 
@@ -699,10 +710,10 @@ serializeProcessStatePlan(const ProcessStatePlanSet &plans,
   Object report;
   report["callees"] =
       mapArray(plans.callees(), [](const auto &x) { return json(x); });
-  report["contract_epoch"] = "0.1";
+  report["contract_epoch"] = "0.2";
   report["processes"] =
       mapArray(plans.processes(), [](const auto &x) { return json(x); });
-  report["schema"] = "acir-process-state-plan-0.1";
+  report["schema"] = "acir-process-state-plan-0.2";
   report["value_types"] =
       mapArray(plans.valueTypes(), [](const auto &x) { return json(x); });
   auto canonical = bindings::canonicalizeJson(Value(std::move(report)));

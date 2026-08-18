@@ -41,8 +41,8 @@ class InspectionResult:
     def to_json(self) -> dict[str, JsonValue]:
         return {
             "schema": "agentic-circuit-inspection",
-            "version": "0.1",
-            "contract_epoch": "0.1",
+            "version": "0.2",
+            "contract_epoch": "0.2",
             "kind": self.kind,
             "system": self.system,
             "path": self.path,
@@ -91,8 +91,8 @@ def _entity_name(entity: dict[str, object]) -> str | None:
 def _entities(acpy: dict[str, object]) -> tuple[dict[str, object], ...]:
     if (
         acpy.get("schema") != "agentic-circuit-acpy"
-        or acpy.get("version") != "0.1"
-        or acpy.get("contract_epoch") != "0.1"
+        or acpy.get("version") != "0.2"
+        or acpy.get("contract_epoch") != "0.2"
         or type(acpy.get("entities")) is not list
     ):
         raise InspectionError("ACPy has an invalid envelope")

@@ -140,7 +140,7 @@ parseTraceIdentity(const llvm::json::Value *value) {
     return hash.takeError();
   }
   if (!isNormalizedRelativePath(*path) || *schema != "pto-trace" ||
-      *version != "0.1" || !isFingerprint(*hash))
+      *version != "0.2" || !isFingerprint(*hash))
     return harnessError("trace identity is invalid");
   return TraceIdentity{std::move(*path), std::move(*schema),
                        std::move(*version), std::move(*hash)};
@@ -275,8 +275,8 @@ llvm::Expected<std::string> canonicalResult(const RunResultDocument &result) {
         llvm::json::Object{{"path", output.path}, {"sha256", output.sha256}});
   llvm::json::Object document{
       {"schema", "agentic-circuit-run-result"},
-      {"version", "0.1"},
-      {"contract_epoch", "0.1"},
+      {"version", "0.2"},
+      {"contract_epoch", "0.2"},
       {"run_manifest",
        llvm::json::Object{{"path", result.runManifest.path},
                           {"sha256", result.runManifest.sha256}}},
@@ -462,8 +462,8 @@ llvm::Expected<RunManifest> loadRunManifest(llvm::StringRef bytes,
                                                  "termination_expectation"};
   if (!object || !hasExactKeys(*object, keys) ||
       object->getString("schema") != "agentic-circuit-run-manifest" ||
-      object->getString("version") != "0.1" ||
-      object->getString("contract_epoch") != "0.1")
+      object->getString("version") != "0.2" ||
+      object->getString("contract_epoch") != "0.2")
     return harnessError("run manifest has an invalid closed envelope");
 
   RunManifest manifest;
@@ -580,8 +580,8 @@ preflightRunManifest(const RunManifest &manifest,
                      "build_profile", "instrumentation_layers",
                      "specialization_inputs", "build_fingerprint"}) ||
       build->getString("schema") != "agentic-circuit-build-manifest" ||
-      build->getString("version") != "0.1" ||
-      build->getString("contract_epoch") != "0.1" ||
+      build->getString("version") != "0.2" ||
+      build->getString("contract_epoch") != "0.2" ||
       build->getString("build_fingerprint") != buildFingerprint)
     return harnessError("build manifest identity does not match the model");
 

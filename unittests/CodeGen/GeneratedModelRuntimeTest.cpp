@@ -1,4 +1,6 @@
 #include "gfsim/object.h"
+#include "gfsim/process.h"
+#include "gfsim/queue.h"
 
 #include "gtest/gtest.h"
 
@@ -51,6 +53,62 @@ public:
 
 private:
   SimSystem &system_;
+};
+
+class GeneratedQueueProducer final
+    : public ProcessRuntime<GeneratedQueueProducer> {
+public:
+  GeneratedQueueProducer(ObjectId id, Queue<int> &queue)
+      : ProcessRuntime("producer", id, nullptr, 0, 1), queue_(queue) {}
+
+  ProcessStep executeProcessStep(uint32_t pc, Epoch epoch) {
+    workEpochs.push_back(epoch.time);
+    const int value = pc == 0 ? 10 : 20;
+    if (!queue_.proposePush(value)) {
+      ++fullRetries;
+      return ProcessStep::suspendAt(
+          pc, {ProcessWakeKind::QueueWritable, queue_.id()}, pc + 1);
+    }
+    if (pc == 0)
+      return ProcessStep::suspendAt(
+          1, {ProcessWakeKind::QueueWritable, queue_.id()}, 1);
+    return ProcessStep::terminate();
+  }
+
+  std::vector<Tick> workEpochs;
+  size_t fullRetries = 0;
+
+private:
+  Queue<int> &queue_;
+};
+
+class GeneratedQueueConsumer final
+    : public ProcessRuntime<GeneratedQueueConsumer> {
+public:
+  GeneratedQueueConsumer(ObjectId id, Queue<int> &queue)
+      : ProcessRuntime("consumer", id, nullptr, 0, 1), queue_(queue) {}
+
+  ProcessStep executeProcessStep(uint32_t, Epoch epoch) {
+    workEpochs.push_back(epoch.time);
+    auto [value, received] = queue_.tryRecv();
+    if (!received) {
+      emptyValues.push_back(value);
+      return ProcessStep::suspendAt(
+          0, {ProcessWakeKind::QueueReadable, queue_.id()}, 1);
+    }
+    values.push_back(value);
+    if (values.size() == 2)
+      return ProcessStep::terminate();
+    return ProcessStep::suspendAt(
+        0, {ProcessWakeKind::QueueReadable, queue_.id()}, 1);
+  }
+
+  std::vector<Tick> workEpochs;
+  std::vector<int> emptyValues;
+  std::vector<int> values;
+
+private:
+  Queue<int> &queue_;
 };
 
 struct RuntimeObservation {
@@ -112,6 +170,38 @@ TEST(GeneratedModelRuntimeTest, GeneratedDomainLimitStopsBeforeExcessWork) {
   EXPECT_EQ(result.finalEpoch, (Epoch{5, 0}));
   EXPECT_EQ(result.domainCycles.at("core"), 2u);
   EXPECT_EQ(object.workInvocations, 5u);
+}
+
+TEST(GeneratedModelRuntimeTest,
+     QueueBackpressurePreservesFifoAndWakesOnFollowingTicks) {
+  SimSystem system("generated_queue_backpressure");
+  Queue<int> queue("fifo", 1, nullptr, 1, sizeof(int));
+  GeneratedQueueProducer producer(0, queue);
+  GeneratedQueueConsumer consumer(2, queue);
+  const std::array rows = {makeDispatchRow(&producer), makeDispatchRow(&queue),
+                           makeDispatchRow(&consumer)};
+  constexpr std::array<uint32_t, 4> offsets = {0, 0, 2, 2};
+  constexpr std::array<ObjectId, 2> targets = {0, 2};
+  queue.bindSystem(&system);
+  ASSERT_TRUE(system.setDispatchTable(rows));
+  ASSERT_TRUE(system.setActivationPlan(offsets, targets));
+  ASSERT_TRUE(system.scheduleWork(producer.id(), {0, 0}));
+  ASSERT_TRUE(system.scheduleWork(consumer.id(), {0, 0}));
+
+  const TerminationResult result = system.run();
+  EXPECT_EQ(result.classification, TerminationClass::Completed);
+  EXPECT_EQ(consumer.values, (std::vector<int>{10, 20}));
+  ASSERT_EQ(consumer.emptyValues.size(), 2u);
+  EXPECT_EQ(consumer.emptyValues, (std::vector<int>{0, 0}));
+  EXPECT_EQ(producer.fullRetries, 1u);
+  EXPECT_EQ(producer.workEpochs, (std::vector<Tick>{0, 1, 2}));
+  EXPECT_EQ(consumer.workEpochs, (std::vector<Tick>{0, 1, 2, 3}));
+  EXPECT_EQ(queue.highWatermark(), 1u);
+  EXPECT_EQ(queue.totalPushes(), 2u);
+  EXPECT_EQ(queue.totalPops(), 2u);
+  EXPECT_TRUE(queue.isEmpty());
+  EXPECT_EQ(producer.status(), ProcessStatus::Terminated);
+  EXPECT_EQ(consumer.status(), ProcessStatus::Terminated);
 }
 
 } // namespace

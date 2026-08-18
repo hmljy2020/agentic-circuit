@@ -111,8 +111,8 @@ def _failure(code: str, message: str) -> CaptureWorkerResult:
 def _request_json(request: CaptureWorkerRequest, output: Path) -> dict[str, JsonValue]:
     return {
         "schema": "agentic-circuit-capture-request",
-        "version": "0.1",
-        "contract_epoch": "0.1",
+        "version": "0.2",
+        "contract_epoch": "0.2",
         "workspace": request.workspace.resolve().as_posix(),
         "entry": request.entry.resolve().as_posix(),
         "system": request.system,
@@ -304,8 +304,8 @@ def _worker_main(request_path: Path) -> int:
     (output / "project-report.txt").write_text(report, encoding="utf-8")
     response = {
         "schema": "agentic-circuit-capture-result",
-        "version": "0.1",
-        "contract_epoch": "0.1",
+        "version": "0.2",
+        "contract_epoch": "0.2",
         "has_acpy": document is not None,
         "has_acir": acir is not None,
         "diagnostics": [item.to_json() for item in diagnostics],

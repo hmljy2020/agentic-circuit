@@ -25,14 +25,14 @@ second accepted simulator wire format.
 
 The following existing contracts remain authoritative:
 
-- `docs/specs/pto-trace-schema-v0.1.md` and
+- `docs/specs/pto-trace-schema-v0.2.md` and
   `schemas/pto-trace.schema.json` define the only public trace document;
-- `docs/specs/gfsim-runtime-abi-v0.1.md` defines committed scheduling,
+- `docs/specs/gfsim-runtime-abi-v0.2.md` defines committed scheduling,
   statistics, termination, and determinism;
-- `docs/specs/acir-stdlib-v0.1.md` defines the component and observation
+- `docs/specs/acir-stdlib-v0.2.md` defines the component and observation
   inventory;
-- `docs/specs/agentic-python-cli-v0.1.md` defines the exact ten-command CLI;
-- `docs/specs/interface-evolution-v0.1.md` forbids additive public changes
+- `docs/specs/agentic-python-cli-v0.2.md` defines the exact ten-command CLI;
+- `docs/specs/interface-evolution-v0.2.md` forbids additive public changes
   without a global epoch increment; and
 - `docs/superpowers/plans/2026-08-04-agentic-circuit-roadmap.md` defines the
   Phase 5 examples, NPU showcase, swimlane output, and exit gate.

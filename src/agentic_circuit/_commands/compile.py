@@ -344,8 +344,8 @@ def run(arguments: object, workspace: WorkspaceConfig, sink: OutputSink) -> int:
     sink.result(
         {
             "schema": "agentic-circuit-compile-result",
-            "version": "0.1",
-            "contract_epoch": "0.1",
+            "version": "0.2",
+            "contract_epoch": "0.2",
             "project": workspace.project_name,
             "system": getattr(arguments, "system", None)
             or workspace.default_system,

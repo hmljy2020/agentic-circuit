@@ -66,8 +66,8 @@ class RunCommandTest(unittest.TestCase):
                 "(stage/'stats.json').write_bytes(stats)\n"
                 "(stage/'validation-report.json').write_bytes(validation)\n"
                 "digest=lambda data:'sha256:'+hashlib.sha256(data).hexdigest()\n"
-                "result={'schema':'agentic-circuit-run-result','version':'0.1',"
-                "'contract_epoch':'0.1','run_manifest':{'path':'run-manifest.json',"
+                "result={'schema':'agentic-circuit-run-result','version':'0.2',"
+                "'contract_epoch':'0.2','run_manifest':{'path':'run-manifest.json',"
                 "'sha256':digest(manifest)},'status':'completed',"
                 "'termination_reason':'trace_drained','simulated_ticks':0,"
                 "'domain_cycles':{},'event_count':0,'trace_position':{"
@@ -159,14 +159,16 @@ class RunCommandTest(unittest.TestCase):
             root = workspace(temporary)
             first = run_cli(
                 "run",
-                "architecture.py",
+                "capped_architecture.py",
                 "--trace",
                 "trace.json",
+                "--max-ticks",
+                "1",
                 "--output-dir",
                 "runs/one",
                 cwd=root,
             )
-            root.joinpath("architecture.py").unlink()
+            root.joinpath("capped_architecture.py").unlink()
             root.joinpath("trace.json").unlink()
             replay = run_cli(
                 "run",
@@ -179,8 +181,8 @@ class RunCommandTest(unittest.TestCase):
             first_manifest = (root / "runs/one/run-manifest.json").read_bytes()
             replay_manifest = (root / "runs/two/run-manifest.json").read_bytes()
 
-        self.assertEqual(6, first.returncode, first.stderr)
-        self.assertEqual(6, replay.returncode, replay.stderr)
+        self.assertEqual(7, first.returncode, first.stderr)
+        self.assertEqual(7, replay.returncode, replay.stderr)
         self.assertEqual(first_manifest, replay_manifest)
 
     def test_replay_rejects_ambient_override(self) -> None:

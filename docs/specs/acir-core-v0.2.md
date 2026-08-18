@@ -1,12 +1,12 @@
-# ACIR Core v0.1 Specification
+# ACIR Core v0.2 Specification
 
 | Field | Value |
 | --- | --- |
 | Specification | Agentic Circuit Intermediate Representation Core |
-| Version | 0.1 |
+| Version | 0.2 |
 | Status | Draft for review |
 | Namespace | `ac` |
-| Global contract epoch | `0.1` |
+| Global contract epoch | `0.2` |
 
 ## Scope
 
@@ -18,18 +18,18 @@ verification rules.
 ACIR Core does not define a closed component catalog, a command-line interface,
 or a concrete C++ API. Those contracts are defined by:
 
-- [Python-to-ACIR Lowering v0.1](python-to-acir-lowering-v0.1.md)
-- [Agentic Python and CLI v0.1](agentic-python-cli-v0.1.md)
-- [ACIR Standard Library v0.1](acir-stdlib-v0.1.md)
-- [gfsim Model Library Contract v0.1](gfsim-runtime-abi-v0.1.md)
-- [PTO Trace Schema v0.1](pto-trace-schema-v0.1.md)
+- [Python-to-ACIR Lowering v0.2](python-to-acir-lowering-v0.2.md)
+- [Agentic Python and CLI v0.2](agentic-python-cli-v0.2.md)
+- [ACIR Standard Library v0.2](acir-stdlib-v0.2.md)
+- [gfsim Model Library Contract v0.2](gfsim-runtime-abi-v0.2.md)
+- [PTO Trace Schema v0.2](pto-trace-schema-v0.2.md)
 
 ## Normative language
 
 The words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY** are
 normative requirements when written in uppercase.
 
-The operation and type spellings in this specification are the public ACIR v0.1
+The operation and type spellings in this specification are the public ACIR v0.2
 assembly syntax. Producers MUST emit these spellings, and consumers MUST reject
 undeclared aliases or compatibility spellings. Assembly examples and syntax
 schemata are normative for the constructs they show; explicitly identified
@@ -140,16 +140,16 @@ termination classification remains identical.
 
 ### Contract epoch and canonical assembly
 
-Every public ACIR v0.1 file MUST have one outer `builtin.module` with the exact
-string attribute `ac.contract_epoch = "0.1"`:
+Every public ACIR v0.2 file MUST have one outer `builtin.module` with the exact
+string attribute `ac.contract_epoch = "0.2"`:
 
 ```mlir
-builtin.module attributes {ac.contract_epoch = "0.1"} {
+builtin.module attributes {ac.contract_epoch = "0.2"} {
 }
 ```
 
 The attribute names the complete public syntax and semantic contract, not a
-minimum reader version. An ACIR v0.1 parser MUST accept exactly epoch `"0.1"`
+minimum reader version. An ACIR v0.2 parser MUST accept exactly epoch `"0.2"`
 and MUST reject a missing, unknown, older, or newer epoch before interpreting
 ACIR operations. The toolchain provides no epoch conversion, alias, fallback,
 or best-effort compatibility mode; Git history is the rollback mechanism.
@@ -178,7 +178,7 @@ ac.module @Name(
 metavariables. A concrete file contains concrete types and symbol references.
 Operations MUST carry enough operand and result type information to verify the
 Graph region without inspecting a C++ binding. Generic MLIR operation syntax is
-not a second public ACIR v0.1 spelling and an ACIR interchange parser MUST NOT
+not a second public ACIR v0.2 spelling and an ACIR interchange parser MUST NOT
 accept it as a substitute for the canonical syntax above.
 
 ### `ac.system`
@@ -233,14 +233,14 @@ implementation request is not a missing-binding condition.
 
 ### Static parameters
 
-ACIR v0.1 supports integer, boolean, string, enum, type, symbol, and unit-bearing
+ACIR v0.2 supports integer, boolean, string, enum, type, symbol, and unit-bearing
 static parameters. Parameters MAY have defaults, expressions, constraints, and
 parent-to-child forwarding.
 
 Every system, module, generated-module, external-module, instance, resource,
 queue, protocol, and implementation-model parameter is static. Every parameter
 MUST be resolved to a concrete value before topology freeze, including
-parameters that do not affect type or topology. ACIR v0.1 has no runtime model
+parameters that do not affect type or topology. ACIR v0.2 has no runtime model
 configuration, runtime parameter, configuration schema on `ac.system` or module
 declarations, or late-bound implementation parameter. Workload inputs, trace
 contents, termination limits, logging controls, and simulator diagnostics are
@@ -346,7 +346,7 @@ explicitly instantiates a tile-owning resource.
 ### Record-like operations
 
 Structs, packets, and transactions implement a common `RecordLike` operation
-interface. ACIR v0.1 provides shared value operations equivalent to:
+interface. ACIR v0.2 provides shared value operations equivalent to:
 
 - `ac.record.create`;
 - `ac.record.get`;
@@ -398,7 +398,7 @@ resource reference and there is no implicit conversion among these types.
 `!ac.flow<T, Protocol>` is an immutable logical producer-to-consumer value used
 in module topology. `T` is the carried payload or transaction type and
 `Protocol` is a concrete `ac.protocol` symbol reference. Neither parameter may
-be omitted or inferred in public ACIR v0.1 assembly.
+be omitted or inferred in public ACIR v0.2 assembly.
 
 A flow is not a queue, channel implementation, or mutable simulator object. It
 does not imply capacity, buffering, arbitration, replication, or delay.
@@ -502,7 +502,7 @@ packet.
 
 ### Backpressure
 
-ACIR v0.1 supports `none`, `accept`, `credit`, `capacity`, and declarative
+ACIR v0.2 supports `none`, `accept`, `credit`, `capacity`, and declarative
 `custom` backpressure modes. A pending offer declares whether its packet must
 remain stable.
 
@@ -528,6 +528,18 @@ and optional watermarks.
 
 If both capacities exist, enqueue succeeds only when both constraints permit
 it.
+
+The v0.2 native lowering subset is deliberately closed: FIFO ordering,
+exclusive ownership, `delay_ticks = 1`, and no configured watermarks. It lowers
+directly to `gfsim::Queue<T>` and does not create an external module, provider
+request, binding record, or compatibility wrapper. `per_key`, non-exclusive,
+non-unit-delay, and configured-watermark queues are rejected before ACSim
+publication.
+
+Queue proposals observe the committed snapshot at the start of the epoch. A
+pending pop does not release push capacity in that epoch, and a pending push is
+not visible to a receive until after Xfer. A failed `ac.try_recv` returns the
+payload's canonical zero value together with `false`.
 
 ### `ac.event_queue`
 
@@ -582,7 +594,7 @@ offset MUST align to `g`, and target range verification MUST use the exact
 number of selected addresses, including partial first and last blocks and the
 `2^64` endpoint.
 
-The ACIR v0.1 verifier MUST bound general mixed-geometry selector analysis to
+The ACIR v0.2 verifier MUST bound general mixed-geometry selector analysis to
 256 unique eligible relations per address map. A relation is eligible only
 when its address ranges and permission/class selectors overlap and either
 priority is absent or both explicit priorities are equal. Different explicit
@@ -592,7 +604,7 @@ deduplicate a pair reached through multiple selector keys, count against the
 canonical normalized entry set, saturate at 257, and complete this preflight
 before invoking general integer-relation analysis. If the count exceeds 256,
 the verifier MUST emit the fixed diagnostic
-`general mixed interleave analysis exceeds ACIR v0.1 limit 256`. This
+`general mixed interleave analysis exceeds ACIR v0.2 limit 256`. This
 capability diagnostic MUST NOT depend on input entry order.
 
 ## Processes and control flow
@@ -612,7 +624,7 @@ Python loops that create topology execute during elaboration. Runtime loops may
 remain as `scf` inside a process.
 
 An `scf.for` is lowerable only when its lower bound, upper bound, and positive
-step define an exact finite static trip count within the ACIR v0.1 capability
+step define an exact finite static trip count within the ACIR v0.2 capability
 limit, or when every reachable backedge suspends. A dynamic non-suspending
 `scf.for`, a non-positive static step, or a static trip-count overflow is a
 hard verification error; there is no compatibility lowering.
@@ -630,6 +642,7 @@ ACIR defines:
 - `ac.wait_until`;
 - `ac.wait_for`;
 - `ac.await_event`;
+- `ac.await_queue @queue until "readable|writable"`;
 - `ac.yield_sim`.
 
 Communication uses non-blocking `ac.try_send`, `ac.try_recv`, and `ac.schedule`.
@@ -638,6 +651,12 @@ operation.
 
 An `scf.while` loop MUST NOT busy-wait for simulation state. Process lowering
 converts suspension points into explicit continuation state.
+
+`ac.await_queue` is process-only and references a queue in the same module.
+`writable` is legal only in the failed branch of the matching `ac.try_send`;
+`readable` is legal only in the `received = false` branch of the matching
+`ac.try_recv`. Queue commit may activate those subscribers only for the next
+integer tick.
 
 ## Units and time
 
@@ -667,7 +686,7 @@ cannot publish a same-tick result. A structural Graph region MAY contain cycles,
 but the verifier MUST reject every strongly connected component in the
 zero-delay dependency graph that contains a cycle, including a self-loop.
 Therefore every legal structural cycle contains a state or positive-delay
-boundary. ACIR v0.1 defines no fixed-point combinational iteration.
+boundary. ACIR v0.2 defines no fixed-point combinational iteration.
 
 ## Effects
 
@@ -713,7 +732,7 @@ After `ac-freeze-topology`:
 - no forbidden zero-delay cycle remains;
 - dynamic operations cannot mutate topology.
 
-## Public v0.1 inventory
+## Public v0.2 inventory
 
 ### Structural operations
 
@@ -804,13 +823,13 @@ After `ac-freeze-topology`:
 
 ### Public file attributes
 
-- `ac.contract_epoch = "0.1"`
+- `ac.contract_epoch = "0.2"`
 
 ## Required verification
 
 An ACIR verifier MUST diagnose:
 
-- a missing or non-`"0.1"` `ac.contract_epoch`;
+- a missing or non-`"0.2"` `ac.contract_epoch`;
 - unresolved or duplicate symbols;
 - duplicate stable hierarchy paths;
 - incompatible interface roles, types, or protocols;
@@ -848,7 +867,7 @@ filesystem enumeration MUST NOT affect simulation behavior.
 
 ## Versioning and extension
 
-ACIR files identify their language version. Version `0.1` is experimental and
+ACIR files identify their language version. Version `0.2` is experimental and
 does not promise compatibility with later `0.x` versions.
 
 New component families do not require new core operations. Domain extensions

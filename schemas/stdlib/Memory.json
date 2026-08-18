@@ -1,7 +1,7 @@
 {
   "schema_kind": "agentic-circuit-component",
-  "schema_version": "0.1",
-  "contract_epoch": "0.1",
+  "schema_version": "0.2",
+  "contract_epoch": "0.2",
   "canonical_name": "ac.std.Memory",
   "family": "storage",
   "provider_namespace": "ac.std",
@@ -11,7 +11,7 @@
     "symbol": "gfsim::Memory",
     "language": "c++20",
     "concept": "gfsim::Component",
-    "toolchain_target": "ac-gfsim-cxx20-v0.1",
+    "toolchain_target": "ac-gfsim-cxx20-v0.2",
     "functional_policy": "none"
   },
   "static_parameters": [
@@ -142,5 +142,5 @@
     "gauges": [],
     "histograms": []
   },
-  "schema_fingerprint": "sha256:285c66a9426b51102ae2979522bbba601af9b8d89964a4aab8b1eb74db17a9e0"
+  "schema_fingerprint": "sha256:3134f4d9a8df630663a85af4e72536b7055910fe89b5b7ce456a7a77bb57a9c2"
 }

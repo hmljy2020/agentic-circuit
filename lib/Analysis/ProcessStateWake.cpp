@@ -29,11 +29,24 @@ PlanSetBuilder::planProcessWakes(std::unique_ptr<ControlPlan> control,
       target = wait.getResourceAttr();
     else if (auto await = dyn_cast<ac::AwaitEventOp>(wake->operation))
       target = await.getEventQueueAttr();
+    else if (auto await = dyn_cast<ac::AwaitQueueOp>(wake->operation))
+      target = await.getQueueAttr();
     if (!target)
       continue;
     wake->target = target.getValue().str();
     wake->declaration =
         SymbolTable::lookupNearestSymbolFrom(wake->operation, target);
+    if (!wake->declaration) {
+      if (auto owner = wake->operation->getParentOfType<ac::ModuleOp>())
+        for (Operation &operation : owner.getBody().front()) {
+          auto symbol = operation.getAttrOfType<StringAttr>(
+              SymbolTable::getSymbolAttrName());
+          if (symbol && symbol.getValue() == target.getValue()) {
+            wake->declaration = &operation;
+            break;
+          }
+        }
+    }
     if (!wake->declaration) {
       wake->operation->emitOpError("cannot resolve suspension target ")
           << target;

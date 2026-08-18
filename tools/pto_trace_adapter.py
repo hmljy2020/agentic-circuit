@@ -427,8 +427,8 @@ def _validate_target(document: dict[str, JsonValue]) -> None:
         _fail("ACTRACE-ADAPTER-TARGET", "canonical trace envelope is not closed")
     if (
         document["schema"] != "pto-trace"
-        or document["version"] != "0.1"
-        or document["contract_epoch"] != "0.1"
+        or document["version"] != "0.2"
+        or document["contract_epoch"] != "0.2"
         or type(document["metadata"]) is not dict
         or type(document["records"]) is not list
     ):
@@ -445,7 +445,7 @@ def convert_davincioo_trace(
     source_program: str | None = None,
     limits: AdapterLimits = AdapterLimits(),
 ) -> bytes:
-    """Return one newline-terminated canonical `pto-trace@0.1` document."""
+    """Return one newline-terminated canonical `pto-trace@0.2` document."""
 
     if source_program is not None and (type(source_program) is not str or not source_program):
         _fail(
@@ -473,8 +473,8 @@ def convert_davincioo_trace(
     identity = source_program or "sha256:" + hashlib.sha256(data).hexdigest()
     document: dict[str, JsonValue] = {
         "schema": "pto-trace",
-        "version": "0.1",
-        "contract_epoch": "0.1",
+        "version": "0.2",
+        "contract_epoch": "0.2",
         "metadata": {
             "producer": DAVINCIOO_PRODUCER,
             "pto_identity": PTO_IDENTITY,

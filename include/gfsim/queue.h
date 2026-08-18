@@ -9,6 +9,7 @@
 #include <optional>
 #include <queue>
 #include <set>
+#include <utility>
 #include <vector>
 
 namespace gfsim {
@@ -50,6 +51,8 @@ public:
     size_t occupied = pushProposals_.size() + committedSize();
     if (occupied >= entryCapacity_ || exceedsByteCapacity(occupied + 1))
       return false;
+    if (system_ && !system_->registerCommitParticipant(id()))
+      return false;
     pushProposals_.push_back(std::move(element));
     return true;
   }
@@ -58,9 +61,18 @@ public:
   std::optional<T> proposePop() {
     if (popProposalCount_ >= committed_.size())
       return std::nullopt;
+    if (system_ && !system_->registerCommitParticipant(id()))
+      return std::nullopt;
     size_t index = popProposalCount_;
     ++popProposalCount_;
     return std::optional<T>(committed_[index]);
+  }
+
+  /// Typed process helper: failed receives return the normative zero value.
+  std::pair<T, bool> tryRecv() {
+    std::optional<T> value = proposePop();
+    return value ? std::pair<T, bool>{std::move(*value), true}
+                 : std::pair<T, bool>{T{}, false};
   }
 
   /// Peek at the front without proposing a pop.
@@ -74,7 +86,7 @@ public:
     // Deterministic local arbitration: FIFO order.
     // Push proposals are appended in order.
     // Pop proposals are served from the front.
-    // In v0.1, arbitration is simple FIFO.
+    // In v0.2, arbitration is simple FIFO.
     for (size_t index = 0; index < pushProposals_.size(); ++index)
       emitObservation({.category = "transaction",
                        .name = "accepted",
@@ -152,6 +164,8 @@ public:
   uint64_t totalPushes() const { return totalPushes_; }
   uint64_t totalPops() const { return totalPops_; }
 
+  void bindSystem(SimSystem *system) override { system_ = system; }
+
   void reset() override {
     committed_.clear();
     pushProposals_.clear();
@@ -179,6 +193,7 @@ private:
   uint64_t totalPushes_ = 0;
   uint64_t totalPops_ = 0;
   Epoch lastUpdate_;
+  SimSystem *system_ = nullptr;
 };
 
 /// Standard-library finite FIFO component. The distinct name is the public

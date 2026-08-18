@@ -1,14 +1,14 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:pto-isa:agentic-circuit:schema:build-manifest:0.1",
-  "title": "Agentic Circuit Build Manifest 0.1",
+  "$id": "urn:pto-isa:agentic-circuit:schema:build-manifest:0.2",
+  "title": "Agentic Circuit Build Manifest 0.2",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "version", "contract_epoch", "project", "system", "source_files", "normalized_acir_sha256", "compiler", "pass_pipeline", "providers", "component_specializations", "protocol_identities", "artifacts", "validation_gates", "build_profile", "instrumentation_layers", "specialization_inputs", "build_fingerprint"],
   "properties": {
     "schema": {"const": "agentic-circuit-build-manifest"},
-    "version": {"const": "0.1"},
-    "contract_epoch": {"const": "0.1"},
+    "version": {"const": "0.2"},
+    "contract_epoch": {"const": "0.2"},
     "project": {"$ref": "#/$defs/identity"},
     "system": {"$ref": "#/$defs/identity"},
     "source_files": {"type": "array", "items": {"$ref": "#/$defs/fileHash"}},

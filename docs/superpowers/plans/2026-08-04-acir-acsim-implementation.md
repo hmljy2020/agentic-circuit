@@ -1,4 +1,4 @@
-# ACIR and ACSim v0.1 Implementation Plan
+# ACIR and ACSim v0.2 Implementation Plan
 
 > Execution contract: use the Superpowers subagent-driven-development workflow
 > task by task. Each production change begins with an observed failing test,
@@ -6,7 +6,7 @@
 > and is pushed after integration. Do not batch tasks or retain compatibility
 > shims.
 
-**Goal:** Implement the complete ACIR and ACSim v0.1 MLIR surface, strict
+**Goal:** Implement the complete ACIR and ACSim v0.2 MLIR surface, strict
 verification, deterministic topology freeze, and canonical ACIR-to-ACSim
 lowering as the first executable layer of Agentic Circuit.
 
@@ -453,7 +453,7 @@ structure-before-process split is not an alternative pipeline.
 
 **Files:**
 
-- Create: `contracts/acir-v0.1.yaml`, `contracts/acsim-v0.1.yaml`
+- Create: `contracts/acir-v0.2.yaml`, `contracts/acsim-v0.2.yaml`
 - Create: `scripts/check-ir-coverage.py`
 - Create: `tests/contracts/test_ir_coverage.py`
 - Create: `docs/implementation/spec-coverage.md`
@@ -496,7 +496,7 @@ Before merging the phase branch:
 7. Push the reviewed commits and record their SHAs in the spec coverage ledger.
 
 Only then may Phase 2 begin. Passing Phase 1 is progress toward the roadmap,
-not completion of Agentic Circuit v0.1.
+not completion of Agentic Circuit v0.2.
 
 ## Exact inventory manifest for the coverage gate
 

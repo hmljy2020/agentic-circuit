@@ -382,8 +382,8 @@ def _component_schema(
     _exact_keys(record, _TOP_LEVEL_KEYS, expected_name)
     if (
         record["schema_kind"] != "agentic-circuit-component"
-        or record["schema_version"] != "0.1"
-        or record["contract_epoch"] != "0.1"
+        or record["schema_version"] != "0.2"
+        or record["contract_epoch"] != "0.2"
         or record["canonical_name"] != expected_name
     ):
         raise SchemaError(f"component identity mismatch for {expected_name}")
@@ -583,10 +583,10 @@ class SchemaRegistry:
         )
         if (
             catalog["catalog"] != "ac.std"
-            or catalog["version"] != "0.1"
-            or catalog["contract_epoch"] != "0.1"
+            or catalog["version"] != "0.2"
+            or catalog["contract_epoch"] != "0.2"
         ):
-            raise SchemaError("stdlib catalog identity must be ac.std@0.1")
+            raise SchemaError("stdlib catalog identity must be ac.std@0.2")
         entries = _record_list(
             catalog["entries"],
             {"canonical_name", "availability", "schema_path", "schema_fingerprint"},

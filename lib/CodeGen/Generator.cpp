@@ -193,7 +193,7 @@ sourceBundleFingerprint(const std::vector<GeneratedFile> &files) {
   for (const GeneratedFile &file : files)
     sources.push_back(llvm::json::Object{{"path", file.relativePath},
                                          {"content", file.content}});
-  llvm::json::Object preimage{{"domain", "acsim-source-bundle-0.1"},
+  llvm::json::Object preimage{{"domain", "acsim-source-bundle-0.2"},
                               {"sources", std::move(sources)}};
   return fingerprintCanonicalJson(llvm::json::Value(std::move(preimage)));
 }
@@ -236,6 +236,9 @@ llvm::Expected<std::string> placementType(const ModelPlan &plan,
     base = std::move(*type);
   } else if (const ModulePlan *module = findModule(plan, target))
     base = module->className;
+  else if (const TypePlan *type = findType(plan, target);
+           type && type->kind == TypeKind::RuntimeObject)
+    base = type->cppType;
   else
     return generatorError("ACLOWER-TYPE-MISMATCH",
                           "placement target has no typed realization");
@@ -263,6 +266,7 @@ llvm::Expected<GeneratedFile> moduleHeader(const ModelPlan &plan,
   std::set<std::string> headers;
   std::set<std::string> moduleHeaders;
   std::set<std::pair<std::string, std::string>> conceptChecks;
+  bool hasRuntimeObject = false;
   for (const PlacementPlan &placement : module.placements) {
     llvm::StringRef target = placement.target;
     target = target.take_until([](char value) { return value == ':'; });
@@ -274,6 +278,9 @@ llvm::Expected<GeneratedFile> moduleHeader(const ModelPlan &plan,
       conceptChecks.emplace(binding->conceptName, std::move(*type));
     } else if (const ModulePlan *nested = findModule(plan, target)) {
       moduleHeaders.insert("generated/modules/" + nested->className + ".h");
+    } else if (const TypePlan *type = findType(plan, target);
+               type && type->kind == TypeKind::RuntimeObject) {
+      hasRuntimeObject = true;
     }
   }
   for (const ExpressionPlan &expression : module.expressions) {
@@ -289,6 +296,8 @@ llvm::Expected<GeneratedFile> moduleHeader(const ModelPlan &plan,
 
   std::ostringstream output;
   output << "#pragma once\n\n#include \"gfsim/object.h\"\n";
+  if (hasRuntimeObject)
+    output << "#include \"gfsim/queue.h\"\n";
   if (std::any_of(module.placements.begin(), module.placements.end(),
                   [](const PlacementPlan &placement) {
                     return !placement.shape.empty();
@@ -413,7 +422,10 @@ llvm::Expected<std::string> arrayInitializer(const ModelPlan &plan,
       target = target.take_until([](char value) { return value == ':'; });
       const BindingPlan *binding = findBinding(plan, target);
       const ModulePlan *nestedModule = findModule(plan, target);
-      if (!binding && !nestedModule)
+      const TypePlan *runtimeType = findType(plan, target);
+      if (runtimeType && runtimeType->kind != TypeKind::RuntimeObject)
+        runtimeType = nullptr;
+      if (!binding && !nestedModule && !runtimeType)
         return generatorError("ACLOWER-TYPE-MISMATCH",
                               "array target has no typed realization");
       auto type = placementType(plan, PlacementPlan{.target = target.str()});
@@ -427,8 +439,17 @@ llvm::Expected<std::string> arrayInitializer(const ModelPlan &plan,
         if (!suffix)
           return suffix.takeError();
         result.append("\", nextObjectId++, this").append(*suffix).append(")");
-      } else {
+      } else if (nestedModule) {
         result.append("\", gfsim::kInvalidObjectId, this, nextObjectId)");
+      } else {
+        result.append("\", nextObjectId++, this");
+        for (const llvm::json::Value &argument : placement.staticArguments) {
+          auto literal = cppLiteral(argument);
+          if (!literal)
+            return literal.takeError();
+          result.append(", ").append(*literal);
+        }
+        result.push_back(')');
       }
     }
     indices.pop_back();
@@ -451,10 +472,26 @@ llvm::Expected<GeneratedFile> moduleSource(const ModelPlan &plan,
     target = target.take_until([](char value) { return value == ':'; });
     const BindingPlan *binding = findBinding(plan, target);
     const ModulePlan *nestedModule = findModule(plan, target);
-    if (!binding && !nestedModule)
+    const TypePlan *runtimeType = findType(plan, target);
+    if (runtimeType && runtimeType->kind != TypeKind::RuntimeObject)
+      runtimeType = nullptr;
+    if (!binding && !nestedModule && !runtimeType)
       return generatorError("ACLOWER-BINDING-MISSING",
                             "placement has no selected binding");
     if (placement.shape.empty()) {
+      if (runtimeType) {
+        std::string initializer = placement.memberName + "(\"" +
+                                  placement.symbol + "\", nextObjectId++, this";
+        for (const llvm::json::Value &argument : placement.staticArguments) {
+          auto literal = cppLiteral(argument);
+          if (!literal)
+            return literal.takeError();
+          initializer.append(", ").append(*literal);
+        }
+        initializer.push_back(')');
+        initializers.push_back(std::move(initializer));
+        continue;
+      }
       if (!binding)
         return generatorError("ACLOWER-OWNERSHIP",
                               "generated module placement kind is invalid");

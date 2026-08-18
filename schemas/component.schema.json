@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:pto-isa:agentic-circuit:schema:component:0.1",
-  "title": "Agentic Circuit ComponentSchema 0.1",
+  "$id": "urn:pto-isa:agentic-circuit:schema:component:0.2",
+  "title": "Agentic Circuit ComponentSchema 0.2",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -26,8 +26,8 @@
   ],
   "properties": {
     "schema_kind": {"const": "agentic-circuit-component"},
-    "schema_version": {"const": "0.1"},
-    "contract_epoch": {"const": "0.1"},
+    "schema_version": {"const": "0.2"},
+    "contract_epoch": {"const": "0.2"},
     "canonical_name": {"$ref": "#/$defs/qualifiedName"},
     "family": {"$ref": "#/$defs/name"},
     "provider_namespace": {"$ref": "#/$defs/qualifiedName"},

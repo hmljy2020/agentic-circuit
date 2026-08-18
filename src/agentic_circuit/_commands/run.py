@@ -89,8 +89,8 @@ def _options(arguments: object, workspace: WorkspaceConfig) -> RunOptions:
 def _result(publication: RunPublication) -> dict[str, object]:
     return {
         "schema": "agentic-circuit-run-command-result",
-        "version": "0.1",
-        "contract_epoch": "0.1",
+        "version": "0.2",
+        "contract_epoch": "0.2",
         "status": publication.status,
         "termination_reason": publication.termination_reason,
         "directory": publication.directory.as_posix(),

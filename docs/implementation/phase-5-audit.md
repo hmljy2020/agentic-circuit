@@ -2,7 +2,7 @@
 
 ## Decision
 
-Phase 5 passes its combined local exit gate for contract epoch `0.1`. The
+Phase 5 passes its combined local exit gate for contract epoch `0.2`. The
 repository now imports the pinned DavinciOO instruction-trace shape into the
 single public PTO trace format, publishes committed statistics and event
 observations, runs six small architectures through the complete public
@@ -28,7 +28,7 @@ epoch, ten-command CLI, schema inventory, and runtime input remain unchanged.
 | Development preset | `build/dev-llvm22` |
 | Release preset | `build/release-llvm22` |
 | Sanitizer presets | `build/asan-llvm22`, `build/ubsan-llvm22` |
-| Contract epoch | `0.1` |
+| Contract epoch | `0.2` |
 
 The CMake-selected Python interpreter on this host is 3.14, while the existing
 development virtual environment contains lit for Python 3.12. The development
@@ -143,7 +143,7 @@ built it, and ran `process-state-plan-consumer` successfully.
 ## Trace and observation closure
 
 The simulator still accepts exactly one public trace document identity:
-`pto-trace@0.1`. The repository-only adapter pins DavinciOO producer commit
+`pto-trace@0.2`. The repository-only adapter pins DavinciOO producer commit
 `e73633301cabed0d871ea5ff66e76a91df870aeb` and PTO-ISA commit
 `f6d0567c1cae2d6a7b0ebaf7ad0e3b93f8a39da3`. It validates duplicate keys,
 closed record and descriptor shapes, bounded values, portable integers,
@@ -168,7 +168,7 @@ The three-run audit produced these stable SHA-256 values:
 
 ## Public surface and dependency audit
 
-- The global epoch remains `0.1`, the CLI remains the exact existing ten
+- The global epoch remains `0.2`, the CLI remains the exact existing ten
   commands, and no public schema property or diagnostic entry was added.
 - DavinciOO import and Perfetto packing remain repository tools. They are not
   installed, exported from the Python package, or advertised as capabilities.

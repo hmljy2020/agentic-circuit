@@ -42,6 +42,7 @@ std::optional<TypeKind> parseTypeKind(llvm::StringRef kind) {
       .Case("value", TypeKind::Value)
       .Case("wake", TypeKind::Wake)
       .Case("payload", TypeKind::Payload)
+      .Case("runtime_object", TypeKind::RuntimeObject)
       .Default(std::nullopt);
 }
 
@@ -169,8 +170,8 @@ llvm::Error validateModelPlan(const ModelPlan &plan) {
   if (plan.modelSymbol.empty() || plan.rootSymbol.empty())
     return planError("ACLOWER-FINGERPRINT",
                      "model and root symbols must be non-empty");
-  if (plan.contractEpoch != "0.1")
-    return planError("ACLOWER-FINGERPRINT", "model contract epoch must be 0.1");
+  if (plan.contractEpoch != "0.2")
+    return planError("ACLOWER-FINGERPRINT", "model contract epoch must be 0.2");
   for (const Fingerprint *fingerprint :
        {&plan.frozenAcirFingerprint, &plan.bindingLockFingerprint,
         &plan.providerFingerprint, &plan.profileFingerprint,

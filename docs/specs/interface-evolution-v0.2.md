@@ -1,11 +1,11 @@
-# Interface Evolution v0.1 Specification
+# Interface Evolution v0.2 Specification
 
 | Field | Value |
 | --- | --- |
 | Specification | Global public-contract and observable-semantics evolution |
-| Version | 0.1 |
+| Version | 0.2 |
 | Status | Draft for review |
-| Current contract epoch | `0.1` |
+| Current contract epoch | `0.2` |
 | Series format | `0.N` |
 | Compatibility rule | Exact epoch equality |
 
@@ -29,7 +29,7 @@ Text marked non-normative is explanatory only.
 ## Global contract epoch
 
 The contract epoch has the canonical form `0.N`, where `N` is a non-negative
-decimal integer without leading zeroes. The current epoch is `0.1`. The epoch is
+decimal integer without leading zeroes. The current epoch is `0.2`. The epoch is
 one indivisible lockstep version for:
 
 - the Python authoring API and lowering semantics;

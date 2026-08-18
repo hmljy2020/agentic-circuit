@@ -1,4 +1,4 @@
-# Normative ACSim v0.1 public inventory.
+# Normative ACSim v0.2 public inventory.
 #
 # This manifest is the contract-side source of truth for the public ACSim
 # surface. The acsim.type inventory includes the closed optional runtime
@@ -9,7 +9,7 @@
 # or type must be reflected here in the same commit, and every entry must
 # have observable lit coverage.
 schema: acir-ir-inventory
-contract_epoch: "0.1"
+contract_epoch: "0.2"
 dialect: acsim
 operations:
   - acsim.model

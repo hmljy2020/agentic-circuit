@@ -1,7 +1,7 @@
 {
   "schema_kind": "agentic-circuit-component",
-  "schema_version": "0.1",
-  "contract_epoch": "0.1",
+  "schema_version": "0.2",
+  "contract_epoch": "0.2",
   "canonical_name": "ac.std.Scheduler",
   "family": "control",
   "provider_namespace": "ac.std",
@@ -11,7 +11,7 @@
     "symbol": "gfsim::Scheduler",
     "language": "c++20",
     "concept": "gfsim::Component",
-    "toolchain_target": "ac-gfsim-cxx20-v0.1",
+    "toolchain_target": "ac-gfsim-cxx20-v0.2",
     "functional_policy": "none"
   },
   "static_parameters": [
@@ -148,5 +148,5 @@
     ],
     "histograms": []
   },
-  "schema_fingerprint": "sha256:ee7ae59ef0c5305594e06cd2fa173e46c747853d5ccab4c48ac7f65ab7ab8a17"
+  "schema_fingerprint": "sha256:da37307716e72fd5b3fe68877f275f9ef9cb43157b0fd8f7b27519274f0b8fc2"
 }

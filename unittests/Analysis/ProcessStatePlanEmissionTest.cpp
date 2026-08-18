@@ -65,5 +65,100 @@ TEST(ProcessStatePlanEmissionTest, OneCalleeInYieldOnly) {
   EXPECT_EQ(plans.callees()[0].role(), ProcessHelperRole::WakeNextDelta);
 }
 
+TEST(ProcessStatePlanEmissionTest,
+     QueueActionsHaveTypedRefsDeclarationsAndDeterministicCallees) {
+  mlir::DialectRegistry registry;
+  registerAllDialects(registry);
+  mlir::MLIRContext context(registry);
+  auto module = test::parseAndFreezeQueueActions(context);
+  ASSERT_TRUE(module);
+  auto built = planProcessState(*module);
+  ASSERT_TRUE(mlir::succeeded(built));
+  ASSERT_TRUE(mlir::succeeded(verifyProcessStatePlan(*built)));
+
+  const ProcessGeneratedCalleePlan *send = nullptr;
+  const ProcessGeneratedCalleePlan *recv = nullptr;
+  const ProcessGeneratedCalleePlan *readable = nullptr;
+  const ProcessGeneratedCalleePlan *writable = nullptr;
+  for (auto [index, callee] : llvm::enumerate(built->callees())) {
+    EXPECT_EQ(callee.id().value(), index);
+    switch (callee.role()) {
+    case ProcessHelperRole::QueueTrySend:
+      send = &callee;
+      break;
+    case ProcessHelperRole::QueueTryRecv:
+      recv = &callee;
+      break;
+    case ProcessHelperRole::WakeQueueReadable:
+      readable = &callee;
+      break;
+    case ProcessHelperRole::WakeQueueWritable:
+      writable = &callee;
+      break;
+    default:
+      break;
+    }
+  }
+  ASSERT_NE(send, nullptr);
+  ASSERT_NE(recv, nullptr);
+  ASSERT_NE(readable, nullptr);
+  ASSERT_NE(writable, nullptr);
+  ASSERT_EQ(send->inputTypeKeys().size(), 2u);
+  EXPECT_EQ(send->inputTypeKeys()[0], "queue-ref:@queue");
+  EXPECT_EQ(send->inputTypeKeys()[1], "mlir:i32");
+  ASSERT_EQ(recv->inputTypeKeys().size(), 1u);
+  EXPECT_EQ(recv->inputTypeKeys()[0], "queue-ref:@queue");
+  EXPECT_EQ(send->declarations().size(), 1u);
+  EXPECT_EQ(recv->declarations().size(), 1u);
+  EXPECT_TRUE(readable->declarations().empty());
+  EXPECT_TRUE(writable->declarations().empty());
+  EXPECT_FALSE(readable->sourceOperations().empty());
+  EXPECT_FALSE(writable->sourceOperations().empty());
+  EXPECT_EQ(send->sourceOperations().size(), 1u);
+  EXPECT_EQ(recv->sourceOperations().size(), 1u);
+
+  auto first = serializeProcessStatePlan(*built);
+  auto second = serializeProcessStatePlan(*built);
+  ASSERT_TRUE(static_cast<bool>(first));
+  ASSERT_TRUE(static_cast<bool>(second));
+  EXPECT_EQ(*first, *second);
+}
+
+TEST(ProcessStatePlanEmissionTest,
+     EightIdenticalQueuesShareSendAndWritableSpecializations) {
+  mlir::MLIRContext context;
+  mlir::DialectRegistry registry;
+  registerAllDialects(registry);
+  context.appendDialectRegistry(registry);
+  auto module = test::parseAndFreezeManyQueueActions(context, 8);
+  ASSERT_TRUE(module);
+  auto built = planProcessState(*module);
+  ASSERT_TRUE(mlir::succeeded(built));
+
+  const ProcessGeneratedCalleePlan *send = nullptr;
+  const ProcessGeneratedCalleePlan *writable = nullptr;
+  size_t sendCallees = 0;
+  size_t writableCallees = 0;
+  for (const ProcessGeneratedCalleePlan &callee : built->callees()) {
+    if (callee.role() == ProcessHelperRole::QueueTrySend) {
+      send = &callee;
+      ++sendCallees;
+    }
+    if (callee.role() == ProcessHelperRole::WakeQueueWritable) {
+      writable = &callee;
+      ++writableCallees;
+    }
+  }
+  ASSERT_NE(send, nullptr);
+  ASSERT_NE(writable, nullptr);
+  EXPECT_EQ(sendCallees, 1u);
+  EXPECT_EQ(writableCallees, 1u);
+  EXPECT_EQ(send->sourceOperations().size(), 8u);
+  EXPECT_EQ(send->declarations().size(), 8u);
+  EXPECT_EQ(writable->sourceOperations().size(), 8u);
+  EXPECT_EQ(built->processes().front().pcs().size(), 9u);
+  EXPECT_GE(built->processes().front().wakes().size(), 9u);
+}
+
 } // namespace
 } // namespace acir

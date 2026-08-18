@@ -29,6 +29,7 @@ enum class TypeKind {
   Value,
   Wake,
   Payload,
+  RuntimeObject,
 };
 
 struct TypePlan {
@@ -159,6 +160,7 @@ struct BindingPlan {
 enum class PlacementKind {
   GeneratedModule,
   ExternalStateful,
+  CompilerNative,
   HomogeneousArray,
 };
 

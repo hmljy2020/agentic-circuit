@@ -70,7 +70,7 @@ StructuralProviderRegistry &
 getStructuralProviderRegistry(mlir::MLIRContext *context);
 
 /// Verifies whole-file hierarchy selection, stable ownership identities and
-/// the statically-resolved subset of topology freeze implemented by ACIR v0.1.
+/// the statically-resolved subset of topology freeze implemented by ACIR v0.2.
 mlir::LogicalResult verifyGraphStructure(mlir::Operation *topLevel);
 
 /// Verifies the graph and returns every elaborated queue/event/resource,
@@ -87,7 +87,7 @@ mlir::LogicalResult collectElaboratedTopologyOwners(
     llvm::SmallVectorImpl<ElaboratedTopologyOwner> &owners);
 
 /// Returns true for concrete builtin static parameter values admitted by the
-/// public v0.1 graph contract.
+/// public v0.2 graph contract.
 bool isConcreteStaticValue(mlir::Attribute value);
 
 /// Builds the canonical lexicographic element path for a static N-D array.

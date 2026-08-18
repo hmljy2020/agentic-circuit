@@ -66,8 +66,8 @@ def _select(
 def _listing(kind: str, names: list[str]) -> dict[str, JsonValue]:
     return {
         "schema": "agentic-circuit-schema-list",
-        "version": "0.1",
-        "contract_epoch": "0.1",
+        "version": "0.2",
+        "contract_epoch": "0.2",
         "kind": kind,
         "items": sorted(names),
     }
@@ -110,8 +110,8 @@ def run(arguments: object, sink: OutputSink) -> int:
         elif name in ("Stream", "ac.std.Stream"):
             document = {
                 "schema": "agentic-circuit-interface-definition",
-                "version": "0.1",
-                "contract_epoch": "0.1",
+                "version": "0.2",
+                "contract_epoch": "0.2",
                 "canonical_name": "ac.std.Stream",
                 "availability": "available",
             }

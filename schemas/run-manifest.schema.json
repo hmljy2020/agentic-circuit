@@ -1,14 +1,14 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:pto-isa:agentic-circuit:schema:run-manifest:0.1",
-  "title": "Agentic Circuit Run Manifest 0.1",
+  "$id": "urn:pto-isa:agentic-circuit:schema:run-manifest:0.2",
+  "title": "Agentic Circuit Run Manifest 0.2",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "version", "contract_epoch", "build_manifest", "trace", "seed", "output_directory", "deadlock_window", "max_ticks", "max_domain_cycles", "stats_format", "event_log", "termination_expectation"],
   "properties": {
     "schema": {"const": "agentic-circuit-run-manifest"},
-    "version": {"const": "0.1"},
-    "contract_epoch": {"const": "0.1"},
+    "version": {"const": "0.2"},
+    "contract_epoch": {"const": "0.2"},
     "build_manifest": {"$ref": "#/$defs/fileHash"},
     "trace": {"$ref": "#/$defs/trace"},
     "seed": {"$ref": "#/$defs/uint64"},
@@ -56,7 +56,7 @@
       "properties": {
         "path": {"type": "string", "minLength": 1},
         "schema": {"const": "pto-trace"},
-        "version": {"const": "0.1"},
+        "version": {"const": "0.2"},
         "sha256": {"$ref": "#/$defs/sha256"}
       }
     }

@@ -1,14 +1,14 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:pto-isa:agentic-circuit:schema:acpy:0.1",
-  "title": "Agentic Circuit ACPy 0.1",
+  "$id": "urn:pto-isa:agentic-circuit:schema:acpy:0.2",
+  "title": "Agentic Circuit ACPy 0.2",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "version", "contract_epoch", "entry", "sources", "entities"],
   "properties": {
     "schema": {"const": "agentic-circuit-acpy"},
-    "version": {"const": "0.1"},
-    "contract_epoch": {"const": "0.1"},
+    "version": {"const": "0.2"},
+    "contract_epoch": {"const": "0.2"},
     "entry": {"$ref": "#/$defs/entityId"},
     "sources": {"type": "array", "items": {"$ref": "#/$defs/sourceFile"}},
     "entities": {"type": "array", "items": {"$ref": "#/$defs/entity"}}

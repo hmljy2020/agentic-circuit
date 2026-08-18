@@ -55,6 +55,17 @@ llvm::Expected<ModelPlan> reusableModulePlan(mlir::MLIRContext &context) {
   return buildModelPlan(*file);
 }
 
+llvm::Expected<ModelPlan> nativeQueuePlan(mlir::MLIRContext &context) {
+  context
+      .loadDialect<acsim::ACSimDialect, mlir::arith::ArithDialect,
+                   mlir::cf::ControlFlowDialect, mlir::index::IndexDialect>();
+  auto file = mlir::parseSourceFile<mlir::ModuleOp>(
+      ACIR_TEST_SOURCE_DIR "/test/CodeGen/native-queue.mlir", &context);
+  if (!file)
+    return llvm::createStringError("failed to parse native queue fixture");
+  return buildModelPlan(*file);
+}
+
 const GeneratedFile *findFile(const SourceBundle &bundle,
                               llvm::StringRef path) {
   auto found = std::find_if(
@@ -198,6 +209,57 @@ TEST(GeneratorTest, RepeatedGenerationIsByteIdentical) {
   }
 }
 
+TEST(GeneratorTest, EmitsNativeQueueWithoutProviderOrBindingArtifacts) {
+  mlir::MLIRContext context;
+  auto plan = nativeQueuePlan(context);
+  ASSERT_TRUE(static_cast<bool>(plan));
+  ASSERT_TRUE(plan->bindings.empty());
+  auto bundle = generateModelSources(*plan);
+  ASSERT_TRUE(static_cast<bool>(bundle));
+
+  const GeneratedFile *header =
+      findFile(*bundle, "include/generated/modules/Top_s6000000000000000.h");
+  const GeneratedFile *source =
+      findFile(*bundle, "src/generated/modules/Top_s6000000000000000.cpp");
+  const GeneratedFile *process =
+      findFile(*bundle, "src/generated/processes/worker_s8000000000000000.cpp");
+  const GeneratedFile *processHeader = findFile(
+      *bundle, "include/generated/processes/worker_s8000000000000000.h");
+  ASSERT_NE(header, nullptr);
+  ASSERT_NE(source, nullptr);
+  ASSERT_NE(process, nullptr);
+  ASSERT_NE(processHeader, nullptr);
+  EXPECT_NE(header->content.find("#include \"gfsim/queue.h\""),
+            std::string::npos);
+  EXPECT_NE(header->content.find("gfsim::Queue<std::int32_t> queue_;"),
+            std::string::npos);
+  EXPECT_NE(
+      source->content.find("queue_(\"queue\", nextObjectId++, this, 1, 4)"),
+      std::string::npos);
+  EXPECT_NE(source->content.find("attachChild(queue_)"), std::string::npos);
+  EXPECT_NE(process->content.find("arg0.proposePush(v0)"), std::string::npos);
+  EXPECT_NE(process->content.find("arg0.tryRecv()"), std::string::npos);
+  EXPECT_NE(
+      processHeader->content.find("ProcessWakeKind::QueueReadable, queue.id()"),
+      std::string::npos);
+  for (const GeneratedFile &file : bundle->files) {
+    EXPECT_EQ(file.content.find("acsim.binding"), std::string::npos);
+    EXPECT_EQ(file.content.find("ProviderConcept"), std::string::npos);
+  }
+
+  auto repeated = generateModelSources(*plan);
+  ASSERT_TRUE(static_cast<bool>(repeated));
+  EXPECT_EQ(bundle->buildFingerprint, repeated->buildFingerprint);
+  ASSERT_EQ(bundle->files.size(), repeated->files.size());
+  for (size_t index = 0; index < bundle->files.size(); ++index) {
+    EXPECT_EQ(bundle->files[index].relativePath,
+              repeated->files[index].relativePath);
+    EXPECT_EQ(bundle->files[index].content, repeated->files[index].content);
+    EXPECT_EQ(bundle->files[index].fingerprint,
+              repeated->files[index].fingerprint);
+  }
+}
+
 TEST(GeneratorTest, SourceIdentityChangesWithGeneratedTopology) {
   mlir::MLIRContext context;
   auto firstPlan = fixturePlan(context);
@@ -316,6 +378,9 @@ TEST(GeneratorTest, EmitsTypedLocalDispatchForMultiBlockProcess) {
   EXPECT_NE(
       header->content.find("inline gfsim::ProcessWake impl_wake_next_delta"),
       std::string::npos);
+  EXPECT_NE(header->content.find(
+                "#ifndef ACIR_GENERATED_WAKE_ACIR_IMPL_WAKE_NEXT_DELTA"),
+            std::string::npos);
   EXPECT_NE(source->content.find("enum class Block_entry"), std::string::npos);
   EXPECT_NE(source->content.find("std::optional<"), std::string::npos);
   EXPECT_NE(source->content.find("b1_arg0"), std::string::npos);

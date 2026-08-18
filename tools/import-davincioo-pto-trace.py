@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert pinned DavinciOO PTO JSONL into canonical `pto-trace@0.1`."""
+"""Convert pinned DavinciOO PTO JSONL into canonical `pto-trace@0.2`."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from pto_trace_adapter import AdapterError, publish_davincioo_trace
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
-        description="convert DavinciOO PTO JSONL to canonical pto-trace@0.1",
+        description="convert DavinciOO PTO JSONL to canonical pto-trace@0.2",
         usage="%(prog)s INPUT OUTPUT [--source-program ID]",
     )
     result.add_argument("input", metavar="INPUT", type=Path)

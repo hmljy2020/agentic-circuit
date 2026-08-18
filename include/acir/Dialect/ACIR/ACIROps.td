@@ -487,6 +487,12 @@ def ACIR_AwaitEventOp : ACIR_RuntimeEffectOp<"await_event"> {
   let assemblyFormat = "$event_queue attr-dict";
 }
 
+def ACIR_AwaitQueueOp : ACIR_RuntimeEffectOp<"await_queue"> {
+  let arguments = (ins FlatSymbolRefAttr:$queue, StrAttr:$until);
+  let hasVerifier = 1;
+  let assemblyFormat = "$queue `until` $until attr-dict";
+}
+
 def ACIR_YieldSimOp : ACIR_RuntimeEffectOp<"yield_sim", [Terminator]> {
   let hasVerifier = 1;
   let assemblyFormat = "attr-dict";

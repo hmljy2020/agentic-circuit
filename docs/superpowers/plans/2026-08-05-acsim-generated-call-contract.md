@@ -16,7 +16,7 @@
 - Compiler-generated callees are exact `acsim.type` records with kind exactly `"implementation"`; they never create binding requests or lock records.
 - One generated implementation identity has exactly one effect class in a model.
 - Lookup is exact symbol resolution only; component names, C++ spellings, hierarchy paths, and fuzzy fallback are forbidden.
-- No new public ACSim operation or type is added, so the closed v0.1 inventory count is unchanged.
+- No new public ACSim operation or type is added, so the closed v0.2 inventory count is unchanged.
 - C++ API, tests, fixtures, and normative specs migrate completely in the same change.
 
 ---
@@ -30,7 +30,7 @@
 - Modify: `test/ACSim/ops-valid.mlir`
 - Create: `test/ACSim/generated-call-contract.mlir`
 - Modify: `unittests/Dialect/ACSim/OpsTest.cpp`
-- Modify: `docs/specs/acsim-gfsim-lowering-v0.1.md`
+- Modify: `docs/specs/acsim-gfsim-lowering-v0.2.md`
 
 **Interfaces:**
 
@@ -134,7 +134,7 @@
 
 - [ ] **Step 8: Update normative specifications**
 
-  Amend `acsim-gfsim-lowering-v0.1.md` to define exact external BindingOp versus
+  Amend `acsim-gfsim-lowering-v0.2.md` to define exact external BindingOp versus
   compiler TypeOp implementation callees, process-inline legality, effect
   closure, scalar wrap/unwrap handoff, and the absence of generated binding
   records. Preserve the closed op/type inventory counts.

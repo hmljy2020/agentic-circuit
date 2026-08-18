@@ -2,6 +2,7 @@
 
 #include "mlir/IR/Diagnostics.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/FormatVariadic.h"
 
@@ -77,24 +78,47 @@ PlanSetBuilder::planProcessLiveness(ControlPlan &control,
     if (transition->sourcePc == transition->targetPc)
       continue;
     auto sourceBlock = llvm::find_if(control.blocks, [&](const auto &block) {
-      return block->pc == transition->sourcePc;
+      if (block->pc != transition->sourcePc || !block->edge ||
+          block->edge->kind() != ProcessControlEdgeKind::Suspend)
+        return false;
+      return block->edge->transition() == transition->id;
     });
     auto targetBlock = llvm::find_if(control.blocks, [&](const auto &block) {
-      return block->pc == transition->targetPc;
+      return block->pc == transition->targetPc &&
+             block->path ==
+                 control.pcs[transition->targetPc->value()]->entryPath;
     });
     if (sourceBlock == control.blocks.end() ||
         targetBlock == control.blocks.end())
       return failure();
 
     std::map<std::string, ProcessPlannedValue> definitions;
-    for (const ProcessActionPlan &action : (*sourceBlock)->actions)
-      for (const ProcessPlannedValue &result : action.results())
-        if (result.kind() == ProcessPlannedValueKind::Original)
-          definitions.emplace(result.original().path().str(), result);
+    for (const auto &block : control.blocks)
+      if (block->pc == transition->sourcePc)
+        for (const ProcessActionPlan &action : block->actions)
+          for (const ProcessPlannedValue &result : action.results())
+            if (result.kind() == ProcessPlannedValueKind::Original)
+              definitions.emplace(result.original().path().str(), result);
 
-    for (const ProcessActionPlan &action : (*targetBlock)->actions) {
+    // A retry PC may deliberately re-execute the failed queue operation.  Its
+    // results are new definitions in that PC and must not be restored from the
+    // suspended attempt.
+    llvm::DenseSet<llvm::StringRef> targetDefinitions;
+    for (const auto &block : control.blocks)
+      if (block->pc == transition->targetPc)
+        for (const ProcessActionPlan &action : block->actions)
+          for (const ProcessPlannedValue &result : action.results())
+            if (result.kind() == ProcessPlannedValueKind::Original)
+              targetDefinitions.insert(result.original().path());
+
+    for (const auto &candidateBlock : control.blocks) {
+      if (candidateBlock->pc != transition->targetPc)
+        continue;
+      for (const ProcessActionPlan &action : candidateBlock->actions) {
       for (const ProcessPlannedValue &operand : action.operands()) {
         if (operand.kind() != ProcessPlannedValueKind::Original)
+          continue;
+        if (targetDefinitions.contains(operand.original().path()))
           continue;
         auto definition = definitions.find(operand.original().path().str());
         if (definition == definitions.end())
@@ -179,6 +203,7 @@ PlanSetBuilder::planProcessLiveness(ControlPlan &control,
             load->replacements.push_back(operand);
         }
       }
+      }
     }
   }
   for (auto &block : control.blocks) {
@@ -191,6 +216,29 @@ PlanSetBuilder::planProcessLiveness(ControlPlan &control,
       block->actions.insert(block->actions.end(), wraps->second.begin(),
                             wraps->second.end());
     renumberActions(*block);
+    llvm::sort(block->loads, [](const ProcessTransitionLoadPlan &left,
+                                const ProcessTransitionLoadPlan &right) {
+      return left.slot() < right.slot();
+    });
+    block->loads.erase(
+        std::unique(block->loads.begin(), block->loads.end(),
+                    [](const ProcessTransitionLoadPlan &left,
+                       const ProcessTransitionLoadPlan &right) {
+                      return left.slot() == right.slot();
+                    }),
+        block->loads.end());
+  }
+  for (auto &transition : control.transitions) {
+    llvm::sort(transition->stores,
+               [](const ProcessTransitionStorePlan &left,
+                  const ProcessTransitionStorePlan &right) {
+                 return left.slot() < right.slot();
+               });
+    llvm::sort(transition->loads,
+               [](const ProcessTransitionLoadPlan &left,
+                  const ProcessTransitionLoadPlan &right) {
+                 return left.slot() < right.slot();
+               });
   }
   return success();
 }

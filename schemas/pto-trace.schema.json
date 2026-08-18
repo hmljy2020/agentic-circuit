@@ -1,14 +1,14 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:pto-isa:agentic-circuit:schema:pto-trace:0.1",
-  "title": "PTO Trace 0.1",
+  "$id": "urn:pto-isa:agentic-circuit:schema:pto-trace:0.2",
+  "title": "PTO Trace 0.2",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "version", "contract_epoch", "metadata", "records"],
   "properties": {
     "schema": {"const": "pto-trace"},
-    "version": {"const": "0.1"},
-    "contract_epoch": {"const": "0.1"},
+    "version": {"const": "0.2"},
+    "contract_epoch": {"const": "0.2"},
     "metadata": {"$ref": "#/$defs/metadata"},
     "records": {
       "type": "array",

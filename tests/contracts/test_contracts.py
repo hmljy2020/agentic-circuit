@@ -9,7 +9,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-CONTRACT_EPOCH = "0.1"
+CONTRACT_EPOCH = "0.2"
 LLVM_LOCK = {
     "release": "22.1.8",
     "upstream_commit": "ca7933e47d3a3451d81e72ac174dcb5aa28b59d1",
@@ -94,14 +94,14 @@ def assert_exact_ci_cache_commands(test_case, workflow):
 
 class RepositoryContractsTest(unittest.TestCase):
     def test_diagnostic_explanation_catalog_is_closed_and_versioned(self):
-        path = ROOT / "resources/diagnostics-v0.1.json"
+        path = ROOT / "resources/diagnostics-v0.2.json"
         self.assertTrue(path.is_file())
         document = json.loads(path.read_text())
         self.assertEqual(
             {"schema", "version", "contract_epoch", "entries"}, set(document)
         )
         self.assertEqual("agentic-circuit-diagnostic-catalog", document["schema"])
-        self.assertEqual("0.1", document["version"])
+        self.assertEqual("0.2", document["version"])
         self.assertEqual(CONTRACT_EPOCH, document["contract_epoch"])
         codes = []
         for entry in document["entries"]:
@@ -421,7 +421,7 @@ class RepositoryContractsTest(unittest.TestCase):
         }
         fixture = {
             "callees": [descriptor],
-            "contract_epoch": "0.1",
+            "contract_epoch": "0.2",
             "processes": [{
                 "blocks": [{"actions": [], "cost": 2, "edge": {"kind": "suspend", "transition": 0}, "frames": [], "loads": [], "ordinal": 0, "path": "@Top::@workload/plan/pc/entry/b00000000", "pc": 0}],
                 "captures": [], "definition_key": "@Top::@workload", "entry_pc": 0,
@@ -430,7 +430,7 @@ class RepositoryContractsTest(unittest.TestCase):
                 "transitions": [{"iteration_vector": [], "loads": [], "ordinal": 0, "source_pc": 0, "stores": [], "target_pc": 0, "wake": 0}],
                 "wakes": [{"callee": 0, "iteration_vector": [], "kind": "next_delta", "occurrence": occurrence, "operation_path": "@Top::@workload/r0/b0/o0", "ordinal": 0, "sources": [], "target": "", "type_key": "@acir_wake_next_delta"}],
             }],
-            "schema": "acir-process-state-plan-0.1",
+            "schema": "acir-process-state-plan-0.2",
             "value_types": [],
         }
         validator.validate(fixture)
@@ -665,10 +665,10 @@ class RepositoryContractsTest(unittest.TestCase):
         unavailable["availability"] = "unavailable"
         mutations.append(unavailable)
         wrong_epoch = dict(record)
-        wrong_epoch["contract_epoch"] = "0.2"
+        wrong_epoch["contract_epoch"] = "0.1"
         mutations.append(wrong_epoch)
         wrong_schema = dict(record)
-        wrong_schema["binding_schema"] = "acsim-binding-0.2"
+        wrong_schema["binding_schema"] = "acsim-binding-0.1"
         mutations.append(wrong_schema)
         wrong_cardinality = dict(record)
         wrong_cardinality["ports"] = [dict(record["ports"][0])]

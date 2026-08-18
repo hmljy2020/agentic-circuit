@@ -73,6 +73,12 @@ public:
   /// Returns true if this object has work to do at the given epoch.
   virtual bool isRunnable(Epoch epoch) const { return false; }
 
+  /// Apply a statically declared activation edge from a committed source.
+  /// Non-process objects accept activation unconditionally. Process runtimes
+  /// override this hook to match their committed subscription before the
+  /// scheduler queues work for the next tick.
+  virtual bool activateFrom(ObjectId) { return true; }
+
   /// Describe committed liveness state for diagnostics outside the hot path.
   virtual RuntimeObjectState runtimeState(Epoch epoch) const {
     const bool pending = hasPendingCommit();
@@ -267,6 +273,11 @@ public:
 
   /// Register an object for ID-based lookup.
   void registerObject(SimObject *obj);
+
+  /// Register a runtime object whose state was proposed by the currently
+  /// executing Work object. The participant joins the ordered Xfer barrier for
+  /// the active epoch even when it did not itself execute Work.
+  bool registerCommitParticipant(ObjectId id);
 
   /// Look up an object by its stable ID.
   SimObject *lookup(ObjectId id) const;

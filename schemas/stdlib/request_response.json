@@ -1,7 +1,7 @@
 {
   "schema_kind": "agentic-circuit-component",
-  "schema_version": "0.1",
-  "contract_epoch": "0.1",
+  "schema_version": "0.2",
+  "contract_epoch": "0.2",
   "canonical_name": "ac.std.request_response",
   "family": "protocol",
   "provider_namespace": "ac.std",
@@ -11,7 +11,7 @@
     "symbol": "gfsim::RequestResponse",
     "language": "c++20",
     "concept": "gfsim::Component",
-    "toolchain_target": "ac-gfsim-cxx20-v0.1",
+    "toolchain_target": "ac-gfsim-cxx20-v0.2",
     "functional_policy": "none"
   },
   "static_parameters": [
@@ -132,5 +132,5 @@
     ],
     "histograms": []
   },
-  "schema_fingerprint": "sha256:6aa60e66f252fa38c66dfd55823c50217f6b91320247ff124ea009c3d152a9de"
+  "schema_fingerprint": "sha256:e02b546840e06b48e5522283150e5ce2f3caa1a77a7acf4005f469651878b31d"
 }

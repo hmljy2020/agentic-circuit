@@ -1,7 +1,7 @@
 {
   "schema_kind": "agentic-circuit-component",
-  "schema_version": "0.1",
-  "contract_epoch": "0.1",
+  "schema_version": "0.2",
+  "contract_epoch": "0.2",
   "canonical_name": "phase5.NpuNode",
   "family": "compute",
   "provider_namespace": "phase5.npu.provider",
@@ -11,7 +11,7 @@
     "symbol": "gfsim::Phase5NpuNode",
     "language": "c++20",
     "concept": "gfsim::Component",
-    "toolchain_target": "ac-gfsim-cxx20-v0.1",
+    "toolchain_target": "ac-gfsim-cxx20-v0.2",
     "functional_policy": "none"
   },
   "static_parameters": [],
@@ -39,5 +39,5 @@
     "gauges": [],
     "histograms": []
   },
-  "schema_fingerprint": "sha256:f21ac0875386764303060d218875f0b91582848836e70d478591ea146ef1963e"
+  "schema_fingerprint": "sha256:d9ee122b10df6e4af0f3899c0c1de4237f674e558eaa7f1ab592592b62102292"
 }

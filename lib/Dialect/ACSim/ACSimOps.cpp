@@ -183,13 +183,13 @@ LogicalResult verifyBindingLockShape(BindingOp binding) {
   DictionaryAttr record = binding.getRecord();
   if (!hasExactKeys(record, topKeys))
     return binding.emitOpError(
-        "binding lock must contain exactly the acsim-binding-0.1 fields");
+        "binding lock must contain exactly the acsim-binding-0.2 fields");
   auto identity = record.getAs<StringAttr>("binding");
   auto epoch = record.getAs<StringAttr>("contract_epoch");
   auto availability = record.getAs<StringAttr>("availability");
   if (!identity || identity.getValue() != binding.getSymName() ||
-      binding.getBindingSchema() != "acsim-binding-0.1" || !epoch ||
-      epoch.getValue() != "0.1" || !availability ||
+      binding.getBindingSchema() != "acsim-binding-0.2" || !epoch ||
+      epoch.getValue() != "0.2" || !availability ||
       availability.getValue() != "available" ||
       (binding.getEffect() != "pure" && binding.getEffect() != "stateful") ||
       !binding.getCppTypeAttr() || !binding.getSchemaAttr() ||
@@ -671,23 +671,23 @@ LogicalResult preflightModel(ModelOp model) {
     if (modelVerificationWorkCollector)
       ++modelVerificationWorkCollector->preflightOperationVisits;
     if (++nodes > limits.maxNodes)
-      return model.emitOpError() << "model node count exceeds ACSim v0.1 "
+      return model.emitOpError() << "model node count exceeds ACSim v0.2 "
                                     "capability "
                                  << limits.maxNodes;
     if (frame.depth > limits.maxRegionDepth)
       return frame.operation->emitOpError()
-             << "region nesting exceeds ACSim v0.1 capability "
+             << "region nesting exceeds ACSim v0.2 capability "
              << limits.maxRegionDepth;
     SmallVector<Attribute> attributeStack;
     if (frame.operation->getAttrs().size() >
         limits.maxAttributeElements - attributeElements)
       return frame.operation->emitOpError(
-          "attribute element count exceeds ACSim v0.1 capability");
+          "attribute element count exceeds ACSim v0.2 capability");
     for (NamedAttribute named : frame.operation->getAttrs()) {
       if (named.getName().size() >
           limits.maxAttributeStringBytes - attributeStringBytes)
         return frame.operation->emitOpError(
-            "attribute string bytes exceed ACSim v0.1 capability");
+            "attribute string bytes exceed ACSim v0.2 capability");
       attributeStringBytes += named.getName().size();
       attributeStack.push_back(named.getValue());
     }
@@ -695,12 +695,12 @@ LogicalResult preflightModel(ModelOp model) {
       Attribute attribute = attributeStack.pop_back_val();
       if (++attributeElements > limits.maxAttributeElements)
         return frame.operation->emitOpError(
-            "attribute element count exceeds ACSim v0.1 capability");
+            "attribute element count exceeds ACSim v0.2 capability");
       auto addString = [&](StringRef value) -> LogicalResult {
         if (value.size() >
             limits.maxAttributeStringBytes - attributeStringBytes)
           return frame.operation->emitOpError(
-              "attribute string bytes exceed ACSim v0.1 capability");
+              "attribute string bytes exceed ACSim v0.2 capability");
         attributeStringBytes += value.size();
         return success();
       };
@@ -716,7 +716,7 @@ LogicalResult preflightModel(ModelOp model) {
             array.size() > limits.maxAttributeElements - attributeElements -
                                attributeStack.size())
           return frame.operation->emitOpError(
-              "attribute element count exceeds ACSim v0.1 capability");
+              "attribute element count exceeds ACSim v0.2 capability");
         attributeStack.append(array.begin(), array.end());
       } else if (auto dictionary = dyn_cast<DictionaryAttr>(attribute)) {
         for (NamedAttribute named : dictionary) {
@@ -725,20 +725,20 @@ LogicalResult preflightModel(ModelOp model) {
           if (attributeStack.size() >=
               limits.maxAttributeElements - attributeElements)
             return frame.operation->emitOpError(
-                "attribute element count exceeds ACSim v0.1 capability");
+                "attribute element count exceeds ACSim v0.2 capability");
           attributeStack.push_back(named.getValue());
         }
       } else if (auto dense = dyn_cast<DenseArrayAttr>(attribute)) {
         uint64_t count = dense.size();
         if (count > limits.maxAttributeElements - attributeElements)
           return frame.operation->emitOpError(
-              "attribute element count exceeds ACSim v0.1 capability");
+              "attribute element count exceeds ACSim v0.2 capability");
         attributeElements += count;
       } else if (auto dense = dyn_cast<DenseElementsAttr>(attribute)) {
         uint64_t count = dense.getNumElements();
         if (count > limits.maxAttributeElements - attributeElements)
           return frame.operation->emitOpError(
-              "attribute element count exceeds ACSim v0.1 capability");
+              "attribute element count exceeds ACSim v0.2 capability");
         attributeElements += count;
       }
     }
@@ -748,7 +748,7 @@ LogicalResult preflightModel(ModelOp model) {
     if (operandEdges > limits.maxEdges ||
         edges > limits.maxEdges - operandEdges)
       return frame.operation->emitOpError()
-             << "model edge count exceeds ACSim v0.1 capability "
+             << "model edge count exceeds ACSim v0.2 capability "
              << limits.maxEdges;
     edges += operandEdges;
     if (auto array = dyn_cast<ArrayOp>(frame.operation)) {
@@ -760,14 +760,14 @@ LogicalResult preflightModel(ModelOp model) {
               (extent != 0 && volume > limits.maxExpandedObjects /
                                            static_cast<uint64_t>(extent)))
             return array.emitOpError()
-                   << "expanded array volume exceeds ACSim v0.1 capability "
+                   << "expanded array volume exceeds ACSim v0.2 capability "
                    << limits.maxExpandedObjects;
           volume *= static_cast<uint64_t>(extent);
         }
         if (volume > limits.maxExpandedObjects ||
             totalArrayVolume > limits.maxExpandedObjects - volume)
           return array.emitOpError()
-                 << "expanded array volume exceeds ACSim v0.1 capability "
+                 << "expanded array volume exceeds ACSim v0.2 capability "
                  << limits.maxExpandedObjects;
         totalArrayVolume += volume;
       }
@@ -781,14 +781,14 @@ LogicalResult preflightModel(ModelOp model) {
           if (successors > limits.maxEdges ||
               edges > limits.maxEdges - successors)
             return terminator->emitOpError()
-                   << "model edge count exceeds ACSim v0.1 capability "
+                   << "model edge count exceeds ACSim v0.2 capability "
                    << limits.maxEdges;
           edges += successors;
         }
         for (Operation &child : llvm::reverse(block)) {
           if (stack.size() >= limits.maxNodes - nodes)
             return frame.operation->emitOpError()
-                   << "model node count exceeds ACSim v0.1 capability "
+                   << "model node count exceeds ACSim v0.2 capability "
                    << limits.maxNodes;
           stack.push_back({&child, frame.depth + 1});
         }
@@ -987,7 +987,7 @@ LogicalResult verifyCanonicalType(Type type, Operation *from,
       })
       .Case<OwnerType, RefType>([&](auto ownerType) -> LogicalResult {
         FailureOr<Operation *> definition =
-            requireReference<BindingOp, ModuleOp>(
+            requireReference<BindingOp, ModuleOp, TypeOp>(
                 index, from, ownerType.getRealization(), "realization");
         if (failed(definition))
           return failure();
@@ -995,6 +995,11 @@ LogicalResult verifyCanonicalType(Type type, Operation *from,
             binding && binding.getEffect() != "stateful")
           return from->emitOpError() << "owner/ref type requires a generated "
                                         "module or stateful binding";
+        if (auto type = dyn_cast<TypeOp>(*definition);
+            type && type.getKind() != "runtime_object")
+          return from->emitOpError()
+                 << "owner/ref type requires a generated module, stateful "
+                    "binding, or runtime_object type";
         return success();
       })
       .Case<PortType>([&](PortType port) {
@@ -1308,7 +1313,7 @@ LogicalResult expandSelectedRootOwners(ModelOp model, const ModelIndex &index,
     if (action.kind == ActionKind::Row) {
       if (expansion.ownerRows.size() >= expansionLimit)
         return action.placement->emitOpError()
-               << "expanded hierarchy exceeds ACSim v0.1 capability "
+               << "expanded hierarchy exceeds ACSim v0.2 capability "
                << expansionLimit;
       if (expansion.ownerByPath.contains(action.path))
         return action.placement->emitOpError()
@@ -1325,8 +1330,17 @@ LogicalResult expandSelectedRootOwners(ModelOp model, const ModelIndex &index,
       if (auto binding = dyn_cast_or_null<BindingOp>(targetDefinition);
           binding && binding.getEffect() != "stateful")
         return action.placement->emitOpError(
-            "ownership expansion requires a generated module or stateful "
-            "binding target");
+            "ownership expansion requires a generated module, stateful "
+            "binding, or runtime object target");
+      if (auto type = dyn_cast_or_null<TypeOp>(targetDefinition);
+          type && type.getKind() != "runtime_object")
+        return action.placement->emitOpError(
+            "ownership expansion permits only runtime_object acsim.type "
+            "targets");
+      if (!isa<ProcessOp>(action.placement) &&
+          !isa_and_nonnull<BindingOp, ModuleOp, TypeOp>(targetDefinition))
+        return action.placement->emitOpError(
+            "ownership expansion target is unresolved");
       unsigned ownerOrdinal = expansion.ownerRows.size();
       expansion.ownerByPath.try_emplace(action.path, ownerOrdinal);
       expansion.ownerRows.push_back(
@@ -1405,14 +1419,16 @@ LogicalResult expandRuntime(const ModelIndex &index,
               ? cast<InstanceOp>(owner.placement).getTargetAttr()
               : cast<ArrayOp>(owner.placement).getTargetAttr();
       Operation *definition = index.definitions.lookup(symbolKey(target));
-      if (isa_and_nonnull<BindingOp>(definition))
+      if (isa_and_nonnull<BindingOp>(definition) ||
+          (isa_and_nonnull<TypeOp>(definition) &&
+           cast<TypeOp>(definition).getKind() == "runtime_object"))
         realization = definition;
     }
     if (!realization)
       continue;
     if (expansion.runtimeRows.size() >= expansionLimit)
       return owner.placement->emitOpError()
-             << "runtime expansion exceeds ACSim v0.1 capability "
+             << "runtime expansion exceeds ACSim v0.2 capability "
              << expansionLimit;
     int64_t id = static_cast<int64_t>(expansion.runtimeRows.size());
     expansion.runtimeRows.push_back(
@@ -1601,7 +1617,7 @@ LogicalResult verifyProcess(ProcessOp process, const ModelIndex &index) {
       currentModelVerificationLimits().maxDependencyNodes;
   if (pcs.size() > dependencyLimit)
     return process.emitOpError()
-           << "dependency graph exceeds ACSim v0.1 capability "
+           << "dependency graph exceeds ACSim v0.2 capability "
            << dependencyLimit;
   SmallVector<SmallVector<unsigned>> successors(pcs.size());
   SmallVector<unsigned> indegree(pcs.size(), 0);
@@ -1618,7 +1634,7 @@ LogicalResult verifyProcess(ProcessOp process, const ModelIndex &index) {
       if (unique.insert(found->second).second) {
         if (++dependencyNodes > dependencyLimit)
           return process.emitOpError()
-                 << "dependency graph exceeds ACSim v0.1 capability "
+                 << "dependency graph exceeds ACSim v0.2 capability "
                  << dependencyLimit;
         successors[ordinal].push_back(found->second);
         ++indegree[found->second];
@@ -1681,8 +1697,8 @@ Operation *realizationForBase(Value value, const ModelIndex &index) {
   if (!symbol)
     return nullptr;
   Operation *definition = index.definitions.lookup(symbolKey(symbol));
-  return isa_and_nonnull<BindingOp, ModuleOp>(definition) ? definition
-                                                          : nullptr;
+  return isa_and_nonnull<BindingOp, ModuleOp, TypeOp>(definition) ? definition
+                                                                  : nullptr;
 }
 
 ArrayAttr realizationRecords(Operation *realization, StringRef field) {
@@ -1772,8 +1788,8 @@ LogicalResult verifyPlacementTarget(Operation *operation,
                                     StringAttr specialization,
                                     const ModelIndex &index) {
   FailureOr<Operation *> targetDefinition =
-      requireReference<BindingOp, ModuleOp>(index, operation, targetReference,
-                                            "realization target");
+      requireReference<BindingOp, ModuleOp, TypeOp>(
+          index, operation, targetReference, "realization target");
   if (failed(targetDefinition))
     return failure();
   Operation *target = *targetDefinition;
@@ -1784,13 +1800,28 @@ LogicalResult verifyPlacementTarget(Operation *operation,
     if (bindingStaticValues(targetBinding) != staticArguments)
       return operation->emitOpError("static arguments must exactly match "
                                     "ordered binding-lock parameters");
-  } else {
-    auto targetModule = cast<ModuleOp>(target);
+  } else if (auto targetModule = dyn_cast<ModuleOp>(target)) {
     if (targetModule.getStaticParams() != staticArguments ||
         targetModule.getSpecializationFingerprintAttr() != specialization)
       return operation->emitOpError(
           "generated module target requires exact static arguments and "
           "specialization fingerprint");
+  } else {
+    auto targetType = cast<TypeOp>(target);
+    if (targetType.getKind() != "runtime_object")
+      return operation->emitOpError(
+          "acsim.type placement target must have kind runtime_object");
+    if (staticArguments.empty() || staticArguments.size() > 2)
+      return operation->emitOpError(
+          "runtime_object static arguments require entry capacity and an "
+          "optional byte capacity");
+    for (Attribute argument : staticArguments) {
+      auto integer = dyn_cast<IntegerAttr>(argument);
+      if (!integer || !integer.getType().isSignlessInteger(64) ||
+          integer.getInt() <= 0)
+        return operation->emitOpError(
+            "runtime_object static arguments must be positive i64 values");
+    }
   }
   return success();
 }
@@ -1802,7 +1833,7 @@ FailureOr<Operation *> capturedPlacement(Value value, Operation *reporter) {
   while (value) {
     if (++nodes > limit)
       return reporter->emitOpError()
-             << "dependency graph exceeds ACSim v0.1 capability " << limit;
+             << "dependency graph exceeds ACSim v0.2 capability " << limit;
     void *key = value.getAsOpaquePointer();
     if (!visited.insert(key).second)
       return reporter->emitOpError(
@@ -2256,9 +2287,10 @@ LogicalResult verifyModulesAndTypedGraph(ModelOp model,
                  << "' cannot be used by both acsim.inline and acsim.invoke";
       }
       for (Type type : invoke.getResultTypes())
-        if (!isa<ValueType, WakeType>(type))
+        if (!isa<IntegerType, FloatType, IndexType, ValueType, WakeType>(type))
           return invoke.emitOpError(
-              "invoke results must be exact !acsim.value or !acsim.wake types");
+              "invoke results must be scalar, !acsim.value, or !acsim.wake "
+              "types");
     } else if (auto exportOp = dyn_cast<ExportOp>(operation)) {
       if (exportOp.getValue().getType() != exportOp.getResult().getType())
         return exportOp.emitOpError(
@@ -2419,8 +2451,7 @@ LogicalResult verifyDispatchAndActivation(ModelOp model,
               entryPoints.getAs<StringAttr>("validate"))
         return dispatch.emitOpError(
             "dispatch thunks must exactly match the placement binding lock");
-    } else {
-      auto process = cast<ProcessOp>(row.realization);
+    } else if (auto process = dyn_cast<ProcessOp>(row.realization)) {
       if (dispatch.getWork() != generatedProcessThunk(process, "work") ||
           dispatch.getXfer() != generatedProcessThunk(process, "xfer") ||
           dispatch.getReset() != generatedProcessThunk(process, "reset") ||
@@ -2428,6 +2459,16 @@ LogicalResult verifyDispatchAndActivation(ModelOp model,
         return dispatch.emitOpError(
             "dispatch thunks must exactly match the generated process "
             "realization");
+    } else {
+      auto type = cast<TypeOp>(row.realization);
+      if (type.getKind() != "runtime_object" ||
+          dispatch.getWork() != "gfsim::QueueRuntime::work" ||
+          dispatch.getXfer() != "gfsim::QueueRuntime::xfer" ||
+          dispatch.getReset() != "gfsim::QueueRuntime::reset" ||
+          dispatch.getValidate() != "gfsim::QueueRuntime::validate")
+        return dispatch.emitOpError(
+            "dispatch thunks must exactly match the compiler-native "
+            "runtime object realization");
     }
   }
   if (dispatchByObject.size() != expansion.runtimeRows.size())
@@ -2466,7 +2507,7 @@ LogicalResult verifyDispatchAndActivation(ModelOp model,
               "typed SSA dependency graph contains a cycle");
         if (++dependencyNodes > limit)
           return reporter->emitOpError()
-                 << "dependency graph exceeds ACSim v0.1 capability " << limit;
+                 << "dependency graph exceeds ACSim v0.2 capability " << limit;
         frame.initialized = true;
         if (auto argument = dyn_cast<BlockArgument>(frame.value)) {
           if (auto process =
@@ -2742,8 +2783,8 @@ void ProcessOp::print(OpAsmPrinter &printer) {
 }
 
 LogicalResult ModelOp::verify() {
-  if (getContractEpoch() != "0.1")
-    return emitOpError("contract epoch must be exactly \"0.1\"");
+  if (getContractEpoch() != "0.2")
+    return emitOpError("contract epoch must be exactly \"0.2\"");
   auto parentModule = dyn_cast_or_null<mlir::ModuleOp>((*this)->getParentOp());
   if (!parentModule)
     return emitOpError("acsim.model must be directly inside builtin.module");
@@ -2777,10 +2818,11 @@ LogicalResult ModelOp::verify() {
 }
 
 LogicalResult TypeOp::verify() {
-  constexpr std::array<StringLiteral, 14> kinds = {
-      "accessor",    "implementation", "interface", "packet", "policy",
-      "protocol",    "provider",       "resource",  "role",   "schema",
-      "time_domain", "value",          "wake",      "payload"};
+  constexpr std::array<StringLiteral, 15> kinds = {
+      "accessor", "implementation", "interface",     "packet",
+      "policy",   "protocol",       "provider",      "resource",
+      "role",     "schema",         "time_domain",   "value",
+      "wake",     "payload",        "runtime_object"};
   if (!llvm::is_contained(kinds, getKind()))
     return emitOpError("kind is not a closed ACSim C++ realization kind");
   if (getCppName().empty() || hasRawCppFragment(getCppName()))
@@ -3032,9 +3074,9 @@ LogicalResult LiveStoreOp::verify() {
 
 LogicalResult InvokeOp::verify() {
   for (Type type : getResultTypes())
-    if (!isa<ValueType, WakeType>(type))
+    if (!isa<IntegerType, FloatType, IndexType, ValueType, WakeType>(type))
       return emitOpError(
-          "invoke results must be exact !acsim.value or !acsim.wake types");
+          "invoke results must be scalar, !acsim.value, or !acsim.wake types");
   return success();
 }
 
@@ -3109,10 +3151,10 @@ LogicalResult verifyCanonicalACSimFile(mlir::ModuleOp module) {
         "canonical acsim.model must be directly inside the file module");
   auto epoch = module->getAttrOfType<StringAttr>("ac.contract_epoch");
   auto discardable = module->getDiscardableAttrs();
-  if (!epoch || epoch.getValue() != "0.1" ||
+  if (!epoch || epoch.getValue() != "0.2" ||
       std::distance(discardable.begin(), discardable.end()) != 1)
     return module.emitError("canonical ACSim file attributes must be exactly "
-                            "ac.contract_epoch = \"0.1\"");
+                            "ac.contract_epoch = \"0.2\"");
   return success();
 }
 

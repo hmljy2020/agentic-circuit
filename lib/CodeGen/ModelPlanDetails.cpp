@@ -404,7 +404,8 @@ extractProcess(acsim::ProcessOp process,
 
 llvm::Expected<ModulePlan>
 extractModule(acsim::ModuleOp module,
-              const llvm::DenseSet<llvm::StringRef> &moduleSymbols) {
+              const llvm::DenseSet<llvm::StringRef> &moduleSymbols,
+              const llvm::DenseSet<llvm::StringRef> &runtimeTypeSymbols) {
   ModulePlan result;
   result.symbol = module.getSymName().str();
   result.className =
@@ -421,11 +422,13 @@ extractModule(acsim::ModuleOp module,
       auto staticArgs = staticValues(instance.getStaticArgs());
       if (!staticArgs)
         return staticArgs.takeError();
-      PlacementKind kind =
-          moduleSymbols.contains(
-              instance.getTarget().getRootReference().getValue())
-              ? PlacementKind::GeneratedModule
-              : PlacementKind::ExternalStateful;
+      PlacementKind kind = PlacementKind::ExternalStateful;
+      llvm::StringRef targetName =
+          instance.getTarget().getRootReference().getValue();
+      if (moduleSymbols.contains(targetName)) {
+        kind = PlacementKind::GeneratedModule;
+      } else if (runtimeTypeSymbols.contains(targetName))
+        kind = PlacementKind::CompilerNative;
       result.placements.push_back(
           {kind,
            instance.getSymName().str(),
@@ -510,9 +513,13 @@ extractModule(acsim::ModuleOp module,
 
 llvm::Error populateModelDetails(acsim::ModelOp model, ModelPlan &plan) {
   llvm::DenseSet<llvm::StringRef> moduleSymbols;
+  llvm::DenseSet<llvm::StringRef> runtimeTypeSymbols;
   for (mlir::Operation &operation : model.getBody().front())
     if (auto module = mlir::dyn_cast<acsim::ModuleOp>(operation))
       moduleSymbols.insert(module.getSymName());
+    else if (auto type = mlir::dyn_cast<acsim::TypeOp>(operation);
+             type && type.getKind() == "runtime_object")
+      runtimeTypeSymbols.insert(type.getSymName());
 
   for (mlir::Operation &operation : model.getBody().front()) {
     if (auto binding = mlir::dyn_cast<acsim::BindingOp>(operation)) {
@@ -521,7 +528,7 @@ llvm::Error populateModelDetails(acsim::ModelOp model, ModelPlan &plan) {
         return extracted.takeError();
       plan.bindings.push_back(std::move(*extracted));
     } else if (auto module = mlir::dyn_cast<acsim::ModuleOp>(operation)) {
-      auto extracted = extractModule(module, moduleSymbols);
+      auto extracted = extractModule(module, moduleSymbols, runtimeTypeSymbols);
       if (!extracted)
         return extracted.takeError();
       plan.modules.push_back(std::move(*extracted));

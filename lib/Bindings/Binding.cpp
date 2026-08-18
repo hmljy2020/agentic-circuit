@@ -947,7 +947,7 @@ BindingRecord::parse(const llvm::json::Object &object,
   };
   if (!hasExactKeys(object, TopKeys))
     return metadataError(
-        "binding lock must contain exactly the acsim-binding-0.1 fields");
+        "binding lock must contain exactly the acsim-binding-0.2 fields");
 
   auto result = std::make_shared<Storage>();
   result->object = object;

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:pto-isa:agentic-circuit:schema:acsim-binding:0.1",
-  "title": "Agentic Circuit ACSim Binding Record 0.1",
+  "$id": "urn:pto-isa:agentic-circuit:schema:acsim-binding:0.2",
+  "title": "Agentic Circuit ACSim Binding Record 0.2",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -35,11 +35,11 @@
     },
     "availability": {"const": "available"},
     "binding": {"$ref": "#/$defs/name"},
-    "binding_schema": {"const": "acsim-binding-0.1"},
+    "binding_schema": {"const": "acsim-binding-0.2"},
     "component_schema": {"$ref": "#/$defs/identity"},
     "component_schema_fingerprint": {"$ref": "#/$defs/sha256"},
     "construction": {"$ref": "#/$defs/construction"},
-    "contract_epoch": {"const": "0.1"},
+    "contract_epoch": {"const": "0.2"},
     "cpp": {"$ref": "#/$defs/cpp"},
     "cpp_type": {"$ref": "#/$defs/identity"},
     "effect": {"enum": ["pure", "stateful"]},

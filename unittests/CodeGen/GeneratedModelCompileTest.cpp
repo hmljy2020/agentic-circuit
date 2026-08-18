@@ -1,5 +1,11 @@
 #include "acir/CodeGen/Generator.h"
+#include "acir/Dialect/ACSim/ACSimDialect.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
+#include "mlir/Dialect/Index/IR/IndexDialect.h"
+#include "mlir/IR/MLIRContext.h"
+#include "mlir/Parser/Parser.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/FileSystem.h"
@@ -25,7 +31,7 @@ ModelPlan makeMinimalRunnablePlan() {
   ModelPlan plan;
   plan.modelSymbol = "minimal";
   plan.rootSymbol = "Top";
-  plan.contractEpoch = "0.1";
+  plan.contractEpoch = "0.2";
   plan.frozenAcirFingerprint = kFingerprint.str();
   plan.bindingLockFingerprint = kFingerprint.str();
   plan.providerFingerprint = kFingerprint.str();
@@ -115,9 +121,9 @@ std::string readFile(llvm::StringRef path) {
   return buffer.get()->getBuffer().str();
 }
 
-TEST(GeneratedModelCompileTest,
-     MinimalBundleCompilesLinksAndPrintsFingerprint) {
-  auto bundle = generateModelSources(makeMinimalRunnablePlan());
+void expectBundleCompilesLinksAndRuns(const ModelPlan &plan,
+                                      bool runModel = true) {
+  auto bundle = generateModelSources(plan);
   if (!bundle) {
     ADD_FAILURE() << llvm::toString(bundle.takeError());
     return;
@@ -180,6 +186,9 @@ TEST(GeneratedModelCompileTest,
   ASSERT_EQ(queryStatus, 0) << readFile(queryLog);
   EXPECT_EQ(readFile(queryLog), bundle->buildFingerprint + "\n");
 
+  if (!runModel)
+    return;
+
   llvm::SmallString<256> runLog(temporaryRoot);
   llvm::sys::path::append(runLog, "run.log");
   const std::array<llvm::StringRef, 1> runArguments = {executable.str()};
@@ -187,6 +196,40 @@ TEST(GeneratedModelCompileTest,
   const int runStatus = llvm::sys::ExecuteAndWait(executable, runArguments,
                                                   std::nullopt, redirects);
   EXPECT_EQ(runStatus, 0) << readFile(runLog);
+}
+
+TEST(GeneratedModelCompileTest,
+     MinimalBundleCompilesLinksAndPrintsFingerprint) {
+  expectBundleCompilesLinksAndRuns(makeMinimalRunnablePlan());
+}
+
+TEST(GeneratedModelCompileTest,
+     ScalarQueueBundleCompilesLinksAndRunsWithoutBindings) {
+  mlir::MLIRContext context;
+  context
+      .loadDialect<acsim::ACSimDialect, mlir::arith::ArithDialect,
+                   mlir::cf::ControlFlowDialect, mlir::index::IndexDialect>();
+  auto file = mlir::parseSourceFile<mlir::ModuleOp>(
+      ACIR_TEST_SOURCE_DIR "/test/CodeGen/native-queue.mlir", &context);
+  ASSERT_TRUE(static_cast<bool>(file));
+  auto plan = buildModelPlan(*file);
+  ASSERT_TRUE(static_cast<bool>(plan));
+  ASSERT_TRUE(plan->bindings.empty());
+  expectBundleCompilesLinksAndRuns(*plan, false);
+}
+
+TEST(GeneratedModelCompileTest, PacketQueueBundleCompilesLinksAndRuns) {
+  mlir::MLIRContext context;
+  context
+      .loadDialect<acsim::ACSimDialect, mlir::arith::ArithDialect,
+                   mlir::cf::ControlFlowDialect, mlir::index::IndexDialect>();
+  auto file = mlir::parseSourceFile<mlir::ModuleOp>(
+      ACIR_TEST_SOURCE_DIR "/test/CodeGen/native-packet-queue.mlir", &context);
+  ASSERT_TRUE(static_cast<bool>(file));
+  auto plan = buildModelPlan(*file);
+  ASSERT_TRUE(static_cast<bool>(plan));
+  ASSERT_TRUE(plan->bindings.empty());
+  expectBundleCompilesLinksAndRuns(*plan);
 }
 
 } // namespace

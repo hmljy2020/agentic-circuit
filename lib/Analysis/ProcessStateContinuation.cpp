@@ -4,9 +4,11 @@
 
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Diagnostics.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/ErrorHandling.h"
 
+#include <functional>
 #include <iomanip>
 #include <memory>
 #include <sstream>
@@ -18,7 +20,8 @@ namespace {
 
 static bool isSuspensionOp(Operation *op) {
   return isa<ac::WaitUntilOp>(op) || isa<ac::WaitForOp>(op) ||
-         isa<ac::AwaitEventOp>(op) || isa<ac::YieldSimOp>(op);
+         isa<ac::AwaitEventOp>(op) || isa<ac::AwaitQueueOp>(op) ||
+         isa<ac::YieldSimOp>(op);
 }
 
 static bool isYieldSim(Operation *op) { return isa<ac::YieldSimOp>(op); }
@@ -32,6 +35,9 @@ static ProcessWakeKind wakeKindForOp(Operation *op) {
     return ProcessWakeKind::EventQueue;
   if (isa<ac::YieldSimOp>(op))
     return ProcessWakeKind::NextDelta;
+  if (auto await = dyn_cast<ac::AwaitQueueOp>(op))
+    return await.getUntil() == "readable" ? ProcessWakeKind::QueueReadable
+                                          : ProcessWakeKind::QueueWritable;
   llvm_unreachable("unknown suspension op");
 }
 
@@ -44,6 +50,9 @@ static std::string wakeTypeKeyForOp(Operation *op) {
     return "@acir_wake_event_queue";
   if (isa<ac::YieldSimOp>(op))
     return "@acir_wake_next_delta";
+  if (auto await = dyn_cast<ac::AwaitQueueOp>(op))
+    return await.getUntil() == "readable" ? "@acir_wake_queue_readable"
+                                          : "@acir_wake_queue_writable";
   llvm_unreachable("unknown suspension op");
 }
 
@@ -65,9 +74,331 @@ static std::string blockPath(const std::string &defKey,
 
 } // namespace
 
+ProcessActionPlan
+PlanSetBuilder::makePlannedAction(const ExpandedAction &expanded, uint32_t id) {
+  auto action = std::make_shared<ProcessActionPlan::Impl>();
+  action->id = id;
+  action->kind = expanded.kind;
+  action->emission = ProcessEmissionClass::ForwardOnly;
+  if (action->kind == ProcessActionKind::ForCondition ||
+      action->kind == ProcessActionKind::ForIncrement)
+    action->emission = ProcessEmissionClass::CopyScalar;
+  action->occurrence = expanded.occurrence;
+  action->sourceOperation =
+      action->kind == ProcessActionKind::Constant ? nullptr
+                                                  : expanded.operation;
+  action->iterationVector = expanded.iterationVector;
+  action->operands = expanded.operands;
+  action->results = expanded.results;
+  action->cost =
+      action->emission == ProcessEmissionClass::ForwardOnly ? 0 : 1;
+  for (const ProcessPlannedValue &result : action->results)
+    action->resultTypes.push_back(result.type());
+  action->scalarOp = expanded.scalarOperation;
+  if (action->kind == ProcessActionKind::Constant) {
+    action->emission = ProcessEmissionClass::CopyScalar;
+    action->cost = 1;
+    auto scalar = std::make_shared<ProcessScalarOperationPlan::Impl>();
+    scalar->name = "index.constant";
+    scalar->properties = "{}";
+    action->scalarOp = ProcessScalarOperationPlan(std::move(scalar));
+  }
+  if (action->kind == ProcessActionKind::Original &&
+      action->sourceOperation) {
+    if (isa<ac::TrySendOp, ac::TryRecvOp, ac::AssertOp>(
+            action->sourceOperation)) {
+      action->emission = ProcessEmissionClass::Invoke;
+      action->cost = 1;
+    }
+    llvm::StringRef dialect =
+        action->sourceOperation->getName().getDialectNamespace();
+    if ((dialect == "arith" || dialect == "index" || dialect == "builtin") &&
+        action->sourceOperation->getNumRegions() == 0) {
+      action->emission = ProcessEmissionClass::CopyScalar;
+      action->cost = 1;
+      if (!action->scalarOp) {
+        auto scalar = std::make_shared<ProcessScalarOperationPlan::Impl>();
+        scalar->name =
+            action->sourceOperation->getName().getStringRef().str();
+        scalar->properties = "{}";
+        action->scalarOp = ProcessScalarOperationPlan(std::move(scalar));
+      }
+    }
+  }
+  return ProcessActionPlan(action);
+}
+
+struct StructuredNode {
+  enum class Kind { Action, If } kind = Kind::Action;
+  Operation *operation = nullptr;
+  const ExpandedAction *action = nullptr;
+  std::optional<ProcessPlannedValue> condition;
+  StructuredNode *next = nullptr;
+  StructuredNode *thenNode = nullptr;
+  StructuredNode *elseNode = nullptr;
+};
+
+static bool isNestedInProcess(Operation *operation, ac::ProcessOp process) {
+  for (Operation *owner = operation; owner; owner = owner->getParentOp())
+    if (owner == process.getOperation())
+      return true;
+  return false;
+}
+
+FailureOr<std::unique_ptr<PlanSetBuilder::ControlPlan>>
+PlanSetBuilder::planStructuredIfContinuation(
+    const ExpandedProcess &expanded, const ProcessStateLimits &limits) {
+  auto plan = std::make_unique<PlanSetBuilder::ControlPlan>();
+  ac::ProcessOp process = expanded.process;
+
+  DenseMap<Operation *, const ExpandedAction *> actionsByOperation;
+  DenseMap<Value, ProcessPlannedValue> values;
+  for (const ExpandedAction &action : expanded.actions) {
+    if (!action.operation || !isNestedInProcess(action.operation, process) ||
+        actionsByOperation.contains(action.operation))
+      return failure();
+    actionsByOperation[action.operation] = &action;
+    for (auto [result, planned] :
+         llvm::zip_equal(action.operation->getResults(), action.results))
+      values.try_emplace(result, planned);
+  }
+
+  std::vector<std::unique_ptr<StructuredNode>> nodes;
+  DenseMap<Value, StructuredNode *> definitionsByValue;
+  auto makeNode = [&]() {
+    nodes.push_back(std::make_unique<StructuredNode>());
+    return nodes.back().get();
+  };
+  bool supported = true;
+  std::function<StructuredNode *(Block &, StructuredNode *)> buildSequence =
+      [&](Block &block, StructuredNode *continuation) -> StructuredNode * {
+    StructuredNode *head = continuation;
+    for (Operation &operation : llvm::reverse(block)) {
+      if (isa<scf::YieldOp>(operation))
+        continue;
+      if (auto ifOp = dyn_cast<scf::IfOp>(operation)) {
+        if (ifOp.getNumResults() != 0) {
+          supported = false;
+          return head;
+        }
+        auto condition = values.find(ifOp.getCondition());
+        if (condition == values.end()) {
+          supported = false;
+          return head;
+        }
+        StructuredNode *node = makeNode();
+        node->kind = StructuredNode::Kind::If;
+        node->operation = &operation;
+        node->condition = condition->second;
+        node->next = head;
+        node->thenNode =
+            buildSequence(ifOp.getThenRegion().front(), head);
+        node->elseNode = ifOp.getElseRegion().empty()
+                             ? head
+                             : buildSequence(ifOp.getElseRegion().front(), head);
+        head = node;
+        continue;
+      }
+      if (operation.getNumRegions() != 0 ||
+          isa<scf::ForOp, scf::WhileOp>(operation)) {
+        supported = false;
+        return head;
+      }
+      auto found = actionsByOperation.find(&operation);
+      if (found == actionsByOperation.end()) {
+        supported = false;
+        return head;
+      }
+      StructuredNode *node = makeNode();
+      node->kind = StructuredNode::Kind::Action;
+      node->operation = &operation;
+      node->action = found->second;
+      node->next = head;
+      for (Value result : operation.getResults())
+        definitionsByValue.try_emplace(result, node);
+      head = node;
+    }
+    return head;
+  };
+
+  StructuredNode *entryRoot =
+      buildSequence(process.getBody().front(), nullptr);
+  if (!supported || !entryRoot)
+    return failure();
+
+  DenseMap<StructuredNode *, StructuredNode *> retryRoots;
+  for (const auto &ownedNode : nodes) {
+    StructuredNode *node = ownedNode.get();
+    auto await = dyn_cast_or_null<ac::AwaitQueueOp>(node->operation);
+    auto ifOp = node->operation
+                    ? node->operation->getParentOfType<scf::IfOp>()
+                    : scf::IfOp();
+    if (!await || !ifOp)
+      continue;
+    auto definition = definitionsByValue.find(ifOp.getCondition());
+    if (definition == definitionsByValue.end())
+      continue;
+    Operation *operation = definition->second->operation;
+    FlatSymbolRefAttr queue;
+    if (auto send = dyn_cast<ac::TrySendOp>(operation))
+      queue = send.getQueueAttr();
+    else if (auto recv = dyn_cast<ac::TryRecvOp>(operation))
+      queue = recv.getQueueAttr();
+    if (queue && queue == await.getQueueAttr())
+      retryRoots.try_emplace(node, definition->second);
+  }
+
+  uint32_t nextBlockId = 0;
+  uint32_t nextWakeId = 0;
+  uint32_t nextTransitionId = 0;
+  DenseMap<StructuredNode *, ProcessPcId> pcsByRoot;
+
+  std::function<FailureOr<ProcessPcId>(StructuredNode *)> createPc;
+  createPc = [&](StructuredNode *root) -> FailureOr<ProcessPcId> {
+    if (auto found = pcsByRoot.find(root); found != pcsByRoot.end())
+      return found->second;
+    if (plan->pcs.size() >= limits.maxProgramCounters)
+      return failure();
+    ProcessPcId pcId(static_cast<uint32_t>(plan->pcs.size()));
+    pcsByRoot.try_emplace(root, pcId);
+    auto pc = std::make_shared<ProcessPcPlan::Impl>();
+    pc->id = pcId;
+    pc->name = pcName(pcId.value());
+    plan->pcs.push_back(pc);
+
+    DenseMap<StructuredNode *, ProcessBlockId> blocksByNode;
+    std::function<FailureOr<ProcessBlockId>(StructuredNode *)> buildBlock;
+    buildBlock = [&](StructuredNode *start) -> FailureOr<ProcessBlockId> {
+      if (auto found = blocksByNode.find(start); found != blocksByNode.end())
+        return found->second;
+      ProcessBlockId blockId(nextBlockId++);
+      auto block = std::make_shared<ProcessBlockPlan::Impl>();
+      block->id = blockId;
+      block->pc = pcId;
+      block->originBlock = start ? start->operation->getBlock()
+                                 : &process.getBody().front();
+      block->originRegion = block->originBlock->getParent();
+      block->path =
+          blockPath(expanded.definitionKey, pc->name, blockId.value());
+      blocksByNode.try_emplace(start, blockId);
+      pc->blocks.push_back(blockId);
+      if (pc->entryPath.empty())
+        pc->entryPath = block->path;
+      plan->blocks.push_back(block);
+
+      StructuredNode *cursor = start;
+      while (cursor && cursor->kind == StructuredNode::Kind::Action &&
+             !isSuspensionOp(cursor->operation)) {
+        block->actions.push_back(makePlannedAction(
+            *cursor->action, static_cast<uint32_t>(block->actions.size())));
+        cursor = cursor->next;
+      }
+
+      if (!cursor) {
+        auto edge = std::make_shared<ProcessControlEdgePlan::Impl>();
+        edge->kind = ProcessControlEdgeKind::Terminate;
+        edge->status = ProcessTerminateStatus::Success;
+        block->edge = ProcessControlEdgePlan(edge);
+        return blockId;
+      }
+
+      if (cursor->kind == StructuredNode::Kind::If) {
+        auto thenBlock = buildBlock(cursor->thenNode);
+        auto elseBlock = buildBlock(cursor->elseNode);
+        if (failed(thenBlock) || failed(elseBlock))
+          return failure();
+        auto edge = std::make_shared<ProcessControlEdgePlan::Impl>();
+        edge->kind = ProcessControlEdgeKind::Branch;
+        edge->condition = cursor->condition;
+        edge->trueBlock = *thenBlock;
+        edge->falseBlock = *elseBlock;
+        block->edge = ProcessControlEdgePlan(edge);
+        return blockId;
+      }
+
+      block->actions.push_back(makePlannedAction(
+          *cursor->action, static_cast<uint32_t>(block->actions.size())));
+      const ProcessWakeId wakeId(nextWakeId++);
+      const ProcessTransitionId transitionId(nextTransitionId++);
+      auto wake = std::make_shared<ProcessWakePlan::Impl>();
+      wake->id = wakeId;
+      auto transition = std::make_shared<ProcessTransitionPlan::Impl>();
+      transition->id = transitionId;
+      transition->sourcePc = pcId;
+      transition->wake = wakeId;
+      plan->wakes.push_back(wake);
+      plan->transitions.push_back(transition);
+
+      ProcessPcId targetPc(0);
+      if (!isYieldSim(cursor->operation)) {
+        StructuredNode *resume = cursor->next;
+        if (auto retry = retryRoots.find(cursor); retry != retryRoots.end())
+          resume = retry->second;
+        auto created = createPc(resume);
+        if (failed(created))
+          return failure();
+        targetPc = *created;
+      }
+
+      wake->kind = wakeKindForOp(cursor->operation);
+      wake->typeKey = wakeTypeKeyForOp(cursor->operation);
+      wake->operation = cursor->operation;
+      wake->operationPath = cursor->action->operationPath;
+      wake->target = "";
+      wake->occurrence = cursor->action->occurrence;
+      wake->iterationVector = cursor->action->iterationVector;
+      for (const ProcessPlannedValue &operand : cursor->action->operands) {
+        auto source =
+            std::make_shared<ProcessSubscriptionSourcePlan::Impl>();
+        if (operand.kind() == ProcessPlannedValueKind::Original) {
+          source->kind = ProcessSubscriptionSourceKind::Value;
+          source->value = operand.original().value();
+          source->owner = operand.original().occurrence().original().operation();
+          source->path = operand.original().path().str();
+        } else if (operand.kind() == ProcessPlannedValueKind::Capture) {
+          source->kind = ProcessSubscriptionSourceKind::Capture;
+          source->capture = operand.capture().capture();
+        } else {
+          source->kind = ProcessSubscriptionSourceKind::Value;
+        }
+        wake->sources.push_back(ProcessSubscriptionSourcePlan(source));
+      }
+
+      transition->targetPc = targetPc;
+
+      auto edge = std::make_shared<ProcessControlEdgePlan::Impl>();
+      edge->kind = ProcessControlEdgeKind::Suspend;
+      edge->transition = transitionId;
+      block->edge = ProcessControlEdgePlan(edge);
+      return blockId;
+    };
+
+    if (failed(buildBlock(root)))
+      return failure();
+    return pcId;
+  };
+
+  auto entry = createPc(entryRoot);
+  if (failed(entry) || entry->value() != 0)
+    return failure();
+  return plan;
+}
+
 FailureOr<std::unique_ptr<PlanSetBuilder::ControlPlan>>
 PlanSetBuilder::planProcessContinuation(const ExpandedProcess &expanded,
                                         const ProcessStateLimits &limits) {
+  bool hasStructuredIf = false;
+  bool structuredSubset = true;
+  ac::ProcessOp sourceProcess = expanded.process;
+  sourceProcess.walk([&](Operation *operation) {
+    hasStructuredIf |= isa<scf::IfOp>(operation);
+    if (isa<scf::ForOp, scf::WhileOp>(operation) ||
+        operation->getName().getStringRef() == "func.call")
+      structuredSubset = false;
+  });
+  if (hasStructuredIf && structuredSubset)
+    return planStructuredIfContinuation(expanded, limits);
+
   auto plan = std::make_unique<ControlPlan>();
 
   if (expanded.actions.empty())
@@ -166,6 +497,11 @@ PlanSetBuilder::planProcessContinuation(const ExpandedProcess &expanded,
         act->scalarOp = ProcessScalarOperationPlan(std::move(scalar));
       }
       if (act->kind == ProcessActionKind::Original && act->sourceOperation) {
+        if (isa<ac::TrySendOp, ac::TryRecvOp, ac::AssertOp>(
+                act->sourceOperation)) {
+          act->emission = ProcessEmissionClass::Invoke;
+          act->cost = 1;
+        }
         llvm::StringRef dialect =
             act->sourceOperation->getName().getDialectNamespace();
         if ((dialect == "arith" || dialect == "index" ||
