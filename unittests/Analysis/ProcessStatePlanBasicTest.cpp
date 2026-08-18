@@ -68,6 +68,7 @@ concept CompleteProcessStatePlanApi = requires(
     const ProcessTraceDecodePayload &traceDecode,
     const ProcessQueueTrySendPayload &queueSend,
     const ProcessQueueTryRecvPayload &queueRecv,
+    const ProcessQueuePeekPayload &queuePeek,
     const ProcessEventSchedulePayload &eventSchedule,
     const ProcessTraceOpenPayload &traceOpen,
     const ProcessTraceNextPayload &traceNext,
@@ -296,6 +297,7 @@ concept CompleteProcessStatePlanApi = requires(
   calleePayload.traceDecode();
   calleePayload.queueTrySend();
   calleePayload.queueTryRecv();
+  calleePayload.queuePeek();
   calleePayload.eventSchedule();
   calleePayload.traceOpen();
   calleePayload.traceNext();
@@ -577,6 +579,7 @@ CHECK_PACKET(ProcessPacketDeserializePayload);
 CHECK_THREE_STRINGS(ProcessTraceDecodePayload, entry, result, source);
 CHECK_TWO_STRINGS(ProcessQueueTrySendPayload, element, queue);
 CHECK_TWO_STRINGS(ProcessQueueTryRecvPayload, element, queue);
+CHECK_TWO_STRINGS(ProcessQueuePeekPayload, element, queue);
 CHECK_THREE_STRINGS(ProcessEventSchedulePayload, delay, target, value);
 CHECK_STRING(ProcessTraceOpenPayload, source);
 CHECK_TWO_STRINGS(ProcessTraceNextPayload, entry, source);
@@ -611,6 +614,7 @@ CHECK_PAYLOAD_ARM(packetDeserialize, ProcessPacketDeserializePayload);
 CHECK_PAYLOAD_ARM(traceDecode, ProcessTraceDecodePayload);
 CHECK_PAYLOAD_ARM(queueTrySend, ProcessQueueTrySendPayload);
 CHECK_PAYLOAD_ARM(queueTryRecv, ProcessQueueTryRecvPayload);
+CHECK_PAYLOAD_ARM(queuePeek, ProcessQueuePeekPayload);
 CHECK_PAYLOAD_ARM(eventSchedule, ProcessEventSchedulePayload);
 CHECK_PAYLOAD_ARM(traceOpen, ProcessTraceOpenPayload);
 CHECK_PAYLOAD_ARM(traceNext, ProcessTraceNextPayload);

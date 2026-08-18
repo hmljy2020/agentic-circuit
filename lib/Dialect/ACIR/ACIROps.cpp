@@ -1331,6 +1331,15 @@ verifyRuntimeReferences(ModuleOp module,
               << " does not match queue payload type " << queue.getPayload();
           result = failure();
         }
+      } else if (auto peek = dyn_cast<PeekOp>(operation)) {
+        auto queue = dyn_cast_or_null<QueueOp>(
+            lookupExpected(peek, peek.getQueue(), QueueOp::getOperationName()));
+        if (queue && queue.getPayload() != peek.getValue().getType()) {
+          peek.emitOpError()
+              << "result type " << peek.getValue().getType()
+              << " does not match queue payload type " << queue.getPayload();
+          result = failure();
+        }
       } else if (auto schedule = dyn_cast<ScheduleOp>(operation)) {
         auto target = dyn_cast_or_null<ProcessOp>(lookupExpected(
             schedule, schedule.getTarget(), ProcessOp::getOperationName()));
@@ -1398,14 +1407,14 @@ LogicalResult verifyProcessOperations(ModuleOp module) {
       return failure();
     LogicalResult result = success();
     process.getBody().walk([&](Operation *operation) {
-      result =
-          TypeSwitch<Operation *, LogicalResult>(operation)
-              .Case<TrySendOp, TryRecvOp, ScheduleOp, WaitUntilOp, WaitForOp,
-                    AwaitEventOp, AwaitQueueOp, YieldSimOp, TraceOpenOp,
-                    TraceNextOp, TraceDecodeOp, TraceEofOp, TracePositionOp,
-                    RequireOp, EnsureOp, AssertOp, ProbeOp, StatAddOp,
-                    InstrumentationOp>([](auto op) { return op.verify(); })
-              .Default([](Operation *) { return success(); });
+      result = TypeSwitch<Operation *, LogicalResult>(operation)
+                   .Case<TrySendOp, TryRecvOp, PeekOp, ScheduleOp, WaitUntilOp,
+                         WaitForOp, AwaitEventOp, AwaitQueueOp, YieldSimOp,
+                         TraceOpenOp, TraceNextOp, TraceDecodeOp, TraceEofOp,
+                         TracePositionOp, RequireOp, EnsureOp, AssertOp,
+                         ProbeOp, StatAddOp, InstrumentationOp>(
+                       [](auto op) { return op.verify(); })
+                   .Default([](Operation *) { return success(); });
       return failed(result) ? WalkResult::interrupt() : WalkResult::advance();
     });
     if (failed(result))
@@ -2354,11 +2363,11 @@ bool isAllowedProcessOperation(Operation *operation) {
           operation))
     return true;
   return isa<RecordCreateOp, RecordGetOp, RecordWithOp, PacketSerializeOp,
-             PacketDeserializeOp, TrySendOp, TryRecvOp, ScheduleOp, WaitUntilOp,
-             WaitForOp, AwaitEventOp, AwaitQueueOp, YieldSimOp, TraceOpenOp,
-             TraceNextOp, TraceDecodeOp, TraceEofOp, TracePositionOp, RequireOp,
-             EnsureOp, AssertOp, ProbeOp, StatAddOp, InstrumentationOp>(
-      operation);
+             PacketDeserializeOp, TrySendOp, TryRecvOp, PeekOp, ScheduleOp,
+             WaitUntilOp, WaitForOp, AwaitEventOp, AwaitQueueOp, YieldSimOp,
+             TraceOpenOp, TraceNextOp, TraceDecodeOp, TraceEofOp,
+             TracePositionOp, RequireOp, EnsureOp, AssertOp, ProbeOp, StatAddOp,
+             InstrumentationOp>(operation);
 }
 
 std::optional<bool> constantBool(Value value) {
@@ -2959,6 +2968,7 @@ LogicalResult ProcessOp::verify() {
 
 LogicalResult TrySendOp::verify() { return requireProcess(*this); }
 LogicalResult TryRecvOp::verify() { return requireProcess(*this); }
+LogicalResult PeekOp::verify() { return requireProcess(*this); }
 
 LogicalResult ScheduleOp::verify() {
   if (Operation *definition = getDelay().getDefiningOp();
@@ -2998,13 +3008,17 @@ LogicalResult AwaitQueueOp::verify() {
         return success();
     } else {
       auto recv = condition.getDefiningOp<TryRecvOp>();
-      if (recv && condition == recv.getReceived() &&
-          recv.getQueueAttr() == getQueueAttr())
+      auto peek = condition.getDefiningOp<PeekOp>();
+      if ((recv && condition == recv.getReceived() &&
+           recv.getQueueAttr() == getQueueAttr()) ||
+          (peek && condition == peek.getValid() &&
+           peek.getQueueAttr() == getQueueAttr()))
         return success();
     }
   }
-  return emitOpError() << "must be in the false branch of the matching ac.try_"
-                       << (getUntil() == "writable" ? "send" : "recv")
+  return emitOpError() << "must be in the false branch of the matching "
+                       << (getUntil() == "writable" ? "ac.try_send"
+                                                    : "ac.try_recv or ac.peek")
                        << " for queue '" << getQueueAttr() << "'";
 }
 
@@ -3127,6 +3141,14 @@ void TryRecvOp::getEffects(
             ProtocolStateResource::get());
   addEffect(effects, *this, MemoryEffects::Write::get(), getQueue(), "protocol",
             ProtocolStateResource::get());
+}
+
+void PeekOp::getEffects(
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  if (!isa_and_nonnull<QueueOp>(resolvedRuntimeTarget(*this, getQueue())))
+    return;
+  addEffect(effects, *this, MemoryEffects::Read::get(), getQueue(), "queue",
+            QueueStateResource::get());
 }
 
 void ScheduleOp::getEffects(

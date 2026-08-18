@@ -188,32 +188,16 @@ llvm::StringRef spelling(ProcessStorageSignedness value) {
   llvm_unreachable("unknown signedness");
 }
 llvm::StringRef spelling(ProcessHelperRole value) {
-  static constexpr llvm::StringLiteral names[] = {"record_create",
-                                                  "record_get",
-                                                  "record_with",
-                                                  "packet_serialize",
-                                                  "packet_deserialize",
-                                                  "trace_decode",
-                                                  "queue_try_send",
-                                                  "queue_try_recv",
-                                                  "event_schedule",
-                                                  "trace_open",
-                                                  "trace_next",
-                                                  "trace_eof",
-                                                  "trace_position",
-                                                  "contract_require",
-                                                  "contract_ensure",
-                                                  "contract_assert",
-                                                  "probe",
-                                                  "stat_add",
-                                                  "wake_condition",
-                                                  "wake_resource",
-                                                  "wake_event_queue",
-                                                  "wake_next_delta",
-                                                  "scalar_wrap",
-                                                  "scalar_unwrap",
-                                                  "wake_queue_readable",
-                                                  "wake_queue_writable"};
+  static constexpr llvm::StringLiteral names[] = {
+      "record_create",    "record_get",          "record_with",
+      "packet_serialize", "packet_deserialize",  "trace_decode",
+      "queue_try_send",   "queue_try_recv",      "queue_peek",
+      "event_schedule",   "trace_open",          "trace_next",
+      "trace_eof",        "trace_position",      "contract_require",
+      "contract_ensure",  "contract_assert",     "probe",
+      "stat_add",         "wake_condition",      "wake_resource",
+      "wake_event_queue", "wake_next_delta",     "scalar_wrap",
+      "scalar_unwrap",    "wake_queue_readable", "wake_queue_writable"};
   return names[static_cast<unsigned>(value)];
 }
 
@@ -390,6 +374,10 @@ Value json(const ProcessGeneratedCalleePayload &payload) {
   case ProcessHelperRole::QueueTryRecv:
     two("element", payload.queueTryRecv().element(), "queue",
         payload.queueTryRecv().queue());
+    break;
+  case ProcessHelperRole::QueuePeek:
+    two("element", payload.queuePeek().element(), "queue",
+        payload.queuePeek().queue());
     break;
   case ProcessHelperRole::EventSchedule:
     object["delay"] = payload.eventSchedule().delay();

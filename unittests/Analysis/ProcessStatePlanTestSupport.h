@@ -12,8 +12,8 @@
 #include "mlir/Pass/PassManager.h"
 #include "llvm/Support/raw_ostream.h"
 
-#include <string>
 #include <sstream>
+#include <string>
 
 namespace acir::test {
 
@@ -65,6 +65,11 @@ parseAndFreezeQueueActions(mlir::MLIRContext &context) {
           scf.if %accepted {
           } else {
             ac.await_queue @fifo_queue until "writable"
+          }
+          %peeked_value, %valid = ac.peek @fifo_queue : i32
+          scf.if %valid {
+          } else {
+            ac.await_queue @fifo_queue until "readable"
           }
           %received_value, %received = ac.try_recv @fifo_queue : i32
           scf.if %received {

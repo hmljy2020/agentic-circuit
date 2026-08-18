@@ -239,6 +239,9 @@ An enqueue succeeds only if all declared capacities permit it. FIFO data queues
 and time-ordered event queues are distinct types.
 
 `tryRecv()` returns `{T{}, false}` when the committed snapshot is empty.
+`tryPeek() const` returns a copy of the committed head and `true`, or
+`{T{}, false}` when empty. It never creates a proposal, registers a commit
+participant, updates statistics, or changes the last-update epoch.
 Accepted queue proposals register the queue as a cross-object commit
 participant. Queue commits activate only statically adjacent processes at
 `(time + 1, 0)`; queue-readable and queue-writable subscriptions additionally

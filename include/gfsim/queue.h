@@ -80,6 +80,13 @@ public:
     return committed_.empty() ? nullptr : &committed_.front();
   }
 
+  /// Typed process helper: observe the committed head without proposing a pop.
+  std::pair<T, bool> tryPeek() const {
+    const T *value = peek();
+    return value ? std::pair<T, bool>{*value, true}
+                 : std::pair<T, bool>{T{}, false};
+  }
+
   // ── Arbitration ─────────────────────────────────────────────────────
 
   void doArbitrate(Epoch) override {

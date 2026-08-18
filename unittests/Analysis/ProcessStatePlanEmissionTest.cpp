@@ -78,6 +78,7 @@ TEST(ProcessStatePlanEmissionTest,
 
   const ProcessGeneratedCalleePlan *send = nullptr;
   const ProcessGeneratedCalleePlan *recv = nullptr;
+  const ProcessGeneratedCalleePlan *peek = nullptr;
   const ProcessGeneratedCalleePlan *readable = nullptr;
   const ProcessGeneratedCalleePlan *writable = nullptr;
   for (auto [index, callee] : llvm::enumerate(built->callees())) {
@@ -88,6 +89,9 @@ TEST(ProcessStatePlanEmissionTest,
       break;
     case ProcessHelperRole::QueueTryRecv:
       recv = &callee;
+      break;
+    case ProcessHelperRole::QueuePeek:
+      peek = &callee;
       break;
     case ProcessHelperRole::WakeQueueReadable:
       readable = &callee;
@@ -101,6 +105,7 @@ TEST(ProcessStatePlanEmissionTest,
   }
   ASSERT_NE(send, nullptr);
   ASSERT_NE(recv, nullptr);
+  ASSERT_NE(peek, nullptr);
   ASSERT_NE(readable, nullptr);
   ASSERT_NE(writable, nullptr);
   ASSERT_EQ(send->inputTypeKeys().size(), 2u);
@@ -108,14 +113,21 @@ TEST(ProcessStatePlanEmissionTest,
   EXPECT_EQ(send->inputTypeKeys()[1], "mlir:i32");
   ASSERT_EQ(recv->inputTypeKeys().size(), 1u);
   EXPECT_EQ(recv->inputTypeKeys()[0], "queue-ref:@queue");
+  ASSERT_EQ(peek->inputTypeKeys().size(), 1u);
+  EXPECT_EQ(peek->inputTypeKeys()[0], "queue-ref:@queue");
+  ASSERT_EQ(peek->resultTypeKeys().size(), 2u);
+  EXPECT_EQ(peek->resultTypeKeys()[0], "mlir:i32");
+  EXPECT_EQ(peek->resultTypeKeys()[1], "mlir:i1");
   EXPECT_EQ(send->declarations().size(), 1u);
   EXPECT_EQ(recv->declarations().size(), 1u);
+  EXPECT_EQ(peek->declarations().size(), 1u);
   EXPECT_TRUE(readable->declarations().empty());
   EXPECT_TRUE(writable->declarations().empty());
   EXPECT_FALSE(readable->sourceOperations().empty());
   EXPECT_FALSE(writable->sourceOperations().empty());
   EXPECT_EQ(send->sourceOperations().size(), 1u);
   EXPECT_EQ(recv->sourceOperations().size(), 1u);
+  EXPECT_EQ(peek->sourceOperations().size(), 1u);
 
   auto first = serializeProcessStatePlan(*built);
   auto second = serializeProcessStatePlan(*built);

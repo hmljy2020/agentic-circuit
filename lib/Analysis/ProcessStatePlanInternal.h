@@ -241,6 +241,9 @@ struct ProcessQueueTrySendPayload::Impl {
 struct ProcessQueueTryRecvPayload::Impl {
   std::string element, queue;
 };
+struct ProcessQueuePeekPayload::Impl {
+  std::string element, queue;
+};
 struct ProcessEventSchedulePayload::Impl {
   std::string delay, target, value;
 };
@@ -305,6 +308,7 @@ struct ProcessGeneratedCalleePayload::Impl {
   std::optional<ProcessTraceDecodePayload> traceDecode;
   std::optional<ProcessQueueTrySendPayload> queueTrySend;
   std::optional<ProcessQueueTryRecvPayload> queueTryRecv;
+  std::optional<ProcessQueuePeekPayload> queuePeek;
   std::optional<ProcessEventSchedulePayload> eventSchedule;
   std::optional<ProcessTraceOpenPayload> traceOpen;
   std::optional<ProcessTraceNextPayload> traceNext;

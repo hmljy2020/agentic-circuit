@@ -116,7 +116,8 @@ llvm::Error emitScalarStorageHelper(std::ostringstream &output,
                                     const TypePlan &implementation) {
   llvm::StringRef name(implementation.cppType);
   if (!name.consume_front("acir::generated::") || !isIdentifier(name))
-    return processError("generated scalar storage helper has an invalid C++ name");
+    return processError(
+        "generated scalar storage helper has an invalid C++ name");
   std::string guard = "ACIR_GENERATED_SCALAR_" + implementation.symbol;
   std::transform(guard.begin(), guard.end(), guard.begin(), [](char value) {
     return static_cast<char>(std::toupper(static_cast<unsigned char>(value)));
@@ -752,9 +753,16 @@ llvm::Error emitOperation(const ModelPlan &plan, const ProcessPlan &process,
               output << call.arguments[0] << ".tryRecv();\n";
               return llvm::Error::success();
             }
+            if (calleeSymbol.starts_with("acir_impl_queue_peek")) {
+              if (call.arguments.size() != 1)
+                return processError("queue peek helper requires one queue");
+              output << call.arguments[0] << ".tryPeek();\n";
+              return llvm::Error::success();
+            }
             if (calleeSymbol.starts_with("acir_impl_contract_assert")) {
               if (call.arguments.size() != 1 || !call.results.empty())
-                return processError("contract assert helper requires one condition");
+                return processError(
+                    "contract assert helper requires one condition");
               output << "acir::generated::runtime_assert(" << call.arguments[0]
                      << ");\n";
               return llvm::Error::success();

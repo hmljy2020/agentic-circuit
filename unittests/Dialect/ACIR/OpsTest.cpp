@@ -305,6 +305,7 @@ TEST(ACIROpsTest, TaskFiveRegistryContainsExactlyTheRequiredNewOperations) {
       "ac.trace.open",
       "ac.trace.position",
       "ac.try_recv",
+      "ac.peek",
       "ac.try_send",
       "ac.type_alias",
       "ac.type_scope",
@@ -472,7 +473,9 @@ TEST(ACIROpsTest, PublicBuildersConstructEveryTaskEightOperation) {
   auto send = TrySendOp::create(builder, loc, builder.getI1Type(), i32, "q");
   auto recv = TryRecvOp::create(builder, loc, builder.getI32Type(),
                                 builder.getI1Type(), "q");
-  EXPECT_TRUE(send && recv);
+  auto peek = PeekOp::create(builder, loc, builder.getI32Type(),
+                             builder.getI1Type(), "q");
+  EXPECT_TRUE(send && recv && peek);
   auto schedule = ScheduleOp::create(builder, loc, i32, i64, "worker");
   auto waitUntil = WaitUntilOp::create(builder, loc, i1);
   auto waitFor = WaitForOp::create(builder, loc, "resource");
@@ -587,6 +590,7 @@ TEST(ACIROpsTest, PublicBuildersConstructEveryTaskEightOperation) {
                         write(QueueStateResource::get(), "q", "queue"),
                         read(ProtocolStateResource::get(), "q", "protocol"),
                         write(ProtocolStateResource::get(), "q", "protocol")});
+  expectExactEffects(peek, {read(QueueStateResource::get(), "q", "queue")});
   expectExactEffects(
       schedule,
       {write(ModuleStateResource::get(), "worker", "module"),
@@ -630,6 +634,7 @@ TEST(ACIROpsTest, PublicBuildersConstructEveryTaskEightOperation) {
   EXPECT_TRUE(mlir::isa<ObservationOpInterface>(*instrumentation));
   EXPECT_FALSE(mlir::isMemoryEffectFree(process));
   EXPECT_FALSE(mlir::isMemoryEffectFree(send));
+  EXPECT_FALSE(mlir::isMemoryEffectFree(peek));
   EXPECT_FALSE(mlir::isMemoryEffectFree(next));
   EXPECT_FALSE(mlir::isMemoryEffectFree(position));
   EXPECT_FALSE(mlir::isMemoryEffectFree(eof));
@@ -662,21 +667,25 @@ TEST(ACIROpsTest, UnresolvedRuntimeReferencesDoNotInventEffects) {
 TEST(ACIROpsTest, TaskEightRegistryDeltaIsExactlyTwentyOperations) {
   mlir::MLIRContext context;
   context.loadDialect<ACIRDialect>();
-  const std::array<llvm::StringLiteral, 21> names = {
-      "ac.process",     "ac.try_send",       "ac.try_recv",
-      "ac.schedule",    "ac.wait_until",     "ac.wait_for",
-      "ac.await_event", "ac.await_queue",    "ac.yield_sim",
-      "ac.trace.open",  "ac.trace.next",     "ac.trace.decode",
-      "ac.trace.eof",   "ac.trace.position", "ac.require",
-      "ac.ensure",      "ac.assert",         "ac.probe",
-      "ac.stat",        "ac.stat.add",       "ac.instrumentation",
+  const std::array<llvm::StringLiteral, 22> names = {
+      "ac.process",        "ac.try_send",
+      "ac.try_recv",       "ac.peek",
+      "ac.schedule",       "ac.wait_until",
+      "ac.wait_for",       "ac.await_event",
+      "ac.await_queue",    "ac.yield_sim",
+      "ac.trace.open",     "ac.trace.next",
+      "ac.trace.decode",   "ac.trace.eof",
+      "ac.trace.position", "ac.require",
+      "ac.ensure",         "ac.assert",
+      "ac.probe",          "ac.stat",
+      "ac.stat.add",       "ac.instrumentation",
   };
   for (llvm::StringLiteral name : names)
     EXPECT_TRUE(mlir::OperationName(name, &context).isRegistered())
         << name.str();
   EXPECT_FALSE(mlir::OperationName("ac.try_issue", &context).isRegistered());
   EXPECT_FALSE(mlir::OperationName("ac.connect", &context).isRegistered());
-  EXPECT_EQ(context.getRegisteredOperationsByDialect("ac").size(), 56u);
+  EXPECT_EQ(context.getRegisteredOperationsByDialect("ac").size(), 57u);
 }
 
 TEST(ACIROpsTest, ProcessLinearLivenessDoesNotRescanBlockPerValue) {

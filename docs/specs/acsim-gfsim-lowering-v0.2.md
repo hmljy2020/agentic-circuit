@@ -353,8 +353,10 @@ generator, or component schema.
   generated `executeProcessStep` switch returns an explicit continue, suspend,
   terminate, or fail action for every closed PC case. Runtime continuation and
   wake matching are exact; generated step dispatch is statically bound.
-- Native queue send/receive helpers take `[queue_ref, element]` and
-  `[queue_ref]` respectively. Queue-readable/writable wake helpers take the
+- Native queue send/receive/peek helpers take `[queue_ref, element]`,
+  `[queue_ref]`, and `[queue_ref]` respectively. Peek lowers to a stateful
+  `acsim.invoke` and creates no proposal, binding, provider, or runtime object.
+  Queue-readable/writable wake helpers take the
   same typed queue reference and materialize its object ID in the wake handle.
 
 ### Dispatch and activation

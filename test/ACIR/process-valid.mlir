@@ -34,11 +34,16 @@ builtin.module attributes {ac.contract_epoch = "0.2"} {
       %ready = arith.cmpi eq, %c0, %c0 : i64
       %accepted = ac.try_send @ready %capture : i32
       %value, %received = ac.try_recv @ready : i32
+      %peeked, %valid = ac.peek @ready : i32
       scf.if %accepted {
       } else {
         ac.await_queue @ready until "writable"
       }
       scf.if %received {
+      } else {
+        ac.await_queue @ready until "readable"
+      }
+      scf.if %valid {
       } else {
         ac.await_queue @ready until "readable"
       }
@@ -49,6 +54,10 @@ builtin.module attributes {ac.contract_epoch = "0.2"} {
       scf.if %accepted {
         ac.assert %received, "receive follows accepted send"
       }
+      ac.yield_sim
+    }
+    ac.process @monitor kind "monitor" {
+      %value, %valid = ac.peek @ready : i32
       ac.yield_sim
     }
     ac.return
@@ -73,6 +82,7 @@ builtin.module attributes {ac.contract_epoch = "0.2"} {
 // CHECK: ac.process @control kind "control" captures(%{{.*}} : i32)
 // CHECK: ac.try_send @ready
 // CHECK: ac.try_recv @ready
+// CHECK: ac.peek @ready
 // CHECK: ac.await_queue @ready until "writable"
 // CHECK: ac.await_queue @ready until "readable"
 // CHECK: ac.schedule @worker
@@ -84,6 +94,7 @@ builtin.module attributes {ac.contract_epoch = "0.2"} {
 // CHECK: ac.module @BranchLocal
 // EFFECTS: ac.try_send
 // EFFECTS: ac.try_recv
+// EFFECTS: ac.peek
 // EFFECTS: ac.schedule
 // EFFECTS: ac.wait_until
 // EFFECTS: ac.wait_for

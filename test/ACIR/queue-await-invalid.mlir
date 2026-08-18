@@ -75,4 +75,4 @@ builtin.module attributes {ac.contract_epoch = "0.2"} {
     ac.return
   }
 }
-// BRANCH: must be in the false branch of the matching ac.try_recv for queue '@q'
+// BRANCH: must be in the false branch of the matching ac.try_recv or ac.peek for queue '@q'

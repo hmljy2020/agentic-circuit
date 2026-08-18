@@ -462,6 +462,13 @@ def ACIR_TryRecvOp : ACIR_RuntimeEffectOp<"try_recv"> {
   let assemblyFormat = "$queue attr-dict `:` type($value)";
 }
 
+def ACIR_PeekOp : ACIR_RuntimeEffectOp<"peek"> {
+  let arguments = (ins FlatSymbolRefAttr:$queue);
+  let results = (outs AnyType:$value, I1:$valid);
+  let hasVerifier = 1;
+  let assemblyFormat = "$queue attr-dict `:` type($value)";
+}
+
 def ACIR_ScheduleOp : ACIR_RuntimeEffectOp<"schedule"> {
   let arguments = (ins AnyType:$value, I64:$delay,
                        FlatSymbolRefAttr:$target);

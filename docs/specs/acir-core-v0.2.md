@@ -541,6 +541,13 @@ pending pop does not release push capacity in that epoch, and a pending push is
 not visible to a receive until after Xfer. A failed `ac.try_recv` returns the
 payload's canonical zero value together with `false`.
 
+`ac.peek @queue : T` returns the committed queue head and `true` without
+creating a proposal or commit participant. An empty queue returns `T{}` and
+`false`. Pending pushes are invisible and pending pops do not change the value
+observed by any peek in the same epoch. Peek has a stateful read effect so it
+must retain program order with queue operations, but it does not change queue
+occupancy, statistics, activation, or protocol state.
+
 ### `ac.event_queue`
 
 An event queue stores time-ordered completion events. Equal-time events use a
@@ -645,7 +652,8 @@ ACIR defines:
 - `ac.await_queue @queue until "readable|writable"`;
 - `ac.yield_sim`.
 
-Communication uses non-blocking `ac.try_send`, `ac.try_recv`, and `ac.schedule`.
+Communication uses non-blocking `ac.try_send`, `ac.try_recv`, `ac.peek`, and
+`ac.schedule`.
 `ac.try_issue` is a frontend or standard-library convenience and is not a core
 operation.
 
@@ -654,9 +662,10 @@ converts suspension points into explicit continuation state.
 
 `ac.await_queue` is process-only and references a queue in the same module.
 `writable` is legal only in the failed branch of the matching `ac.try_send`;
-`readable` is legal only in the `received = false` branch of the matching
-`ac.try_recv`. Queue commit may activate those subscribers only for the next
-integer tick.
+`readable` is legal only in the false branch of the matching `received` result
+from `ac.try_recv` or `valid` result from `ac.peek`. On wake, the continuation
+retries that receive or peek. Queue commit may activate those subscribers only
+for the next integer tick.
 
 ## Units and time
 
@@ -780,6 +789,7 @@ After `ac-freeze-topology`:
 - `ac.packet.deserialize`
 - `ac.try_send`
 - `ac.try_recv`
+- `ac.peek`
 - `ac.schedule`
 - `ac.wait_until`
 - `ac.wait_for`

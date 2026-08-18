@@ -7,6 +7,7 @@
 // RUN: test $(find %t.first/obj -type f -name '*.o' | wc -l) -ge 10
 // RUN: grep -R "gfsim::Queue<std::int32_t>" %t.first/include
 // RUN: grep -R "live00000000" %t.first/include %t.first/src
+// RUN: test $(grep -R "\.tryPeek()" %t.first/src/generated/processes | wc -l) -ge 3
 // RUN: %not grep -R -E "provider|binding_lock|extern_wrapper" %t.first/include %t.first/src
 
 // The native router tree emits and compiles a model, eight process state

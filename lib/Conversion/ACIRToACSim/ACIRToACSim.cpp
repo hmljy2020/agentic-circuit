@@ -647,6 +647,7 @@ private:
   TypeSymbolTable typeSymbols;
   std::vector<std::string> generatedCalleeIdentities;
   std::vector<std::string> valueTypeIdentities;
+  llvm::DenseMap<mlir::Type, std::string> nativePacketValueIdentities;
   llvm::StringMap<std::string> wakeTypeIdentities;
 
   struct RuntimeRow {
@@ -860,8 +861,7 @@ std::string ACIRToACSimPass::processFingerprint(const ModulePlan &module,
   descriptor["module"] = module.name;
   descriptor["module_specialization"] = module.specialization;
   descriptor["process"] = process.name;
-  descriptor["process_plan"] =
-      bindings::sha256Fingerprint(processPlanBytes);
+  descriptor["process_plan"] = bindings::sha256Fingerprint(processPlanBytes);
   return fingerprintJson(llvm::json::Value(std::move(descriptor)));
 }
 
@@ -1214,6 +1214,26 @@ mlir::LogicalResult ACIRToACSimPass::planModule(ac::ModuleOp module,
                                     "gfsim::Queue<" + *elementCpp + ">",
                                     typeFingerprint)))
         return mlir::failure();
+      if (isa<ac::PacketType>(queue.getPayload()) &&
+          !nativePacketValueIdentities.contains(queue.getPayload())) {
+        llvm::json::Object valueDescriptor;
+        valueDescriptor["contract_epoch"] = kEpoch;
+        valueDescriptor["kind"] = "packet";
+        valueDescriptor["payload"] = payloadSpelling;
+        std::string valueFingerprint =
+            fingerprintJson(llvm::json::Value(std::move(valueDescriptor)));
+        if (valueFingerprint.empty())
+          return lowerError(queue, "ACLOWER-FINGERPRINT",
+                            "failed to fingerprint native packet value type");
+        std::string valueIdentity =
+            "acir_packet_" +
+            llvm::StringRef(valueFingerprint).drop_front(7).str();
+        if (failed(typeSymbols.intern(queue, valueIdentity, "packet",
+                                      *elementCpp, valueFingerprint)))
+          return mlir::failure();
+        nativePacketValueIdentities.try_emplace(queue.getPayload(),
+                                                valueIdentity);
+      }
 
       PlacementPlan placement;
       placement.kind = PlacementPlan::Kind::RuntimeObject;
@@ -1318,6 +1338,8 @@ mlir::LogicalResult ACIRToACSimPass::planModule(ac::ModuleOp module,
         referencedQueues.insert(send.getQueue());
       else if (auto recv = dyn_cast<ac::TryRecvOp>(operation))
         referencedQueues.insert(recv.getQueue());
+      else if (auto peek = dyn_cast<ac::PeekOp>(operation))
+        referencedQueues.insert(peek.getQueue());
       else if (auto await = dyn_cast<ac::AwaitQueueOp>(operation))
         referencedQueues.insert(await.getQueue());
     });
@@ -1921,6 +1943,8 @@ void ACIRToACSimPass::emitProcessBody(
       reference = send.getQueueAttr();
     else if (auto recv = dyn_cast<ac::TryRecvOp>(operation))
       reference = recv.getQueueAttr();
+    else if (auto peek = dyn_cast<ac::PeekOp>(operation))
+      reference = peek.getQueueAttr();
     else if (auto await = dyn_cast<ac::AwaitQueueOp>(operation))
       reference = await.getQueueAttr();
     if (!reference || !seenQueues.insert(reference.getValue()).second)
@@ -1997,7 +2021,8 @@ void ACIRToACSimPass::emitProcessBody(
       entry->addArgument(capture.getType(), placement.process->getLoc());
   }
 
-  llvm::SmallVector<std::set<std::string>> localDefinitions(plan->blocks().size());
+  llvm::SmallVector<std::set<std::string>> localDefinitions(
+      plan->blocks().size());
   llvm::SmallVector<std::set<std::string>> neededValues(plan->blocks().size());
   llvm::StringMap<ProcessPlannedValue> valueRepresentatives;
   auto recordValue = [&](const ProcessPlannedValue &value) {
@@ -2052,7 +2077,8 @@ void ACIRToACSimPass::emitProcessBody(
     }
   }
 
-  llvm::SmallVector<llvm::StringMap<Value>> blockArguments(plan->blocks().size());
+  llvm::SmallVector<llvm::StringMap<Value>> blockArguments(
+      plan->blocks().size());
   for (const ProcessPcPlan &pc : plan->pcs()) {
     ProcessBlockId entryId = pc.blocks().front();
     for (ProcessBlockId id : pc.blocks()) {
@@ -2069,7 +2095,8 @@ void ACIRToACSimPass::emitProcessBody(
   }
 
   OpBuilder::InsertionGuard guard(builder);
-  llvm::SmallVector<llvm::StringMap<Value>> valuesByBlock(plan->blocks().size());
+  llvm::SmallVector<llvm::StringMap<Value>> valuesByBlock(
+      plan->blocks().size());
   llvm::SmallVector<llvm::StringMap<Value>> queueArgumentsByPc(
       plan->pcs().size());
   for (const ProcessPcPlan &pc : plan->pcs()) {
@@ -2207,9 +2234,28 @@ void ACIRToACSimPass::emitProcessBody(
           operands.insert(operands.begin(),
                           queueArgumentsByPc[blockPlan.pc().value()].lookup(
                               recv.getQueue()));
+        else if (auto peek =
+                     dyn_cast_or_null<ac::PeekOp>(action.sourceOperation()))
+          operands.insert(operands.begin(),
+                          queueArgumentsByPc[blockPlan.pc().value()].lookup(
+                              peek.getQueue()));
+        llvm::SmallVector<Type> invokeResultTypes;
+        bool isNativeQueueRead = isa_and_nonnull<ac::TryRecvOp, ac::PeekOp>(
+            action.sourceOperation());
+        for (Type resultType : action.resultTypes()) {
+          auto packetIdentity = nativePacketValueIdentities.find(resultType);
+          if (!isNativeQueueRead ||
+              packetIdentity == nativePacketValueIdentities.end()) {
+            invokeResultTypes.push_back(resultType);
+            continue;
+          }
+          invokeResultTypes.push_back(acsim::ValueType::get(
+              context,
+              FlatSymbolRefAttr::get(
+                  context, typeSymbols.symbolFor(packetIdentity->second))));
+        }
         auto invoke = acsim::InvokeOp::create(
-            builder, placement.process->getLoc(), action.resultTypes(),
-            operands,
+            builder, placement.process->getLoc(), invokeResultTypes, operands,
             FlatSymbolRefAttr::get(context, typeSymbols.symbolFor(identity)));
         results.append(invoke.getResults().begin(), invoke.getResults().end());
       } else {
@@ -2249,8 +2295,10 @@ void ACIRToACSimPass::emitProcessBody(
         }
         return operands;
       };
-      llvm::SmallVector<Value> trueOperands = successorOperands(edge.trueBlock());
-      llvm::SmallVector<Value> falseOperands = successorOperands(edge.falseBlock());
+      llvm::SmallVector<Value> trueOperands =
+          successorOperands(edge.trueBlock());
+      llvm::SmallVector<Value> falseOperands =
+          successorOperands(edge.falseBlock());
       cf::CondBranchOp::create(
           builder, placement.process->getLoc(), condition->second,
           blocks[edge.trueBlock().value()], trueOperands,

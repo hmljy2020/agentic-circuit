@@ -2,6 +2,7 @@
 // RUN: %acir_opt_public --ac-lower-to-acsim --ac-binding-profile=fast --ac-binding-target=x86_64-linux-gnu %t.frozen | %FileCheck %s
 
 // The seven homogeneous native queues share one closed runtime type.
+// CHECK: acsim.type @acir_impl_queue_peek_{{[0-9a-f]+}}
 // CHECK: acsim.type @acir_impl_queue_try_recv_{{[0-9a-f]+}}
 // CHECK: acsim.type @acir_impl_queue_try_send_{{[0-9a-f]+}}
 // CHECK: acsim.type @acir_impl_wake_queue_readable_{{[0-9a-f]+}}
@@ -13,9 +14,12 @@
 // Every process captures only the queues it references. Each router retains
 // one flit across either blocked output and has two writable retry PCs.
 // CHECK: acsim.process @left_router captures({{.*}}) names ["queue_leaf0", "queue_leaf1", "queue_trunk_left"] entry @entry pcs [@entry, @pc00000001, @pc00000002] live [{name = "live00000000", type = !acsim.value<@acir_value_{{[0-9a-f]+}}>}
+// CHECK: acsim.invoke @acir_impl_queue_peek_
 // CHECK: acsim.process @producer captures({{.*}}) names ["queue_ingress"]
 // CHECK: acsim.process @right_router captures({{.*}}) names ["queue_leaf2", "queue_leaf3", "queue_trunk_right"] entry @entry pcs [@entry, @pc00000001, @pc00000002] live [{name = "live00000000", type = !acsim.value<@acir_value_{{[0-9a-f]+}}>}
+// CHECK: acsim.invoke @acir_impl_queue_peek_
 // CHECK: acsim.process @root_router captures({{.*}}) names ["queue_ingress", "queue_trunk_left", "queue_trunk_right"] entry @entry pcs [@entry, @pc00000001, @pc00000002] live [{name = "live00000000", type = !acsim.value<@acir_value_{{[0-9a-f]+}}>}
+// CHECK: acsim.invoke @acir_impl_queue_peek_
 // CHECK: acsim.process @sink0 captures({{.*}}) names ["queue_leaf0"]
 // CHECK: acsim.process @sink1 captures({{.*}}) names ["queue_leaf1"]
 // CHECK: acsim.process @sink2 captures({{.*}}) names ["queue_leaf2"]

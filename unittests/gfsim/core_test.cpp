@@ -914,6 +914,42 @@ TEST(GfsimQueueTest, PeekFromEmptyReturnsNull) {
   EXPECT_EQ(q.peek(), nullptr);
 }
 
+TEST(GfsimQueueTest, TryPeekObservesOnlyCommittedSnapshot) {
+  SimQueue<int> q("q", 1, nullptr, 10);
+  EXPECT_EQ(q.tryPeek(), (std::pair<int, bool>{0, false}));
+
+  ASSERT_TRUE(q.proposePush(7));
+  EXPECT_EQ(q.tryPeek(), (std::pair<int, bool>{0, false}));
+  q.doArbitrate({0, 0});
+  q.doXfer({0, 0});
+
+  EXPECT_EQ(q.tryPeek(), (std::pair<int, bool>{7, true}));
+  EXPECT_EQ(q.tryPeek(), (std::pair<int, bool>{7, true}));
+  ASSERT_EQ(q.tryRecv(), (std::pair<int, bool>{7, true}));
+  EXPECT_EQ(q.tryPeek(), (std::pair<int, bool>{7, true}));
+  EXPECT_EQ(q.committedSize(), 1u);
+  EXPECT_EQ(q.totalPushes(), 1u);
+  EXPECT_EQ(q.totalPops(), 0u);
+
+  q.doArbitrate({1, 0});
+  q.doXfer({1, 0});
+  EXPECT_EQ(q.tryPeek(), (std::pair<int, bool>{0, false}));
+  EXPECT_EQ(q.totalPops(), 1u);
+}
+
+TEST(GfsimQueueTest, TryPeekEmptyPacketIsCanonicalZero) {
+  using Bytes = std::array<std::uint8_t, 4>;
+  SimQueue<Bytes> q("q", 1, nullptr, 2);
+  auto [empty, valid] = q.tryPeek();
+  EXPECT_FALSE(valid);
+  EXPECT_EQ(empty, Bytes{});
+  ASSERT_TRUE(q.proposePush(Bytes{1, 2, 3, 4}));
+  q.doXfer({0, 0});
+  auto [value, present] = q.tryPeek();
+  EXPECT_TRUE(present);
+  EXPECT_EQ(value, (Bytes{1, 2, 3, 4}));
+}
+
 TEST(GfsimQueueTest, PendingCommitTracksAcceptedProposals) {
   SimQueue<int> queue("queue", 1, nullptr, 2);
   EXPECT_FALSE(queue.hasPendingCommit());

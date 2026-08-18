@@ -1,4 +1,9 @@
+// RUN: rm -rf %t.out %t.frozen %t.acsim
 // RUN: %acir_cxxgen %s --stop-after=model-plan | %FileCheck %s --check-prefix=PLAN
+// RUN: %acir_opt --verify-each=false --pass-pipeline='builtin.module(ac-freeze-topology)' %source_root/test/Conversion/native-packet-queue.mlir -o %t.frozen
+// RUN: %acir_opt --ac-lower-to-acsim --ac-binding-profile=fast --ac-binding-target=x86_64-linux-gnu %t.frozen -o %t.acsim
+// RUN: %acir_cxxgen %t.acsim --stop-after=compile --output-root=%t.out --project-name=packet-peek --project-identity=project.packet-peek --system-name=soc --system-identity=system.soc --profile=fast --compiler=%cxx --standard-library=libstdc++ --abi-mode=default --object-format=elf --contract-flag=-std=c++20 --include-root=%source_root/include
+// RUN: grep -R "\.tryPeek()" %t.out/src/generated/processes
 // PLAN: stage=model-plan status=passed
 
 builtin.module attributes {ac.contract_epoch = "0.2"} {

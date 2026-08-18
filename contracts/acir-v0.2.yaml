@@ -47,6 +47,7 @@ operations:
   - ac.packet.deserialize
   - ac.try_send
   - ac.try_recv
+  - ac.peek
   - ac.schedule
   - ac.wait_until
   - ac.wait_for

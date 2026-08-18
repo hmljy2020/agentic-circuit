@@ -1074,7 +1074,7 @@ Payload JSON keys are exact:
 - record with: `{field,record,value}`;
 - packet serialize/deserialize: `{bytes,packet,packet_type}`;
 - trace decode: `{entry,result,source}`;
-- queue try-send/try-recv: `{element,queue}`;
+- queue try-send/try-recv/peek: `{element,queue}`;
 - event schedule: `{delay,target,value}`;
 - trace open/eof/position: `{source}`;
 - trace next: `{entry,source}`;
@@ -1115,7 +1115,7 @@ reinterprets a field.
 | `trace_decode.entry` | Entry operand type key. |
 | `trace_decode.result` | Decoded result type key. |
 | trace `source` | Exact source `StringAttr`. Trace-decode source comes from unique planned-entry provenance; missing, conflicting, or ambiguous provenance fails. |
-| queue `element` | Send operand or receive result type key. |
+| queue `element` | Send operand, receive result, or peek result type key. |
 | queue `queue` | Canonical resolved queue `FlatSymbolRefAttr`, including `@`. |
 | `event_schedule.delay` | Delay operand type key. |
 | `event_schedule.target` | Canonical resolved event target `FlatSymbolRefAttr`, including `@`. |
@@ -1153,6 +1153,7 @@ pointer order.
 | `trace_decode` | `pure` | `inline` | One `entry` input; one `result`. |
 | `queue_try_send` | `stateful` | `invoke` | Inputs `queue-ref:@queue,element`; exact original accepted-result key. |
 | `queue_try_recv` | `stateful` | `invoke` | One `queue-ref:@queue` input; exact original element and received-flag result keys. |
+| `queue_peek` | `stateful` | `invoke` | One `queue-ref:@queue` input; exact original element and valid-flag result keys. |
 | `event_schedule` | `stateful` | `invoke` | Inputs `value,delay` in original order; no result. |
 | `trace_open` | `stateful` | `invoke` | No SSA input; exact original cursor result key. |
 | `trace_next` | `stateful` | `invoke` | Original cursor input; cursor, `entry`, advanced-flag results in original order. |
@@ -1289,7 +1290,7 @@ Suspension mapping is exact:
 | `ac.yield_sim` | `next_delta` | `@acir_wake_next_delta` | entry PC |
 
 Every wake references one generated stateful wake callee. A suspension is not
-also an ordinary action. `try_send`, `try_recv`, and `schedule` are
+also an ordinary action. `try_send`, `try_recv`, `peek`, and `schedule` are
 non-blocking; they create no PC or wake.
 
 SCF forwarding equivalence unions exactly:

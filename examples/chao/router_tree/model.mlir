@@ -84,11 +84,15 @@ builtin.module attributes {ac.contract_epoch = "0.2"} {
     }
 
     ac.process @root_router kind "control" {
-      %flit, %received = ac.try_recv @ingress : i32
-      scf.if %received {
+      %flit, %valid = ac.peek @ingress : i32
+      scf.if %valid {
       } else {
         ac.await_queue @ingress until "readable"
       }
+      %received_flit, %received = ac.try_recv @ingress : i32
+      ac.assert %received, "peeked ingress flit must remain receivable"
+      %same_flit = arith.cmpi eq, %received_flit, %flit : i32
+      ac.assert %same_flit, "received ingress flit must match peek"
       %one = arith.constant 1 : i32
       %route = arith.shrui %flit, %one : i32
       %branch = arith.andi %route, %one : i32
@@ -111,11 +115,15 @@ builtin.module attributes {ac.contract_epoch = "0.2"} {
     }
 
     ac.process @left_router kind "control" {
-      %flit, %received = ac.try_recv @trunk_left : i32
-      scf.if %received {
+      %flit, %valid = ac.peek @trunk_left : i32
+      scf.if %valid {
       } else {
         ac.await_queue @trunk_left until "readable"
       }
+      %received_flit, %received = ac.try_recv @trunk_left : i32
+      ac.assert %received, "peeked left flit must remain receivable"
+      %same_flit = arith.cmpi eq, %received_flit, %flit : i32
+      ac.assert %same_flit, "received left flit must match peek"
       %one = arith.constant 1 : i32
       %branch = arith.andi %flit, %one : i32
       %zero = arith.constant 0 : i32
@@ -137,11 +145,15 @@ builtin.module attributes {ac.contract_epoch = "0.2"} {
     }
 
     ac.process @right_router kind "control" {
-      %flit, %received = ac.try_recv @trunk_right : i32
-      scf.if %received {
+      %flit, %valid = ac.peek @trunk_right : i32
+      scf.if %valid {
       } else {
         ac.await_queue @trunk_right until "readable"
       }
+      %received_flit, %received = ac.try_recv @trunk_right : i32
+      ac.assert %received, "peeked right flit must remain receivable"
+      %same_flit = arith.cmpi eq, %received_flit, %flit : i32
+      ac.assert %same_flit, "received right flit must match peek"
       %one = arith.constant 1 : i32
       %branch = arith.andi %flit, %one : i32
       %zero = arith.constant 0 : i32

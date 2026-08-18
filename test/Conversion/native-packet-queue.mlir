@@ -29,11 +29,21 @@ builtin.module attributes {ac.contract_epoch = "0.2"} {
     ac.queue @packets payload !ac.packet<@types::@Request> entries 2 bytes 16
         ordering "fifo" protocol @fifo ownership "exclusive"
         id "packets" path "packets"
-    ac.process @worker kind "workload" { ac.yield_sim }
+    ac.process @worker kind "workload" {
+      %value, %valid = ac.peek @packets : !ac.packet<@types::@Request>
+      scf.if %valid {
+      } else {
+        ac.await_queue @packets until "readable"
+      }
+      ac.yield_sim
+    }
     ac.return
   }
 }
 
+// CHECK: acsim.type @acir_packet_{{[0-9a-f]+}} cpp "std::array<std::byte, 8>" kind "packet"
 // CHECK: acsim.type @acir_queue_{{[0-9a-f]+}} cpp "gfsim::Queue<std::array<std::byte, 8>>" kind "runtime_object"
 // CHECK-NOT: acsim.binding
 // CHECK: acsim.instance @packets target @acir_queue_{{[0-9a-f]+}} args [2, 16]
+// CHECK: acsim.process @worker captures(%{{.+}} : !acsim.owner<@acir_queue_{{[0-9a-f]+}}>) names ["queue_packets"]
+// CHECK: acsim.invoke @acir_impl_queue_peek_{{[0-9a-f]+}}(%{{.+}}) : (!acsim.owner<@acir_queue_{{[0-9a-f]+}}>) -> (!acsim.value<@acir_packet_{{[0-9a-f]+}}>, i1)

@@ -84,14 +84,13 @@ PlanSetBuilder::makePlannedAction(const ExpandedAction &expanded, uint32_t id) {
       action->kind == ProcessActionKind::ForIncrement)
     action->emission = ProcessEmissionClass::CopyScalar;
   action->occurrence = expanded.occurrence;
-  action->sourceOperation =
-      action->kind == ProcessActionKind::Constant ? nullptr
-                                                  : expanded.operation;
+  action->sourceOperation = action->kind == ProcessActionKind::Constant
+                                ? nullptr
+                                : expanded.operation;
   action->iterationVector = expanded.iterationVector;
   action->operands = expanded.operands;
   action->results = expanded.results;
-  action->cost =
-      action->emission == ProcessEmissionClass::ForwardOnly ? 0 : 1;
+  action->cost = action->emission == ProcessEmissionClass::ForwardOnly ? 0 : 1;
   for (const ProcessPlannedValue &result : action->results)
     action->resultTypes.push_back(result.type());
   action->scalarOp = expanded.scalarOperation;
@@ -103,9 +102,8 @@ PlanSetBuilder::makePlannedAction(const ExpandedAction &expanded, uint32_t id) {
     scalar->properties = "{}";
     action->scalarOp = ProcessScalarOperationPlan(std::move(scalar));
   }
-  if (action->kind == ProcessActionKind::Original &&
-      action->sourceOperation) {
-    if (isa<ac::TrySendOp, ac::TryRecvOp, ac::AssertOp>(
+  if (action->kind == ProcessActionKind::Original && action->sourceOperation) {
+    if (isa<ac::TrySendOp, ac::TryRecvOp, ac::PeekOp, ac::AssertOp>(
             action->sourceOperation)) {
       action->emission = ProcessEmissionClass::Invoke;
       action->cost = 1;
@@ -118,8 +116,7 @@ PlanSetBuilder::makePlannedAction(const ExpandedAction &expanded, uint32_t id) {
       action->cost = 1;
       if (!action->scalarOp) {
         auto scalar = std::make_shared<ProcessScalarOperationPlan::Impl>();
-        scalar->name =
-            action->sourceOperation->getName().getStringRef().str();
+        scalar->name = action->sourceOperation->getName().getStringRef().str();
         scalar->properties = "{}";
         action->scalarOp = ProcessScalarOperationPlan(std::move(scalar));
       }
@@ -146,8 +143,8 @@ static bool isNestedInProcess(Operation *operation, ac::ProcessOp process) {
 }
 
 FailureOr<std::unique_ptr<PlanSetBuilder::ControlPlan>>
-PlanSetBuilder::planStructuredIfContinuation(
-    const ExpandedProcess &expanded, const ProcessStateLimits &limits) {
+PlanSetBuilder::planStructuredIfContinuation(const ExpandedProcess &expanded,
+                                             const ProcessStateLimits &limits) {
   auto plan = std::make_unique<PlanSetBuilder::ControlPlan>();
   ac::ProcessOp process = expanded.process;
 
@@ -191,11 +188,11 @@ PlanSetBuilder::planStructuredIfContinuation(
         node->operation = &operation;
         node->condition = condition->second;
         node->next = head;
-        node->thenNode =
-            buildSequence(ifOp.getThenRegion().front(), head);
-        node->elseNode = ifOp.getElseRegion().empty()
-                             ? head
-                             : buildSequence(ifOp.getElseRegion().front(), head);
+        node->thenNode = buildSequence(ifOp.getThenRegion().front(), head);
+        node->elseNode =
+            ifOp.getElseRegion().empty()
+                ? head
+                : buildSequence(ifOp.getElseRegion().front(), head);
         head = node;
         continue;
       }
@@ -221,8 +218,7 @@ PlanSetBuilder::planStructuredIfContinuation(
     return head;
   };
 
-  StructuredNode *entryRoot =
-      buildSequence(process.getBody().front(), nullptr);
+  StructuredNode *entryRoot = buildSequence(process.getBody().front(), nullptr);
   if (!supported || !entryRoot)
     return failure();
 
@@ -230,9 +226,8 @@ PlanSetBuilder::planStructuredIfContinuation(
   for (const auto &ownedNode : nodes) {
     StructuredNode *node = ownedNode.get();
     auto await = dyn_cast_or_null<ac::AwaitQueueOp>(node->operation);
-    auto ifOp = node->operation
-                    ? node->operation->getParentOfType<scf::IfOp>()
-                    : scf::IfOp();
+    auto ifOp = node->operation ? node->operation->getParentOfType<scf::IfOp>()
+                                : scf::IfOp();
     if (!await || !ifOp)
       continue;
     auto definition = definitionsByValue.find(ifOp.getCondition());
@@ -244,6 +239,8 @@ PlanSetBuilder::planStructuredIfContinuation(
       queue = send.getQueueAttr();
     else if (auto recv = dyn_cast<ac::TryRecvOp>(operation))
       queue = recv.getQueueAttr();
+    else if (auto peek = dyn_cast<ac::PeekOp>(operation))
+      queue = peek.getQueueAttr();
     if (queue && queue == await.getQueueAttr())
       retryRoots.try_emplace(node, definition->second);
   }
@@ -275,8 +272,8 @@ PlanSetBuilder::planStructuredIfContinuation(
       auto block = std::make_shared<ProcessBlockPlan::Impl>();
       block->id = blockId;
       block->pc = pcId;
-      block->originBlock = start ? start->operation->getBlock()
-                                 : &process.getBody().front();
+      block->originBlock =
+          start ? start->operation->getBlock() : &process.getBody().front();
       block->originRegion = block->originBlock->getParent();
       block->path =
           blockPath(expanded.definitionKey, pc->name, blockId.value());
@@ -348,12 +345,12 @@ PlanSetBuilder::planStructuredIfContinuation(
       wake->occurrence = cursor->action->occurrence;
       wake->iterationVector = cursor->action->iterationVector;
       for (const ProcessPlannedValue &operand : cursor->action->operands) {
-        auto source =
-            std::make_shared<ProcessSubscriptionSourcePlan::Impl>();
+        auto source = std::make_shared<ProcessSubscriptionSourcePlan::Impl>();
         if (operand.kind() == ProcessPlannedValueKind::Original) {
           source->kind = ProcessSubscriptionSourceKind::Value;
           source->value = operand.original().value();
-          source->owner = operand.original().occurrence().original().operation();
+          source->owner =
+              operand.original().occurrence().original().operation();
           source->path = operand.original().path().str();
         } else if (operand.kind() == ProcessPlannedValueKind::Capture) {
           source->kind = ProcessSubscriptionSourceKind::Capture;
@@ -497,7 +494,7 @@ PlanSetBuilder::planProcessContinuation(const ExpandedProcess &expanded,
         act->scalarOp = ProcessScalarOperationPlan(std::move(scalar));
       }
       if (act->kind == ProcessActionKind::Original && act->sourceOperation) {
-        if (isa<ac::TrySendOp, ac::TryRecvOp, ac::AssertOp>(
+        if (isa<ac::TrySendOp, ac::TryRecvOp, ac::PeekOp, ac::AssertOp>(
                 act->sourceOperation)) {
           act->emission = ProcessEmissionClass::Invoke;
           act->cost = 1;
