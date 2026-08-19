@@ -1,0 +1,2 @@
+# Per-scenario build trees (run_all.sh generates scenarios/build-<name>/).
+build-*/
