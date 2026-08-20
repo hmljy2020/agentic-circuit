@@ -1596,8 +1596,15 @@ mlir::LogicalResult ACIRToACSimPass::planModule(ac::ModuleOp module,
         link.targetSymbol = std::move(linkIdentity);
         link.targetIsRuntimeObject = true;
         link.staticArgs = builder.getArrayAttr({});
-        link.specialization = bindings::sha256Fingerprint(
-            link.targetSymbol + ":" + source.name + ":" + target.name);
+        // Specialization identity describes construction, not placement.
+        // QueueLink has no static arguments and its payload is already part of
+        // targetSymbol, so every link with this target shares one fingerprint.
+        llvm::json::Object linkSpecialization;
+        linkSpecialization["contract_epoch"] = kEpoch;
+        linkSpecialization["kind"] = "flow_link";
+        linkSpecialization["type"] = link.targetSymbol;
+        link.specialization = fingerprintJson(
+            llvm::json::Value(std::move(linkSpecialization)));
         link.work = "gfsim::QueueLinkRuntime::work";
         link.xfer = "gfsim::QueueLinkRuntime::xfer";
         link.reset = "gfsim::QueueLinkRuntime::reset";
@@ -2928,6 +2935,21 @@ void ACIRToACSimPass::emitModuleBody(OpBuilder &builder,
           emitPort(owners[placementIndex], endpoint));
   }
 
+  // Native Flow module boundaries are also exact endpoint projections.  Emit
+  // all of them in rank 2, before any rank-3 binds.  Delaying these projections
+  // until the rank-6 export loop made modules with native Flow boundaries
+  // non-canonical whenever they also contained a construction-time bind.
+  for (const ModulePortPlan &port : planned.ports) {
+    if (!port.nativeFlow)
+      continue;
+    Value queue = queueOwners.lookup(port.queue);
+    assert(queue && "validated native Flow queue owner must be emitted");
+    bindings::PortBinding local = port.metadata;
+    local.accessor = port.localAccessor;
+    emittedValues[port.source] =
+        emitPort(queue, PortEndpointPlan{port.source, local, true});
+  }
+
   // Pure Flow relay modules forward identity in SSA and therefore project no
   // endpoint and create no runtime link.
   bool aliasProgress = true;
@@ -2968,17 +2990,7 @@ void ACIRToACSimPass::emitModuleBody(OpBuilder &builder,
   // Rank 6: ordered endpoint and scalar exports.
   llvm::SmallVector<Value> returned;
   for (const ModulePortPlan &port : planned.ports) {
-    Value value;
-    if (port.nativeFlow) {
-      Value queue = queueOwners.lookup(port.queue);
-      assert(queue && "validated native Flow queue owner must be emitted");
-      bindings::PortBinding local = port.metadata;
-      local.accessor = port.localAccessor;
-      value = emitPort(queue, PortEndpointPlan{port.source, local, true});
-      emittedValues[port.source] = value;
-    } else {
-      value = emittedValues.lookup(port.source);
-    }
+    Value value = emittedValues.lookup(port.source);
     assert(value && "validated module port producer must be emitted");
     auto exportOp = acsim::ExportOp::create(
         builder, planned.source->getLoc(), value.getType(), value,
