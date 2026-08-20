@@ -13,6 +13,8 @@ OUTPUT = ROOT / "schemas" / "stdlib"
 
 AVAILABLE = {
     "Crossbar": ("interconnect", "duplex", None),
+    "MeshNoC": ("interconnect", "duplex", None),
+    "RingNoC": ("interconnect", "duplex", None),
     "TraceSource": ("workload", "source", "gfsim/trace.h"),
     "Queue": ("transport", "duplex", "gfsim/queue.h"),
     "Scheduler": ("control", "duplex", "gfsim/components.h"),
@@ -358,7 +360,7 @@ def rendered_files():
         path = OUTPUT / f"{name}.json"
         record = (
             json.loads(path.read_text())
-            if name == "Crossbar" and path.is_file()
+            if name in {"Crossbar", "MeshNoC", "RingNoC"} and path.is_file()
             else component_record(name, family, shape, header)
         )
         records[path] = json.dumps(record, indent=2, ensure_ascii=False) + "\n"

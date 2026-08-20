@@ -34,6 +34,8 @@ EXPECTED_LLVM = {
 
 AVAILABLE_STDLIB_COMPONENTS = {
     "ac.std.Crossbar",
+    "ac.std.MeshNoC",
+    "ac.std.RingNoC",
     "ac.std.TraceSource",
     "ac.std.Queue",
     "ac.std.Scheduler",

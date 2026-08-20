@@ -112,6 +112,12 @@
       "schema_fingerprint": "sha256:475b30d3d7a241128b0f6b93ac3c091967f36716711d5e265a104ae7a33cb36f"
     },
     {
+      "canonical_name": "ac.std.MeshNoC",
+      "availability": "available",
+      "schema_path": "schemas/stdlib/MeshNoC.json",
+      "schema_fingerprint": "sha256:b8650b9d4dbdffbeefc2be493730a15bd3d67b4f2bcc66ecf6fb5781cd7bc224"
+    },
+    {
       "canonical_name": "ac.std.Packetizer",
       "availability": "declared_unavailable",
       "schema_path": "schemas/stdlib/Packetizer.json",
@@ -140,6 +146,12 @@
       "availability": "declared_unavailable",
       "schema_path": "schemas/stdlib/RegisterFile.json",
       "schema_fingerprint": "sha256:3f33ea2a7a8c410fb6b2056ea591d390b1e62dce5086c443c2d35d6fa4f4a1ed"
+    },
+    {
+      "canonical_name": "ac.std.RingNoC",
+      "availability": "available",
+      "schema_path": "schemas/stdlib/RingNoC.json",
+      "schema_fingerprint": "sha256:3ca3c9717199374920657397607db4f7f55688c33a96f8de5b146fd97386afa1"
     },
     {
       "canonical_name": "ac.std.Router",

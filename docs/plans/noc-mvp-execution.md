@@ -16,8 +16,8 @@ commit. Ring, Mesh, and final-regression milestones are pushed to `chao/main`.
 | ID | Day | Status | Work item | Acceptance evidence | Commit |
 |---:|:---:|:---:|---|---|---|
 | 0 | 1 | DONE | Execution ledger and baseline | `git status --short --branch`; clean `ea24898`, ledger present | `docs: add NoC MVP execution ledger` (this commit) |
-| 1 | 1 | IN_PROGRESS | Public RingNoC/MeshNoC schemas, catalog, fingerprints | Pending | Pending |
-| 2 | 1 | TODO | Canonical generator dispatch | Pending | Pending |
+| 1 | 1 | DONE | Public RingNoC/MeshNoC schemas, catalog, fingerprints | catalog `--check`, contracts and definitions: 30 tests OK; repeat-load fingerprints equal | `schema: add RingNoC and MeshNoC generators` (this commit) |
+| 2 | 1 | IN_PROGRESS | Canonical generator dispatch | Pending | Pending |
 | 3 | 1 | TODO | NoC assignment/input validation | Pending | Pending |
 | 4 | 1 | TODO | Specialization and ACPy grouping | Pending | Pending |
 | 5 | 1 | TODO | Shared deterministic NoC lowering utilities | Pending | Pending |

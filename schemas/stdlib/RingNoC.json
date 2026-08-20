@@ -1,0 +1,147 @@
+{
+  "schema_kind": "agentic-circuit-component",
+  "schema_version": "0.2",
+  "contract_epoch": "0.2",
+  "canonical_name": "ac.std.RingNoC",
+  "family": "interconnect",
+  "provider_namespace": "ac.std",
+  "stability": "provisional",
+  "cpp_binding": null,
+  "compiler_native_generator": {
+    "kind": "context_shaped",
+    "input_shape": [
+      "$input_arity",
+      "virtual_channels"
+    ],
+    "result_shape": [
+      "$assignment_arity",
+      "virtual_channels"
+    ],
+    "payload": "i32",
+    "protocol": "ready_valid"
+  },
+  "static_parameters": [
+    {
+      "name": "queue_depth",
+      "acir_type": "index",
+      "required": true,
+      "default": null,
+      "constraint": "1 <= value <= 64",
+      "cpp_mapping": "constexpr_argument"
+    },
+    {
+      "name": "route_offset",
+      "acir_type": "index",
+      "required": false,
+      "default": 0,
+      "constraint": "value >= 0",
+      "cpp_mapping": "constexpr_argument"
+    },
+    {
+      "name": "routing",
+      "acir_type": "!ac.static_string",
+      "required": false,
+      "default": "clockwise",
+      "constraint": "value == clockwise",
+      "cpp_mapping": "constexpr_argument"
+    },
+    {
+      "name": "arbitration",
+      "acir_type": "!ac.static_string",
+      "required": false,
+      "default": "greedy_fixed_priority",
+      "constraint": "value == greedy_fixed_priority",
+      "cpp_mapping": "constexpr_argument"
+    }
+  ],
+  "bindings": [
+    {
+      "name": "inputs",
+      "binding_kind": "flow",
+      "acir_type": "FlowBundle[int, ReadyValid]",
+      "direction": "in",
+      "role": "consumer",
+      "cardinality": "$input_arity",
+      "linearity": "linear",
+      "ownership": "borrowed",
+      "delegation": "forbidden",
+      "result_mapping": null
+    }
+  ],
+  "results": [
+    {
+      "name": "outputs",
+      "acir_type": "FlowBundle[int, ReadyValid]",
+      "source_binding": null,
+      "linearity": "linear",
+      "ownership": "owned"
+    }
+  ],
+  "resources": [],
+  "address_behavior": {
+    "consumes": [],
+    "produces": [],
+    "ranges": [],
+    "translation": "none",
+    "routing": "destination_bits",
+    "unmapped": "stall"
+  },
+  "protocol_contracts": [
+    {
+      "protocol": "ac.std.ready_valid",
+      "role": "consumer",
+      "ordering": "fifo",
+      "delivery": "exactly_once_on_transfer",
+      "correlation": "none",
+      "completion": "transfer",
+      "failure": "protocol_violation"
+    },
+    {
+      "protocol": "ac.std.ready_valid",
+      "role": "producer",
+      "ordering": "fifo",
+      "delivery": "exactly_once_on_transfer",
+      "correlation": "none",
+      "completion": "transfer",
+      "failure": "protocol_violation"
+    }
+  ],
+  "effect": {
+    "kind": "stateful",
+    "requirements": [
+      "input offers remain immutable until committed transfer"
+    ],
+    "guarantees": [
+      "one ingress and one egress grant at most once per cycle"
+    ],
+    "observable_effects": [
+      "accepted_transactions",
+      "stalled_cycles",
+      "invalid_route_stalls"
+    ],
+    "failure_behavior": "terminate_with_diagnostic"
+  },
+  "activation": {
+    "sources": [
+      "input.transfer",
+      "output.transfer"
+    ],
+    "predicate": "an ingress is transferable or an egress can accept",
+    "wakeup_contract": [
+      "input.transfer",
+      "output.transfer"
+    ],
+    "quiescence": "all inputs are closed and all queues are empty"
+  },
+  "observation": {
+    "probes": [],
+    "counters": [
+      "accepted_transactions",
+      "stalled_cycles",
+      "invalid_route_stalls"
+    ],
+    "gauges": [],
+    "histograms": []
+  },
+  "schema_fingerprint": "sha256:3ca3c9717199374920657397607db4f7f55688c33a96f8de5b146fd97386afa1"
+}
