@@ -361,8 +361,12 @@ generator, or component schema.
   generated `executeProcessStep` switch returns an explicit continue, suspend,
   terminate, or fail action for every closed PC case. Runtime continuation and
   wake matching are exact; generated step dispatch is statically bound.
-- Native queue send/receive/peek/space helpers take `[queue_ref, element]`,
-  `[queue_ref]`, `[queue_ref]`, and `[queue_ref]` respectively. Peek and space
+- Native queue send/receive/transfer/peek/space helpers take
+  `[queue_ref, element]`, `[queue_ref]`,
+  `[source_queue_ref, destination_queue_ref, i1]`, `[queue_ref]`, and
+  `[queue_ref]` respectively. Transfer lowers to
+  `source.tryTransferTo(destination, enable)` and returns one `i1`; it creates
+  no binding, provider, wrapper, or standalone runtime object. Peek and space
   lower to a stateful `acsim.invoke` and create no proposal, binding, provider,
   or runtime object. Space's single `mlir:i32` result maps to the generated
   `SimQueue::space()` free-slot count. Queue-readable/writable wake helpers take

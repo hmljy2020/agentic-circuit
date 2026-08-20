@@ -33,6 +33,7 @@ EXPECTED_LLVM = {
 }
 
 AVAILABLE_STDLIB_COMPONENTS = {
+    "ac.std.Crossbar",
     "ac.std.TraceSource",
     "ac.std.Queue",
     "ac.std.Scheduler",
@@ -63,7 +64,6 @@ UNAVAILABLE_STDLIB_COMPONENTS = {
     "ac.std.Scoreboard",
     "ac.std.DependencyTracker",
     "ac.std.Bus",
-    "ac.std.Crossbar",
     "ac.std.Router",
     "ac.std.Switch",
     "ac.std.Dma",
@@ -199,9 +199,9 @@ def check_stdlib_catalog(errors):
             continue
         if record["canonical_name"] != name:
             errors.append(f"component schema canonical name mismatch for {name}")
-        if record["cpp_binding"] is None:
+        if record["cpp_binding"] is None and record.get("compiler_native_generator") is None:
             errors.append(f"component schema omits frozen C++ binding for {name}")
-        elif entry["availability"] == "available":
+        elif entry["availability"] == "available" and record["cpp_binding"] is not None:
             binding = record["cpp_binding"]
             expected_header, expected_symbol = AVAILABLE_STDLIB_BINDINGS[name]
             if (

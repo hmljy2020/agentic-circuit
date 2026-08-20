@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "schemas" / "stdlib"
 
 AVAILABLE = {
+    "Crossbar": ("interconnect", "duplex", None),
     "TraceSource": ("workload", "source", "gfsim/trace.h"),
     "Queue": ("transport", "duplex", "gfsim/queue.h"),
     "Scheduler": ("control", "duplex", "gfsim/components.h"),
@@ -33,7 +34,6 @@ UNAVAILABLE = {
     "Scoreboard": ("control", "request_response"),
     "DependencyTracker": ("control", "request_response"),
     "Bus": ("interconnect", "duplex"),
-    "Crossbar": ("interconnect", "duplex"),
     "Router": ("interconnect", "duplex"),
     "Switch": ("interconnect", "duplex"),
     "Dma": ("transport", "request_response"),
@@ -355,8 +355,12 @@ def rendered_files():
     }
     for name in sorted(definitions):
         family, shape, header = definitions[name]
-        record = component_record(name, family, shape, header)
         path = OUTPUT / f"{name}.json"
+        record = (
+            json.loads(path.read_text())
+            if name == "Crossbar" and path.is_file()
+            else component_record(name, family, shape, header)
+        )
         records[path] = json.dumps(record, indent=2, ensure_ascii=False) + "\n"
         catalog_entries.append(
             {

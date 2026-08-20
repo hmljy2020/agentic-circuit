@@ -363,6 +363,21 @@ validateOperations(const ModelPlan &plan, const ProcessPlan &process,
               for (const std::string &argument : call.arguments)
                 if (auto validation = requireValue(argument))
                   return validation;
+              if (llvm::StringRef(call.callee)
+                      .starts_with("acir_impl_queue_try_transfer")) {
+                if (call.arguments.size() != 3 || call.results.size() != 1 ||
+                    call.resultTypes.size() != 1 || call.resultTypes[0] != "i1")
+                  return processError(
+                      "queue transfer helper requires source, destination, "
+                      "enable, and one bool result");
+                const std::string &sourceType = values.at(call.arguments[0]);
+                if (!llvm::StringRef(sourceType).starts_with("!acsim.owner<") ||
+                    sourceType != values.at(call.arguments[1]) ||
+                    values.at(call.arguments[2]) != "i1")
+                  return processError(
+                      "queue transfer helper requires matching queue owner "
+                      "types and an i1 enable");
+              }
               return addResults(call.results, call.resultTypes);
             }},
         operation);
@@ -752,6 +767,17 @@ llvm::Error emitOperation(const ModelPlan &plan, const ProcessPlan &process,
               if (call.arguments.size() != 1)
                 return processError("queue recv helper requires one queue");
               output << call.arguments[0] << ".tryRecv();\n";
+              return llvm::Error::success();
+            }
+            if (calleeSymbol.starts_with("acir_impl_queue_try_transfer")) {
+              if (call.arguments.size() != 3 || call.results.size() != 1 ||
+                  call.resultTypes.size() != 1 || call.resultTypes[0] != "i1")
+                return processError(
+                    "queue transfer helper requires source, destination, "
+                    "enable, and one bool result");
+              output << call.arguments[0] << ".tryTransferTo("
+                     << call.arguments[1] << ", " << call.arguments[2]
+                     << ");\n";
               return llvm::Error::success();
             }
             if (calleeSymbol.starts_with("acir_impl_queue_peek")) {

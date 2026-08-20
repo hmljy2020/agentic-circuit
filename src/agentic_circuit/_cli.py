@@ -220,6 +220,7 @@ def build_parser() -> argparse.ArgumentParser:
             "resources",
             "address-map",
             "protocols",
+            "connections",
             "specialization",
             "artifacts",
         ),

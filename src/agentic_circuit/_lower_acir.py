@@ -59,12 +59,36 @@ def _flow_spec(type_key: str) -> tuple[str, str] | None:
     return _value_annotation_type(elements[0]), _snake_case(elements[1].id)
 
 
+def _bundle_spec(type_key: str) -> tuple[str, str, int | None] | None:
+    try:
+        expression = ast.parse(type_key, mode="eval").body
+    except SyntaxError:
+        return None
+    if not isinstance(expression, ast.Subscript) or not isinstance(expression.value, ast.Name):
+        return None
+    if expression.value.id != "FlowBundle":
+        return None
+    elements = expression.slice.elts if isinstance(expression.slice, ast.Tuple) else [expression.slice]
+    if len(elements) not in (2, 3) or not isinstance(elements[1], ast.Name):
+        raise ValueError("ACPY-TYPE-FLOW: FlowBundle requires payload and protocol types")
+    width: int | None = None
+    if len(elements) == 3:
+        if not isinstance(elements[2], ast.Constant) or type(elements[2].value) is not int:
+            raise ValueError("ACPY-TYPE-FLOW: FlowBundle shape must be static")
+        width = elements[2].value
+    return _value_annotation_type(elements[0]), _snake_case(elements[1].id), width
+
+
 def annotation_type_to_acir(type_key: str) -> str:
     """Lower one captured public annotation to its canonical ACIR spelling."""
 
     flow = _flow_spec(type_key)
     if flow is not None:
         payload, protocol = flow
+        return f"!ac.flow<{payload}, @{protocol}>"
+    bundle = _bundle_spec(type_key)
+    if bundle is not None:
+        payload, protocol, _ = bundle
         return f"!ac.flow<{payload}, @{protocol}>"
     return {"bool": "i1", "RuntimeBool": "i1", "int": "i32"}.get(
         type_key, type_key
@@ -126,9 +150,25 @@ def build_verified_acpy(
             properties=_properties(name=argument.source_name),
         )
         values[argument.name] = entity.id
+    for capture in program.captures:
+        entity = allocator.allocate(
+            kind="capture",
+            scope=program.definition,
+            source=module_site.span,
+            parent=module.id,
+            type=capture.type_key,
+            properties=_properties(name=capture.source_name),
+        )
+        values[capture.name] = entity.id
 
     for call in program.calls:
         uses = tuple(values[binding.value.name] for binding in call.inputs)
+        call_properties: dict[str, StaticValue] = {
+            "instance_name": call.instance_name,
+        }
+        if call.specialization is not None:
+            call_properties["specialization"] = call.specialization
+            call_properties.update(dict(call.static_arguments))
         call_entity = allocator.allocate(
             kind="call",
             scope=program.definition,
@@ -136,9 +176,19 @@ def build_verified_acpy(
             parent=module.id,
             uses=uses,
             schema_ref=SchemaRef(call.schema.identity, call.schema.fingerprint),
-            properties=_properties(instance_name=call.instance_name),
+            properties=_properties(**call_properties),
         )
         for binding in call.results:
+            result_properties: dict[str, StaticValue] = {
+                "name": (
+                    binding.value.source_name
+                    if call.schema.generator is not None
+                    else binding.value.name
+                ),
+            }
+            if binding.port_index is not None:
+                result_properties["port_index"] = binding.port_index
+                result_properties["shape"] = binding.shape
             result = allocator.allocate(
                 kind="result",
                 scope=program.definition,
@@ -146,7 +196,7 @@ def build_verified_acpy(
                 parent=call_entity.id,
                 type=binding.value.type_key,
                 uses=(call_entity.id,),
-                properties=_properties(name=binding.value.name),
+                properties=_properties(**result_properties),
             )
             values[binding.value.name] = result.id
 
@@ -231,13 +281,200 @@ def _argument_types(program: NormalizedProgram) -> dict[str, str]:
         for argument in program.arguments
     }
     for call in program.calls:
+        if call.schema.generator is not None:
+            continue
         for port, binding in zip(call.schema.ports, call.inputs, strict=True):
             inferred.setdefault(binding.value.name, annotation_type_to_acir(port.acir_type))
     return inferred
 
 
+def _crossbar_parameters(call: object) -> dict[str, StaticValue]:
+    return dict(call.static_arguments)  # type: ignore[attr-defined]
+
+
+def _crossbar_symbol(call: object) -> str:
+    parameters = _crossbar_parameters(call)
+    digest = str(call.specialization).removeprefix("sha256:")[:12]  # type: ignore[attr-defined]
+    return (
+        f"Crossbar__{parameters['input_ports']}x{parameters['output_ports']}"
+        f"_v{parameters['virtual_channels']}__{digest}"
+    )
+
+
+def _crossbar_declaration(call: object) -> list[str]:
+    parameters = _crossbar_parameters(call)
+    inputs = int(parameters["input_ports"])
+    outputs = int(parameters["output_ports"])
+    vcs = int(parameters["virtual_channels"])
+    ingress_depth = int(parameters["ingress_depth"])
+    egress_depth = int(parameters["egress_depth"])
+    route_offset = int(parameters["route_offset"])
+    route_width = int(parameters["route_width"])
+    symbol = _crossbar_symbol(call)
+    flow_type = "!ac.flow<i32, @ready_valid>"
+    arguments = ", ".join(
+        f"%input{i}_vc{vc} : {flow_type}" for i in range(inputs) for vc in range(vcs)
+    )
+    result_types = ", ".join(flow_type for _ in range(outputs * vcs))
+    signature = flow_type if outputs * vcs == 1 else f"({result_types})"
+    static_text = _static_arguments(call.static_arguments)  # type: ignore[attr-defined]
+    lines = [
+        f"  ac.module @{symbol}({arguments}) -> {signature} parameters {{{static_text}}} graph {{"
+    ]
+    for i in range(inputs):
+        for vc in range(vcs):
+            queue = f"in{i}_vc{vc}"
+            lines.append(
+                f"    ac.queue @{queue} payload i32 entries {ingress_depth} ordering \"fifo\" "
+                f"protocol @ready_valid ownership \"exclusive\" id \"{queue}\" path \"{queue}\""
+            )
+    returned: list[str] = []
+    for output in range(outputs):
+        for vc in range(vcs):
+            queue = f"out{output}_vc{vc}"
+            value = f"%output{output}_vc{vc}"
+            lines.append(
+                f"    ac.queue @{queue} payload i32 entries {egress_depth} ordering \"fifo\" "
+                f"protocol @ready_valid ownership \"exclusive\" id \"{queue}\" path \"{queue}\""
+            )
+    for i in range(inputs):
+        for vc in range(vcs):
+            queue = f"in{i}_vc{vc}"
+            lines.append(
+                f"    ac.flow.import %input{i}_vc{vc} to @{queue} : {flow_type}"
+            )
+    for output in range(outputs):
+        for vc in range(vcs):
+            queue = f"out{output}_vc{vc}"
+            value = f"%output{output}_vc{vc}"
+            lines.append(f"    {value} = ac.flow.export @{queue} : {flow_type}")
+            returned.append(value)
+    for i in range(inputs):
+        lines.append(
+            f"    ac.resource @pin{i} capacity 1 issue_width 1 ii 1 "
+            "latency {kind = \"fixed\", ticks = 1 : i64} "
+            "lifecycle {reservation = \"propose_commit\", release = \"balanced\", cancellation = \"explicit\"} "
+            f"ownership \"exclusive\" classes [] id \"pin{i}\" path \"pin{i}\""
+        )
+    for output in range(outputs):
+        lines.append(
+            f"    ac.resource @pout{output} capacity 1 issue_width 1 ii 1 "
+            "latency {kind = \"fixed\", ticks = 1 : i64} "
+            "lifecycle {reservation = \"propose_commit\", release = \"balanced\", cancellation = \"explicit\"} "
+            f"ownership \"exclusive\" classes [] id \"pout{output}\" path \"pout{output}\""
+        )
+    lines.append("    ac.process @scheduler kind \"control\" {")
+    for i in range(inputs):
+        for vc in range(vcs):
+            lines.append(f"      %head_i{i}_v{vc}, %valid_i{i}_v{vc} = ac.peek @in{i}_vc{vc} : i32")
+    for output in range(outputs):
+        for vc in range(vcs):
+            lines.append(f"      %space_o{output}_v{vc} = ac.space @out{output}_vc{vc}")
+    lines.append("      %zero = arith.constant 0 : i32")
+    lines.append(f"      %output_count = arith.constant {outputs} : i32")
+    lines.append(f"      %route_mask = arith.constant {(1 << route_width) - 1} : i32")
+    if route_offset:
+        lines.append(f"      %route_shift = arith.constant {route_offset} : i32")
+    for i in range(inputs):
+        for vc in range(vcs):
+            source = f"%head_i{i}_v{vc}"
+            if route_offset:
+                shifted = f"%shifted_i{i}_v{vc}"
+                lines.append(f"      {shifted} = arith.shrui {source}, %route_shift : i32")
+                source = shifted
+            lines.append(f"      %dst_i{i}_v{vc} = arith.andi {source}, %route_mask : i32")
+            lines.append(
+                f"      %invalid_route_i{i}_v{vc} = arith.cmpi uge, %dst_i{i}_v{vc}, %output_count : i32"
+            )
+            lines.append(
+                f"      %invalid_stall_i{i}_v{vc} = arith.andi %valid_i{i}_v{vc}, %invalid_route_i{i}_v{vc} : i1"
+            )
+    for output in range(outputs):
+        lines.append(f"      %route_o{output} = arith.constant {output} : i32")
+        for vc in range(vcs):
+            lines.append(
+                f"      %writable_o{output}_v{vc} = arith.cmpi sgt, %space_o{output}_v{vc}, %zero : i32"
+            )
+    candidates: list[tuple[str, int, int, int]] = []
+    for vc in range(vcs):
+        for output in range(outputs):
+            for i in range(inputs):
+                match = f"%match_v{vc}_o{output}_i{i}"
+                valid_route = f"%valid_route_v{vc}_o{output}_i{i}"
+                request = f"%request_v{vc}_o{output}_i{i}"
+                lines.append(f"      {match} = arith.cmpi eq, %dst_i{i}_v{vc}, %route_o{output} : i32")
+                lines.append(f"      {valid_route} = arith.andi %valid_i{i}_v{vc}, {match} : i1")
+                lines.append(f"      {request} = arith.andi {valid_route}, %writable_o{output}_v{vc} : i1")
+                candidates.append((request, vc, output, i))
+    grants = [f"%grant_{index}" for index in range(len(candidates))]
+    lines.append(f"      {', '.join(grants)} = ac.arbitrate greedy_fixed_priority candidates [")
+    for index, (request, _vc, output, i) in enumerate(candidates):
+        comma = "," if index + 1 != len(candidates) else ""
+        lines.append(f"        {request} uses [@pin{i}, @pout{output}]{comma}")
+    lines.append("      ] : (" + ", ".join("i1" for _ in candidates) + ")")
+    for index, (_request, vc, output, i) in enumerate(candidates):
+        lines.append(
+            f"      %fire_{index} = ac.try_transfer @in{i}_vc{vc} to @out{output}_vc{vc} when %grant_{index} : i32"
+        )
+    lines.extend(("      ac.yield_sim", "    }"))
+    lines.append(f"    ac.return {', '.join(returned)} : {result_types}")
+    lines.append("  }")
+    return lines
+
+
+def _boundary_symbol(direction: str, value: ValueVersion) -> str:
+    prefix = "FlowSource" if direction == "export" else "FlowSink"
+    return f"{prefix}__{_ssa(value)}"
+
+
+def _flow_boundary_declarations(program: NormalizedProgram) -> list[str]:
+    lines: list[str] = []
+    for boundary in program.flow_boundaries:
+        symbol = _boundary_symbol(boundary.direction, boundary.value)
+        flow_types = tuple(
+            f"!ac.flow<{payload}, @{protocol}>"
+            for _name, payload, protocol, _depth in boundary.queues
+        )
+        if boundary.direction == "export":
+            result_signature = (
+                flow_types[0]
+                if len(flow_types) == 1
+                else "(" + ", ".join(flow_types) + ")"
+            )
+            lines.append(f"  ac.module @{symbol}() -> {result_signature} parameters {{}} graph {{")
+        else:
+            arguments = ", ".join(
+                f"%vc{vc} : {flow_type}" for vc, flow_type in enumerate(flow_types)
+            )
+            lines.append(f"  ac.module @{symbol}({arguments}) parameters {{}} graph {{")
+        returned: list[str] = []
+        for vc, (queue_name, payload, protocol, depth) in enumerate(boundary.queues):
+            lines.append(
+                f"    ac.queue @{queue_name} payload {payload} entries {depth} ordering \"fifo\" "
+                f"protocol @{protocol} ownership \"exclusive\" id \"{queue_name}\" path \"{queue_name}\""
+            )
+        for vc, (queue_name, payload, protocol, _depth) in enumerate(boundary.queues):
+            flow_type = f"!ac.flow<{payload}, @{protocol}>"
+            if boundary.direction == "export":
+                value = f"%vc{vc}"
+                lines.append(f"    {value} = ac.flow.export @{queue_name} : {flow_type}")
+                returned.append(value)
+            else:
+                lines.append(f"    ac.flow.import %vc{vc} to @{queue_name} : {flow_type}")
+        if returned:
+            lines.append(f"    ac.return {', '.join(returned)} : {', '.join(flow_types)}")
+        else:
+            lines.append("    ac.return")
+        lines.append("  }")
+    return lines
+
+
 def _component_declarations(program: NormalizedProgram) -> list[str]:
-    schemas = {call.schema.identity: call.schema for call in program.calls}
+    schemas = {
+        call.schema.identity: call.schema
+        for call in program.calls
+        if call.schema.generator is None
+    }
     symbols: set[str] = set()
     lines: list[str] = []
     for identity in sorted(schemas, key=utf16_sort_key):
@@ -290,22 +527,65 @@ def _component_declarations(program: NormalizedProgram) -> list[str]:
         else:
             lines.append("    ac.return")
         lines.append("  }")
+    specializations: dict[str, object] = {}
+    for call in program.calls:
+        if call.schema.generator is not None and call.specialization is not None:
+            specializations.setdefault(call.specialization, call)
+    for fingerprint in sorted(specializations, key=utf16_sort_key):
+        lines.extend(_crossbar_declaration(specializations[fingerprint]))
+    lines.extend(_flow_boundary_declarations(program))
     return lines
 
 
 def _emit_process(process: ProcessProgram, kind: str) -> list[str]:
-    if process.captures:
-        raise ValueError("ACPY-VERIFY-001: captured process lowering is not closed yet")
+    queue_names: dict[str, tuple[str, str]] = {}
+    for capture in process.captures:
+        match = re.fullmatch(r"QueueSpec\[([^,]+),([^,]+),(\d+),([^]]+)\]", capture.type_key)
+        if match is None:
+            raise ValueError("ACPY-VERIFY-001: only root-owned QueueSpec process captures are supported")
+        queue_names[capture.source_name] = (match.group(4), match.group(1))
     if len(process.blocks) != 1:
         raise ValueError("ACPY-VERIFY-001: multi-block process requires CFG lowering")
     block = process.blocks[0]
-    if block.actions or block.edge.kind != "suspend" or block.edge.operation != "yield_sim":
+    if block.edge.kind != "suspend" or block.edge.operation != "yield_sim":
         raise ValueError("ACPY-VERIFY-001: unsupported process operation shape")
-    return [
-        f"    ac.process @{_symbol(process.name)} kind {json.dumps(kind)} {{",
-        "      ac.yield_sim",
-        "    }",
-    ]
+    lines = [f"    ac.process @{_symbol(process.name)} kind {json.dumps(kind)} {{"]
+    for index, action in enumerate(block.actions):
+        if action.operation not in {"try_send", "try_recv"} or not action.arguments:
+            raise ValueError("ACPY-VERIFY-001: only single-block Queue actions are supported")
+        queue = queue_names.get(action.arguments[0])
+        if queue is None:
+            raise ValueError("ACPY-VERIFY-001: Queue action target is not root-owned")
+        queue_name, payload_type = queue
+        if action.operation == "try_send":
+            if len(action.arguments) != 2:
+                raise ValueError("ACPY-PROCESS-003: try_send requires queue and i32 payload")
+            payload = action.arguments[1]
+            if re.fullmatch(r"-?[0-9]+", payload):
+                value = f"%send_value_{index}"
+                lines.append(f"      {value} = arith.constant {payload} : i32")
+            elif _SYMBOL.fullmatch(payload):
+                value = f"%{payload}"
+            else:
+                raise ValueError("ACPY-PROCESS-003: try_send payload must be one i32 value")
+            result = (
+                f"%{action.result}"
+                if isinstance(action.result, str)
+                else f"%send_accepted_{index}"
+            )
+            lines.append(f"      {result} = ac.try_send @{queue_name} {value} : {payload_type}")
+        else:
+            if len(action.arguments) != 1:
+                raise ValueError("ACPY-PROCESS-003: try_recv requires one queue")
+            if isinstance(action.result, tuple):
+                value, received = (f"%{name}" for name in action.result)
+            elif isinstance(action.result, str):
+                value, received = f"%recv_value_{index}", f"%{action.result}"
+            else:
+                value, received = f"%recv_value_{index}", f"%recv_received_{index}"
+            lines.append(f"      {value}, {received} = ac.try_recv @{queue_name} : {payload_type}")
+    lines.extend(("      ac.yield_sim", "    }"))
+    return lines
 
 
 def lower_to_acir(
@@ -336,13 +616,25 @@ def lower_to_acir(
     for argument in program.arguments:
         if (spec := _flow_spec(argument.type_key)) is not None:
             flow_specs.add(spec)
+        elif (bundle := _bundle_spec(argument.type_key)) is not None:
+            flow_specs.add(bundle[:2])
     for call in program.calls:
+        if call.schema.generator is not None:
+            flow_specs.add(("i32", "ready_valid"))
+            continue
         for port in call.schema.ports:
             if (spec := _flow_spec(port.acir_type)) is not None:
                 flow_specs.add(spec)
         for result in call.schema.results:
             if (spec := _flow_spec(result.acir_type)) is not None:
                 flow_specs.add(spec)
+    for process, _kind in processes:
+        for capture in process.captures:
+            match = re.fullmatch(
+                r"QueueSpec\[([^,]+),([^,]+),(\d+),([^]]+)\]", capture.type_key
+            )
+            if match is not None:
+                flow_specs.add((match.group(1), match.group(2)))
     protocols: dict[str, set[str]] = {}
     for payload, protocol in flow_specs:
         protocols.setdefault(protocol, set()).add(payload)
@@ -370,11 +662,52 @@ def lower_to_acir(
     if declarations:
         lines.extend(declarations)
 
-    arguments = ", ".join(
-        f"%{argument.source_name} : {types[argument.name]}"
-        for argument in program.arguments
-    )
-    return_types = tuple(annotation_type_to_acir(value.type_key) for value in program.returns)
+    bundle_widths: dict[str, int] = {}
+    for call in program.calls:
+        if call.schema.generator is None:
+            continue
+        vc = int(dict(call.static_arguments)["virtual_channels"])
+        for binding in call.inputs:
+            previous = bundle_widths.setdefault(binding.value.name, vc)
+            if previous != vc:
+                raise ValueError("ACPY-CROSSBAR-001: FlowBundle VC shape mismatch")
+        for binding in call.results:
+            bundle_widths[binding.value.name] = vc
+    for boundary in program.flow_boundaries:
+        bundle_widths[boundary.value.name] = len(boundary.queues)
+    argument_parts: list[str] = []
+    for argument in program.arguments:
+        if argument.category != "flow_bundle":
+            argument_parts.append(f"%{argument.source_name} : {types[argument.name]}")
+            continue
+        bundle = _bundle_spec(argument.type_key)
+        assert bundle is not None
+        payload, protocol, declared_width = bundle
+        width = bundle_widths.get(argument.name, declared_width)
+        if width is None:
+            raise ValueError(
+                f"ACPY-TYPE-FLOW: cannot infer FlowBundle shape for {argument.source_name!r}"
+            )
+        if declared_width is not None and declared_width != width:
+            raise ValueError("ACPY-CROSSBAR-001: FlowBundle VC shape mismatch")
+        flow_type = f"!ac.flow<{payload}, @{protocol}>"
+        argument_parts.extend(
+            f"%{argument.source_name}_vc{vc} : {flow_type}" for vc in range(width)
+        )
+    arguments = ", ".join(argument_parts)
+    return_types_list: list[str] = []
+    for value in program.returns:
+        if value.category != "flow_bundle":
+            return_types_list.append(annotation_type_to_acir(value.type_key))
+            continue
+        bundle = _bundle_spec(value.type_key)
+        assert bundle is not None
+        payload, protocol, declared_width = bundle
+        width = bundle_widths.get(value.name, declared_width)
+        if width is None:
+            raise ValueError("ACPY-TYPE-FLOW: cannot infer returned FlowBundle shape")
+        return_types_list.extend(f"!ac.flow<{payload}, @{protocol}>" for _ in range(width))
+    return_types = tuple(return_types_list)
     result_signature = (
         ""
         if not return_types
@@ -385,9 +718,87 @@ def lower_to_acir(
         f"  ac.module @{root}({arguments}){result_signature} parameters {{}} graph {{"
     )
     source_map: list[tuple[str, SourceSpan]] = []
-    names = {argument.name: f"%{argument.source_name}" for argument in program.arguments}
+    names: dict[str, str | tuple[str, ...]] = {}
+    for argument in program.arguments:
+        if argument.category == "flow_bundle":
+            width = bundle_widths[argument.name]
+            names[argument.name] = tuple(
+                f"%{argument.source_name}_vc{vc}" for vc in range(width)
+            )
+        else:
+            names[argument.name] = f"%{argument.source_name}"
+    declared_queues: set[str] = set()
+    for process, _kind in processes:
+        for capture in process.captures:
+            match = re.fullmatch(
+                r"QueueSpec\[([^,]+),([^,]+),(\d+),([^]]+)\]", capture.type_key
+            )
+            if match is None:
+                continue
+            payload, protocol, depth, queue_name = match.groups()
+            if queue_name in declared_queues:
+                continue
+            declared_queues.add(queue_name)
+            lines.append(
+                f"    ac.queue @{queue_name} payload {payload} entries {depth} ordering \"fifo\" "
+                f"protocol @{protocol} ownership \"exclusive\" id \"{queue_name}\" path \"{queue_name}\""
+            )
+    for boundary in program.flow_boundaries:
+        if boundary.direction != "export":
+            continue
+        leaves = tuple(
+            f"%{boundary.value.source_name}_vc{vc}"
+            for vc in range(len(boundary.queues))
+        )
+        flow_types = tuple(
+            f"!ac.flow<{payload}, @{protocol}>"
+            for _name, payload, protocol, _depth in boundary.queues
+        )
+        arrow = flow_types[0] if len(flow_types) == 1 else f"({', '.join(flow_types)})"
+        instance = f"boundary_source_{boundary.value.source_name}"
+        lines.append(
+            f"    {', '.join(leaves)} = ac.instance @{instance} of "
+            f"@{_boundary_symbol(boundary.direction, boundary.value)}() static {{}} "
+            f"id {json.dumps(instance)} path {json.dumps(instance)} : () -> {arrow}"
+        )
+        names[boundary.value.name] = tuple(leaves)
     for call in program.calls:
-        operands = ", ".join(names[binding.value.name] for binding in call.inputs)
+        if call.schema.generator is not None:
+            flattened_operands = [
+                leaf
+                for binding in call.inputs
+                for leaf in (
+                    names[binding.value.name]
+                    if isinstance(names[binding.value.name], tuple)
+                    else (names[binding.value.name],)
+                )
+            ]
+            operands = ", ".join(flattened_operands)
+            flow_type = "!ac.flow<i32, @ready_valid>"
+            operand_types = ", ".join(flow_type for _ in flattened_operands)
+            flat_results = [
+                (binding, vc)
+                for binding in call.results
+                for vc in range(binding.shape[0])
+            ]
+            result_names = tuple(
+                f"%{_ssa(binding.value)}_vc{vc}" for binding, vc in flat_results
+            )
+            for binding in call.results:
+                names[binding.value.name] = tuple(
+                    f"%{_ssa(binding.value)}_vc{vc}" for vc in range(binding.shape[0])
+                )
+            prefix = ", ".join(result_names) + " = "
+            result_types = ", ".join(flow_type for _ in result_names)
+            arrow = flow_type if len(result_names) == 1 else f"({result_types})"
+            lines.append(
+                f"    {prefix}ac.instance @{_symbol(call.instance_name)} of @{_crossbar_symbol(call)}({operands}) "
+                f"static {{{_static_arguments(call.static_arguments)}}} id {json.dumps(call.instance_name)} "
+                f"path {json.dumps(call.instance_name)} : ({operand_types}) -> {arrow}"
+            )
+            source_map.append((f"@{root}::@{call.instance_name}", call.source))
+            continue
+        operands = ", ".join(str(names[binding.value.name]) for binding in call.inputs)
         operand_types = ", ".join(
             annotation_type_to_acir(port.acir_type) for port in call.schema.ports
         )
@@ -410,8 +821,33 @@ def lower_to_acir(
 
     for process, kind in processes:
         lines.extend(_emit_process(process, kind))
+    for boundary in program.flow_boundaries:
+        if boundary.direction != "import":
+            continue
+        source = names[boundary.value.name]
+        if not isinstance(source, tuple) or len(source) != len(boundary.queues):
+            raise ValueError("ACPY-FLOW-007: Queue tuple and FlowBundle shape must match")
+        flow_types = tuple(
+            f"!ac.flow<{payload}, @{protocol}>"
+            for _name, payload, protocol, _depth in boundary.queues
+        )
+        instance = f"boundary_sink_{boundary.value.source_name}"
+        lines.append(
+            f"    ac.instance @{instance} of @{_boundary_symbol(boundary.direction, boundary.value)}"
+            f"({', '.join(source)}) static {{}} id {json.dumps(instance)} path {json.dumps(instance)} "
+            f": ({', '.join(flow_types)}) -> ()"
+        )
     if program.returns:
-        operands = ", ".join(names[value.name] for value in program.returns)
+        flattened_returns = [
+            leaf
+            for value in program.returns
+            for leaf in (
+                names[value.name]
+                if isinstance(names[value.name], tuple)
+                else (names[value.name],)
+            )
+        ]
+        operands = ", ".join(flattened_returns)
         lines.append(f"    ac.return {operands} : {', '.join(return_types)}")
     else:
         lines.append("    ac.return")

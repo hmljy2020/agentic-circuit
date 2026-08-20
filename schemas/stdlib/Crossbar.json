@@ -6,59 +6,101 @@
   "family": "interconnect",
   "provider_namespace": "ac.std",
   "stability": "provisional",
-  "cpp_binding": {
-    "header": "gfsim/components.h",
-    "symbol": "gfsim::Crossbar",
-    "language": "c++20",
-    "concept": "gfsim::Component",
-    "toolchain_target": "ac-gfsim-cxx20-v0.2",
-    "functional_policy": "none"
+  "cpp_binding": null,
+  "compiler_native_generator": {
+    "kind": "context_shaped",
+    "input_shape": [
+      "$input_arity",
+      "virtual_channels"
+    ],
+    "result_shape": [
+      "$assignment_arity",
+      "virtual_channels"
+    ],
+    "payload": "i32",
+    "protocol": "ready_valid"
   },
   "static_parameters": [
     {
-      "name": "Transaction",
-      "acir_type": "!ac.static_type<ac.std.Transaction>",
+      "name": "virtual_channels",
+      "acir_type": "index",
       "required": true,
       "default": null,
-      "constraint": "ac.std.Packet",
-      "cpp_mapping": "template_argument"
+      "constraint": "value >= 1",
+      "cpp_mapping": "constexpr_argument"
+    },
+    {
+      "name": "ingress_depth",
+      "acir_type": "index",
+      "required": true,
+      "default": null,
+      "constraint": "value >= 1",
+      "cpp_mapping": "constexpr_argument"
+    },
+    {
+      "name": "egress_depth",
+      "acir_type": "index",
+      "required": true,
+      "default": null,
+      "constraint": "value >= 1",
+      "cpp_mapping": "constexpr_argument"
+    },
+    {
+      "name": "route_offset",
+      "acir_type": "index",
+      "required": false,
+      "default": 0,
+      "constraint": "value >= 0",
+      "cpp_mapping": "constexpr_argument"
+    },
+    {
+      "name": "route_width",
+      "acir_type": "index",
+      "required": true,
+      "default": null,
+      "constraint": "value >= 1",
+      "cpp_mapping": "constexpr_argument"
+    },
+    {
+      "name": "policy",
+      "acir_type": "!ac.static_string",
+      "required": false,
+      "default": "greedy_fixed_priority",
+      "constraint": "value == greedy_fixed_priority",
+      "cpp_mapping": "constexpr_argument"
     }
   ],
   "bindings": [
     {
-      "name": "input",
-      "binding_kind": "endpoint",
-      "acir_type": "!ac.endpoint<!ac.interface<ac.std.Stream<!ac.packet<ac.std.Transaction>,ac.std.ready_valid>>,consumer>",
+      "name": "inputs",
+      "binding_kind": "flow",
+      "acir_type": "FlowBundle[int, ReadyValid]",
       "direction": "in",
       "role": "consumer",
-      "cardinality": 1,
-      "linearity": "linear",
-      "ownership": "borrowed",
-      "delegation": "forbidden",
-      "result_mapping": null
-    },
-    {
-      "name": "output",
-      "binding_kind": "endpoint",
-      "acir_type": "!ac.endpoint<!ac.interface<ac.std.Stream<!ac.packet<ac.std.Transaction>,ac.std.ready_valid>>,producer>",
-      "direction": "out",
-      "role": "producer",
-      "cardinality": 1,
+      "cardinality": "$input_arity",
       "linearity": "linear",
       "ownership": "borrowed",
       "delegation": "forbidden",
       "result_mapping": null
     }
   ],
-  "results": [],
+  "results": [
+    {
+      "name": "outputs",
+      "acir_type": "FlowBundle[int, ReadyValid]",
+      "source_binding": null,
+      "linearity": "linear",
+      "ownership": "owned"
+    }
+  ],
   "resources": [],
   "address_behavior": {
     "consumes": [],
     "produces": [],
     "ranges": [],
     "translation": "none",
-    "routing": "none",
-    "unmapped": "not_applicable"
+    "routing": "destination_bits",
+    "unmapped": "stall"
   },
   "protocol_contracts": [
     {
@@ -86,11 +128,12 @@
       "input offers remain immutable until committed transfer"
     ],
     "guarantees": [
-      "accepted transactions commit exactly once in stable order"
+      "one input and one output grant at most once per cycle"
     ],
     "observable_effects": [
       "accepted_transactions",
-      "stalled_cycles"
+      "stalled_cycles",
+      "invalid_route_stalls"
     ],
     "failure_behavior": "terminate_with_diagnostic"
   },
@@ -110,10 +153,11 @@
     "probes": [],
     "counters": [
       "accepted_transactions",
-      "stalled_cycles"
+      "stalled_cycles",
+      "invalid_route_stalls"
     ],
     "gauges": [],
     "histograms": []
   },
-  "schema_fingerprint": "sha256:ebaa1a46cb5fa23ee1a2e984277b2637fff1eb01e9c0bfb4120884e52160fd35"
+  "schema_fingerprint": "sha256:20435d4c5d0b9cc95fd67303217a2999e76d0311f6aa3ce46cfaa3d0db79dbcc"
 }

@@ -312,6 +312,8 @@ TEST(ACIROpsTest, TaskFiveRegistryContainsExactlyTheRequiredNewOperations) {
       "ac.peek",
       "ac.space",
       "ac.try_send",
+      "ac.arbitrate",
+      "ac.try_transfer",
       "ac.type_alias",
       "ac.type_scope",
       "ac.union",
@@ -445,6 +447,10 @@ TEST(ACIROpsTest, PublicBuildersConstructEveryTaskEightOperation) {
         ac.time_domain @clock period 1 phase 0 scale 1
         ac.queue @q payload i32 entries 4 ordering "fifo" protocol @fifo
             ownership "exclusive" id "q" path "q"
+        ac.queue @q_source payload i32 entries 4 ordering "fifo" protocol @fifo
+            ownership "exclusive" id "q_source" path "q_source"
+        ac.queue @q_destination payload i32 entries 4 ordering "fifo" protocol @fifo
+            ownership "exclusive" id "q_destination" path "q_destination"
         ac.event_queue @events payload !ac.event<i32> capacity 4
             ordering "time_then_sequence" domain @clock id "events" path "events"
         ac.resource @resource capacity 1 issue_width 1 ii 1
@@ -479,10 +485,13 @@ TEST(ACIROpsTest, PublicBuildersConstructEveryTaskEightOperation) {
   auto send = TrySendOp::create(builder, loc, builder.getI1Type(), i32, "q");
   auto recv = TryRecvOp::create(builder, loc, builder.getI32Type(),
                                 builder.getI1Type(), "q");
+  auto transfer =
+      TryTransferOp::create(builder, loc, builder.getI1Type(), i1, "q_source",
+                            "q_destination", builder.getI32Type());
   auto peek = PeekOp::create(builder, loc, builder.getI32Type(),
                              builder.getI1Type(), "q");
   auto space = SpaceOp::create(builder, loc, builder.getI32Type(), "q");
-  EXPECT_TRUE(send && recv && peek && space);
+  EXPECT_TRUE(send && recv && transfer && peek && space);
   EXPECT_EQ(space.getQueue(), "q");
   auto schedule =
       ScheduleOp::create(builder, loc, builder.getI1Type(), i32, i64, "events");
@@ -606,6 +615,16 @@ TEST(ACIROpsTest, PublicBuildersConstructEveryTaskEightOperation) {
                         write(QueueStateResource::get(), "q", "queue"),
                         read(ProtocolStateResource::get(), "q", "protocol"),
                         write(ProtocolStateResource::get(), "q", "protocol")});
+  expectExactEffects(
+      transfer,
+      {read(QueueStateResource::get(), "q_source", "queue"),
+       write(QueueStateResource::get(), "q_source", "queue"),
+       read(ProtocolStateResource::get(), "q_source", "protocol"),
+       write(ProtocolStateResource::get(), "q_source", "protocol"),
+       read(QueueStateResource::get(), "q_destination", "queue"),
+       write(QueueStateResource::get(), "q_destination", "queue"),
+       read(ProtocolStateResource::get(), "q_destination", "protocol"),
+       write(ProtocolStateResource::get(), "q_destination", "protocol")});
   expectExactEffects(peek, {read(QueueStateResource::get(), "q", "queue")});
   expectExactEffects(schedule, {write(EventQueueStateResource::get(), "events",
                                       "event_queue")});
@@ -682,25 +701,26 @@ TEST(ACIROpsTest, UnresolvedRuntimeReferencesDoNotInventEffects) {
   EXPECT_TRUE(effects.empty());
 }
 
-TEST(ACIROpsTest, TaskEightRegistryDeltaIsExactlyTwentyOperations) {
+TEST(ACIROpsTest, RuntimeRegistryIncludesTryTransfer) {
   mlir::MLIRContext context;
   context.loadDialect<ACIRDialect>();
-  const std::array<llvm::StringLiteral, 24> names = {
-      "ac.process",     "ac.try_send",       "ac.try_recv",
-      "ac.peek",        "ac.space",          "ac.try_event",
-      "ac.schedule",    "ac.wait_until",     "ac.wait_for",
-      "ac.await_event", "ac.await_queue",    "ac.yield_sim",
-      "ac.trace.open",  "ac.trace.next",     "ac.trace.decode",
-      "ac.trace.eof",   "ac.trace.position", "ac.require",
-      "ac.ensure",      "ac.assert",         "ac.probe",
-      "ac.stat",        "ac.stat.add",       "ac.instrumentation",
+  const std::array<llvm::StringLiteral, 26> names = {
+      "ac.process",        "ac.try_send",        "ac.try_recv",
+      "ac.arbitrate",      "ac.try_transfer",    "ac.peek",
+      "ac.space",          "ac.try_event",       "ac.schedule",
+      "ac.wait_until",     "ac.wait_for",        "ac.await_event",
+      "ac.await_queue",    "ac.yield_sim",       "ac.trace.open",
+      "ac.trace.next",     "ac.trace.decode",    "ac.trace.eof",
+      "ac.trace.position", "ac.require",         "ac.ensure",
+      "ac.assert",         "ac.probe",           "ac.stat",
+      "ac.stat.add",       "ac.instrumentation",
   };
   for (llvm::StringLiteral name : names)
     EXPECT_TRUE(mlir::OperationName(name, &context).isRegistered())
         << name.str();
   EXPECT_FALSE(mlir::OperationName("ac.try_issue", &context).isRegistered());
   EXPECT_FALSE(mlir::OperationName("ac.connect", &context).isRegistered());
-  EXPECT_EQ(context.getRegisteredOperationsByDialect("ac").size(), 61u);
+  EXPECT_EQ(context.getRegisteredOperationsByDialect("ac").size(), 63u);
 }
 
 TEST(ACIROpsTest, ProcessLinearLivenessDoesNotRescanBlockPerValue) {

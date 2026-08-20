@@ -17,6 +17,7 @@ InspectionKind: TypeAlias = Literal[
     "resources",
     "address-map",
     "protocols",
+    "connections",
     "specialization",
     "artifacts",
 ]
@@ -284,6 +285,53 @@ def _specialization_records(
     return tuple(sorted(records, key=lambda item: str(item["path"])))
 
 
+def _connection_records(
+    entities: tuple[dict[str, object], ...],
+    paths: dict[str, str],
+    requested: str | None,
+) -> tuple[Mapping[str, JsonValue], ...]:
+    indexed = {str(entity["id"]): entity for entity in entities}
+    records: list[Mapping[str, JsonValue]] = []
+    for consumer in entities:
+        schema = consumer.get("schema_ref")
+        if (
+            consumer.get("kind") != "call"
+            or type(schema) is not dict
+            or schema.get("identity") != "ac.std.Crossbar"
+        ):
+            continue
+        consumer_id = str(consumer["id"])
+        consumer_path = paths.get(consumer_id, "")
+        if not _selected(consumer_path, requested):
+            continue
+        consumer_name = _entity_name(consumer) or consumer_path
+        uses = consumer.get("uses")
+        if type(uses) is not list:
+            raise InspectionError("Crossbar uses are invalid")
+        for input_index, value_id in enumerate(uses):
+            producer_result = indexed.get(str(value_id))
+            if producer_result is None or producer_result.get("kind") != "result":
+                continue
+            parent_id = producer_result.get("parent")
+            producer = indexed.get(str(parent_id))
+            producer_schema = producer.get("schema_ref") if producer is not None else None
+            if type(producer_schema) is not dict or producer_schema.get("identity") != "ac.std.Crossbar":
+                continue
+            result_properties = _properties(producer_result)
+            producer_name = _entity_name(producer) or paths.get(str(parent_id), "")
+            output_index = result_properties.get("port_index")
+            variable = result_properties.get("name")
+            records.append(
+                _record(
+                    downstream=f"{consumer_name}.input[{input_index}]",
+                    upstream=f"{producer_name}.output[{output_index}]",
+                    variable=variable,
+                    path=consumer_path,
+                )
+            )
+    return tuple(sorted(records, key=lambda item: str(item["downstream"])))
+
+
 def _artifact_records(
     acpy: dict[str, object], acir: bytes, build_manifest: dict[str, object] | None
 ) -> tuple[Mapping[str, JsonValue], ...]:
@@ -360,6 +408,8 @@ def inspect_model(
         )
     elif request.kind == "specialization":
         records = _specialization_records(entities, paths, request.path)
+    elif request.kind == "connections":
+        records = _connection_records(entities, paths, request.path)
     else:
         records = _artifact_records(acpy, acir_bytes, build_manifest)
     return InspectionResult(request.kind, request.system, request.path, records)
@@ -406,6 +456,11 @@ def render_dot(result: InspectionResult) -> str:
 def render_text(result: InspectionResult) -> str:
     if result.kind == "hierarchy":
         return "".join(f"{record['path']}\n" for record in result.records)
+    if result.kind == "connections":
+        return "".join(
+            f"{record['downstream']} <- {record['upstream']}  # {record['variable']}\n"
+            for record in result.records
+        )
     return "".join(
         canonical_json_bytes(dict(record)).decode("utf-8") + "\n"
         for record in result.records

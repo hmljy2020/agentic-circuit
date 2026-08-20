@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import combinations
 from typing import TypeAlias
 
@@ -66,6 +66,8 @@ class QueueSpec:
     protocol: str
     depth: int
     time_domain: str
+    _flow_exported: bool = field(default=False, init=False, compare=False, repr=False)
+    _flow_imported: bool = field(default=False, init=False, compare=False, repr=False)
 
 
 def queue(

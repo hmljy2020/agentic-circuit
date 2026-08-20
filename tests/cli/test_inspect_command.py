@@ -19,6 +19,7 @@ KINDS = (
     "resources",
     "address-map",
     "protocols",
+    "connections",
     "specialization",
     "artifacts",
 )

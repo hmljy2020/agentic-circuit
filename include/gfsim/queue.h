@@ -76,6 +76,10 @@ public:
   /// The compiler verifies that the caller is the source's sole pop proposer
   /// and the destination's sole push proposer.
   bool proposeTransferTo(SimQueue<T> &destination) {
+    if (system_ != destination.system_) {
+      setRuntimeFailureCode("queue_transfer_system_mismatch");
+      return false;
+    }
     if (popProposalCount_ >= committed_.size())
       return false;
     const size_t destinationOccupied =
@@ -92,6 +96,14 @@ public:
     destination.pushProposals_.push_back(committed_[popProposalCount_]);
     ++popProposalCount_;
     return true;
+  }
+
+  /// Process-facing atomic transfer helper. A disabled transfer is a pure
+  /// no-op and does not register either endpoint for commit.
+  bool tryTransferTo(SimQueue<T> &destination, bool enable) {
+    if (!enable)
+      return false;
+    return proposeTransferTo(destination);
   }
 
   /// Typed process helper: failed receives return the normative zero value.

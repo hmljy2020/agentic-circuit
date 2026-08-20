@@ -135,6 +135,45 @@ parseAndFreezeManyQueueActions(mlir::MLIRContext &context, unsigned count) {
 }
 
 inline mlir::OwningOpRef<mlir::ModuleOp>
+parseAndFreezeQueueTransfers(mlir::MLIRContext &context) {
+  constexpr llvm::StringLiteral source = R"mlir(
+    builtin.module attributes {ac.contract_epoch = "0.2"} {
+      ac.protocol @fifo {
+        ac.role @sender dual @receiver cardinality "exclusive"
+        ac.role @receiver dual @sender cardinality "exclusive"
+        ac.state @idle initial true terminal false
+        ac.event @push from @sender to @receiver payload i32 action "offer"
+      }
+      ac.system @soc root @Top as "root" tick 0 "cycle"
+          workload @Top::@workload seed {kind = "fixed", value = 0 : i64}
+          instrumentation [] results {id = "default", format = "json"}
+          selected true
+      ac.module @Top() parameters {} graph {
+        ac.queue @s0 payload i32 entries 1 ordering "fifo" protocol @fifo ownership "exclusive" id "s0" path "s0"
+        ac.queue @d0 payload i32 entries 1 ordering "fifo" protocol @fifo ownership "exclusive" id "d0" path "d0"
+        ac.queue @s1 payload i32 entries 1 ordering "fifo" protocol @fifo ownership "exclusive" id "s1" path "s1"
+        ac.queue @d1 payload i32 entries 1 ordering "fifo" protocol @fifo ownership "exclusive" id "d1" path "d1"
+        ac.process @workload kind "workload" {
+          %enable = arith.constant true
+          %f0 = ac.try_transfer @s0 to @d0 when %enable : i32
+          %f1 = ac.try_transfer @s1 to @d1 when %enable : i32
+          ac.yield_sim
+        }
+        ac.return
+      }
+    }
+  )mlir";
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(source, &context);
+  if (!module)
+    return {};
+  mlir::PassManager manager(&context);
+  manager.addPass(createFreezeTopologyPass());
+  if (mlir::failed(manager.run(*module)))
+    return {};
+  return module;
+}
+
+inline mlir::OwningOpRef<mlir::ModuleOp>
 parseAndFreezeLoopActions(mlir::MLIRContext &context) {
   constexpr llvm::StringLiteral source = R"mlir(
     builtin.module attributes {ac.contract_epoch = "0.2"} {

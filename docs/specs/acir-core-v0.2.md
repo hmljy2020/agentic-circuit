@@ -568,6 +568,27 @@ pending pop does not release push capacity in that epoch, and a pending push is
 not visible to a receive until after Xfer. A failed `ac.try_recv` returns the
 payload's canonical zero value together with `false`.
 
+`%fire = ac.try_transfer @source to @destination when %enable : T` atomically
+proposes one pop from the source committed head and one push of that same value
+to the destination. It fires only when enabled, the committed source is
+non-empty, and the destination has committed-snapshot capacity. A pending
+source push is invisible and a pending destination pop does not free capacity.
+Both queues must be distinct local queues with equal payload and protocol.
+Two transfers may share a source or destination only when their enable values
+are distinct, direct results of the same `ac.arbitrate`, and the corresponding
+candidates share a capacity-1 resource. Boolean rewrites, block arguments,
+different arbiters, reuse of one grant, and mixing a transfer with a same-
+direction send/receive do not carry mutual-exclusion provenance.
+
+`ac.arbitrate greedy_fixed_priority candidates [...] : (i1, ...)` scans
+candidates in textual order. A true request is granted exactly when none of
+its listed capacity-1 resources has been occupied by an earlier grant. V1 is a
+pure combinational operation directly inside `ac.process`; resources must have
+capacity 1, issue width 1, initiation interval 1, and fixed latency 1 tick.
+ACIR-to-ACSim expands it to linear-size ordinary Boolean SSA. Capacity greater
+than one, fair arbitration, cross-epoch reservations, and RTL lowering are not
+part of V1.
+
 `ac.peek @queue : T` returns the committed queue head and `true` without
 creating a proposal or commit participant. An empty queue returns `T{}` and
 `false`. Pending pushes are invisible and pending pops do not change the value

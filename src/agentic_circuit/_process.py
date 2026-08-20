@@ -77,7 +77,7 @@ class EffectRegistry:
 class ProcessAction:
     operation: str
     arguments: tuple[str, ...]
-    result: str | None
+    result: str | tuple[str, ...] | None
     effect_kind: EffectKind | None
     source: SourceSpan
 
@@ -145,13 +145,19 @@ def _annotation_category(annotation: ast.expr | None) -> str:
 
 
 class _ProcessBuilder:
-    def __init__(self, site: DefinitionSite, effects: EffectRegistry) -> None:
+    def __init__(
+        self,
+        site: DefinitionSite,
+        effects: EffectRegistry,
+        symbols: dict[str, object] | None = None,
+    ) -> None:
         node = site.node
         assert isinstance(node, ast.FunctionDef)
         self._site = site
         self._path = site.span.file
         self._node = node
         self._registry = effects
+        self._symbols = symbols or {}
         self._blocks: list[_MutableBlock] = []
         self._block_names: set[str] = set()
         self._effects: list[ProcessEffect] = []
@@ -210,7 +216,7 @@ class _ProcessBuilder:
             self._local_order.append(name)
         self._versions[name] = self._versions.get(name, -1) + 1
 
-    def _call(self, node: ast.Call, result: str | None) -> None:
+    def _call(self, node: ast.Call, result: str | tuple[str, ...] | None) -> None:
         if not isinstance(node.func, ast.Name):
             self._error(
                 "ACPY-EFFECT-003", "process call target must be a declared name", node
@@ -280,7 +286,8 @@ class _ProcessBuilder:
             ProcessAction(node.func.id, arguments, result, declaration.kind, source)
         )
         if result is not None:
-            self._record_definition(self._current, result)
+            for name in result if isinstance(result, tuple) else (result,):
+                self._record_definition(self._current, name)
 
     def _can_reach_backedge_without_suspension(
         self, statements: list[ast.stmt]
@@ -313,27 +320,49 @@ class _ProcessBuilder:
 
     def _assignment(self, statement: ast.Assign | ast.AnnAssign) -> None:
         targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
-        if len(targets) != 1 or not isinstance(targets[0], ast.Name):
+        if len(targets) != 1:
             self._error(
                 "ACPY-PROCESS-003", "process assignment target must be one name", statement
+            )
+        target = targets[0]
+        if isinstance(target, ast.Name):
+            result: str | tuple[str, ...] = target.id
+        elif (
+            isinstance(target, (ast.Tuple, ast.List))
+            and len(target.elts) == 2
+            and all(isinstance(item, ast.Name) for item in target.elts)
+        ):
+            result = tuple(item.id for item in target.elts if isinstance(item, ast.Name))
+        else:
+            self._error(
+                "ACPY-PROCESS-003",
+                "process assignment target must be one name or a pair of names",
+                statement,
             )
         value = statement.value
         if value is None:
             return
         if isinstance(value, ast.Call):
-            self._call(value, targets[0].id)
+            if isinstance(result, tuple) and not (
+                isinstance(value.func, ast.Name) and value.func.id == "try_recv"
+            ):
+                self._error("ACPY-PROCESS-003", "only try_recv can produce a pair", statement)
+            self._call(value, result)
             return
+        if isinstance(result, tuple):
+            self._error("ACPY-PROCESS-003", "pair assignment requires try_recv", statement)
         self._record_uses(self._current, (value,))
         self._current.actions.append(
             ProcessAction(
                 "assign",
                 (ast.unparse(value),),
-                targets[0].id,
+                result,
                 None,
                 _span(self._path, statement),
             )
         )
-        self._record_definition(self._current, targets[0].id)
+        assert isinstance(result, str)
+        self._record_definition(self._current, result)
 
     def _if(self, statement: ast.If) -> None:
         then_block = self._new_block("then")
@@ -577,13 +606,43 @@ class _ProcessBuilder:
             )
             for argument in arguments
         )
+        from ._resources import QueueSpec
+
+        argument_names = {argument.arg for argument in arguments}
+        external_queue_names = sorted(
+            {
+                name
+                for block in self._blocks
+                for name in block.uses
+                if name not in argument_names
+                and isinstance(self._symbols.get(name), QueueSpec)
+            }
+        )
+        external_captures = tuple(
+            ValueVersion(
+                name,
+                0,
+                "resource",
+                f"QueueSpec[{queue.payload_type},{queue.protocol},{queue.depth},{queue.name}]",
+                "root-queue",
+            )
+            for name in external_queue_names
+            for queue in (self._symbols[name],)
+            if isinstance(queue, QueueSpec)
+        )
         return ProcessProgram(
-            self._site.name, "entry", captures, blocks, tuple(self._effects)
+            self._site.name,
+            "entry",
+            captures + external_captures,
+            blocks,
+            tuple(self._effects),
         )
 
 
 def construct_process(
-    definition: DefinitionSite, effects: EffectRegistry
+    definition: DefinitionSite,
+    effects: EffectRegistry,
+    symbols: dict[str, object] | None = None,
 ) -> ProcessProgram:
     if "process" not in definition.decorator_names:
         raise ProcessConstructionError(
@@ -597,4 +656,4 @@ def construct_process(
         raise ProcessConstructionError(
             issue.code, issue.message, _span(definition.span.file, issue.node)
         )
-    return _ProcessBuilder(definition, effects).build()
+    return _ProcessBuilder(definition, effects, symbols).build()

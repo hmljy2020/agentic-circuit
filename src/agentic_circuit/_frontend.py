@@ -38,6 +38,7 @@ class CapturedProgram:
     registry: SchemaRegistry
     static_arguments: tuple[tuple[str, StaticValue], ...] = ()
     diagnostics: tuple[Diagnostic, ...] = ()
+    symbols: tuple[tuple[str, object], ...] = ()
 
 
 def _diagnostic(
@@ -226,6 +227,7 @@ def capture_definitions(
         registry=registry,
         static_arguments=request.static_arguments,
         diagnostics=diagnostics.freeze(),
+        symbols=tuple(sorted(namespace.items(), key=lambda item: item[0])),
     )
 
 
@@ -251,7 +253,7 @@ def construct_captured_process(
             if captured.source.definitions
             else SourceSpan(captured.source.path, 1, 1, 1, 1),
         )
-    return construct_process(matches[0], effects)
+    return construct_process(matches[0], effects, dict(captured.symbols))
 
 
 def elaborate_frontend(
@@ -290,6 +292,8 @@ def elaborate_frontend(
                 EffectDeclaration("wait_for", "suspension", suspension=True),
                 EffectDeclaration("await_event", "suspension", suspension=True),
                 EffectDeclaration("yield_sim", "suspension", suspension=True),
+                EffectDeclaration("try_send", "queue"),
+                EffectDeclaration("try_recv", "queue"),
             )
         )
         process_records = []

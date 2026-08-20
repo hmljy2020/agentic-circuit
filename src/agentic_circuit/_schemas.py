@@ -36,6 +36,13 @@ _TOP_LEVEL_KEYS = {
     "observation",
     "schema_fingerprint",
 }
+_GENERATOR_KEYS = {
+    "kind",
+    "input_shape",
+    "result_shape",
+    "payload",
+    "protocol",
+}
 _NESTED_KEYS = {
     "cpp_binding": {
         "header",
@@ -358,6 +365,15 @@ class ParameterSchema:
 
 
 @dataclass(frozen=True, slots=True)
+class GeneratorSchema:
+    kind: Literal["context_shaped"]
+    input_shape: tuple[str, ...]
+    result_shape: tuple[str, ...]
+    payload: str
+    protocol: str
+
+
+@dataclass(frozen=True, slots=True)
 class ComponentSchema:
     identity: str
     fingerprint: str
@@ -367,6 +383,7 @@ class ComponentSchema:
     availability: Availability
     effect_kind: Literal["pure", "stateful"] = "stateful"
     external_binding: str | None = None
+    generator: GeneratorSchema | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -379,7 +396,9 @@ def _component_schema(
     record: dict[str, JsonValue], availability: Availability, expected_name: str,
     *, external: bool = False,
 ) -> ComponentSchema:
-    _exact_keys(record, _TOP_LEVEL_KEYS, expected_name)
+    actual_keys = set(record)
+    if actual_keys not in (_TOP_LEVEL_KEYS, _TOP_LEVEL_KEYS | {"compiler_native_generator"}):
+        raise SchemaError(f"{expected_name} has unknown or missing fields")
     if (
         record["schema_kind"] != "agentic-circuit-component"
         or record["schema_version"] != "0.2"
@@ -389,6 +408,36 @@ def _component_schema(
         raise SchemaError(f"component identity mismatch for {expected_name}")
 
     _validate_component_fields(record, expected_name)
+
+    generator: GeneratorSchema | None = None
+    generator_record = record.get("compiler_native_generator")
+    if generator_record is not None:
+        generator_value = _exact_keys(
+            generator_record, _GENERATOR_KEYS, f"{expected_name}.compiler_native_generator"
+        )
+        if generator_value["kind"] != "context_shaped":
+            raise SchemaError(f"{expected_name}.compiler_native_generator.kind is invalid")
+        input_shape = _string_list(
+            generator_value["input_shape"],
+            f"{expected_name}.compiler_native_generator.input_shape",
+        )
+        result_shape = _string_list(
+            generator_value["result_shape"],
+            f"{expected_name}.compiler_native_generator.result_shape",
+        )
+        if input_shape != ["$input_arity", "virtual_channels"] or result_shape != [
+            "$assignment_arity", "virtual_channels"
+        ]:
+            raise SchemaError(f"{expected_name} has invalid context-shaped dimensions")
+        generator = GeneratorSchema(
+            "context_shaped",
+            tuple(input_shape),
+            tuple(result_shape),
+            _nonempty_string(generator_value["payload"], f"{expected_name}.generator.payload"),
+            _nonempty_string(generator_value["protocol"], f"{expected_name}.generator.protocol"),
+        )
+        if record["cpp_binding"] is not None:
+            raise SchemaError(f"{expected_name} compiler-native generator cannot have cpp_binding")
 
     cpp_binding = record["cpp_binding"]
     if cpp_binding is not None:
@@ -511,6 +560,7 @@ def _component_schema(
         external_binding=(
             expected_name.replace(".", "_") + "_binding" if external else None
         ),
+        generator=generator,
     )
 
 
@@ -549,7 +599,17 @@ class ComponentCallable:
             raise TypeError(f"ACPY-CALL-003: {error}") from error
         bound.apply_defaults()
         for port in self.schema.ports:
-            if not isinstance(bound.arguments[port.name], SymbolicValue):
+            value = bound.arguments[port.name]
+            if self.schema.generator is not None and port.name == "inputs":
+                from ._types import FlowBundle
+                valid = (
+                    isinstance(value, tuple)
+                    and bool(value)
+                    and all(isinstance(item, FlowBundle) for item in value)
+                )
+            else:
+                valid = isinstance(value, SymbolicValue)
+            if not valid:
                 raise TypeError(
                     f"ACPY-CALL-003: binding {port.name!r} requires a symbolic value"
                 )

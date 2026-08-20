@@ -2,9 +2,10 @@
 
 对应文件：[`model.rtl-ideal.mlir`](model.rtl-ideal.mlir)。
 
-这是一份设计草案，目前不能被 ACIR parser 接受。它保留现有
-`ac.queue`、`ac.resource`、`ac.peek`、`ac.space` 和 `arith`，只建议增加
-两个 Core primitive：`ac.arbitrate` 和 `ac.try_transfer`。
+这是一份自包含、可执行的 ACSim/C++ 模型。`ac.arbitrate
+greedy_fixed_priority` 与 `ac.try_transfer` 均已打通 ACIR、ACSim、gfsim
+和 C++ codegen；模型复用普通版本的 system、producer、sink 与 runner，
+只替换 scheduler。
 
 目标是把 Crossbar 的每周期行为明确写成：
 
@@ -109,13 +110,13 @@ arbiter op 和 result 编号为 verifier 提供 grant provenance，不需要额�
 每条静态 Crossbar 路径对应一条 `ac.try_transfer`：
 
 ```mlir
-%f0 = ac.try_transfer @in0_A to @out0_A grant %g0 : i32
+%f0 = ac.try_transfer @in0_A to @out0_A when %g0 : i32
 ```
 
 其语义为：
 
 ```text
-fire = grant && source.readable && destination.writable
+fire = enable && source.readable && destination.writable
 ```
 
 当 `fire=true` 时，在同一个 Xfer barrier 原子完成：
@@ -128,7 +129,23 @@ fire = grant && source.readable && destination.writable
 当 `fire=false` 时，两个 Queue 都不变化。因此不需要依靠
 `try_send → try_recv → assert` 来提供功能正确性。
 
-## RTL 映射
+## 当前 lowering
+
+ACIR→ACSim 会把固定优先级仲裁器线性展开为普通 `arith` 布尔 SSA；resource
+只在编译期作为 capacity-1 冲突 token，不会生成 runtime object、binding、
+helper、数组或通用仲裁循环。生成的 C++ 是直接的 `bool` 局部运算。
+
+`ac.try_transfer` 则生成 compiler-known Queue invoke，并在 Xfer 阶段原子
+更新 source/destination。可用下面的命令生成 frozen ACIR、ACSim、
+ModelPlan、C++、对象文件和可执行文件：
+
+```sh
+bash examples/chao/crossbar_vc/run.sh --rtl-ideal
+```
+
+所有生成物均写入被忽略的 `build-rtl-ideal/`。
+
+## 未来 RTL 映射
 
 `ac.arbitrate` 可以 lower 成固定优先级选择和资源占用组合逻辑；多条
 静态 `ac.try_transfer` 可以合并成数据 mux、FIFO pop enable 和 push
@@ -146,11 +163,9 @@ in1_A_pop = g1 | g3;
 
 Queue 的 pop/push 在时钟边沿一起更新。
 
-## 还需要实现的 primitive
+## `ac.arbitrate` v1 范围
 
-### `ac.arbitrate`
-
-建议的最小接口是：
+当前接口是：
 
 ```mlir
 %g0, ... = ac.arbitrate greedy_fixed_priority
@@ -160,40 +175,43 @@ Queue 的 pop/push 在时钟边沿一起更新。
   ] : (i1, ...)
 ```
 
-需要实现：
+当前已支持：
 
-- ODS 定义、parser/printer 和 canonical form；
+- ODS 定义、parser/printer 和 verifier；
 - request/result 数量与类型检查；
 - resource 必须可解析且 capacity/issue-width 合法；
 - 按 candidate 文本顺序执行确定性 greedy matching；
-- 保证每个 resource 的 grant 数不超过其容量；
+- capacity-1 resource 的互斥 grant provenance；
 - 固定优先级版本无持久状态；
-- ACIR→ACSim、进程状态规划和 C++ 代码生成；
-- RTL lowering 到 priority/matching 组合逻辑。
+- ACIR→ACSim 的线性布尔 SSA 展开和 C++ 代码生成。
 
-第一版只需要 `greedy_fixed_priority`。Round-robin 应在以后增加显式指针
-状态，并且只在对应 transfer 实际 fire 后更新。
+尚未支持 capacity>1、公平/round-robin 仲裁、跨 epoch reservation 与 RTL
+backend。Round-robin 需要显式指针状态，并且只在对应 transfer 实际 fire
+后更新。
 
-### `ac.try_transfer`
+### `ac.try_transfer`（已实现）
 
 建议接口是：
 
 ```mlir
-%fire = ac.try_transfer @source to @destination grant %grant : T
+%fire = ac.try_transfer @source to @destination when %enable : T
 ```
 
-需要实现：
+当前实现包括：
 
 - source/destination Queue 解析；
 - payload、协议和时域一致性检查；
-- grant 必须为 `i1`；
-- RTL profile 下，竞争路径的 grant 必须直接来自可验证的 arbiter；
-- 对 source pop 和 destination push 创建一个不可拆分的事务组；
+- enable 和 fire 均为 `i1`；
+- 对 source pop 和 destination push 发布成对 proposal；
 - 任一侧不能接受时，两侧都不提交；
 - destination 得到的值必须等于旧 source head；
 - commit 后正确更新 Queue 统计和 readable/writable 唤醒；
-- ACSim/gfsim 的 grouped proposal 与原子 Xfer 支持；
-- RTL lowering 到 FIFO data、pop enable 和 push enable。
+- ACSim compiler-known invoke 与 gfsim 原子 Xfer；
+- C++ 生成调用 `source.tryTransferTo(destination, enable)`。
+
+verifier 只接受直接来自同一 arbiter 不同 result 的 enable，并要求相关
+candidate 共享 capacity-1 resource。布尔改写、不同 arbiter、同一 grant
+驱动多条 transfer，以及与同方向 send/recv 混用都会被拒绝。
 
 ## 不需要新增的 primitive
 
@@ -206,6 +224,5 @@ Queue 的 pop/push 在时钟边沿一起更新。
 - `ac.route`：现有位运算和比较已经适合 RTL；
 - `ac.writable`：现有 `ac.space > 0` 已能表达。
 
-除两个 primitive 外，还需要补充 module/process 级冲突验证、ACSim
-原子事务组、代码生成支持和未来的 RTL-lowerable profile；这些属于分析、
-lowering 和 runtime 工程，不需要继续扩张 ACIR primitive 集合。
+这些 primitive 已足够用于 ACSim/C++ 仿真；RTL-lowerable profile 仍是后续
+工作。

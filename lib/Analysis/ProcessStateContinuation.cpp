@@ -103,8 +103,8 @@ PlanSetBuilder::makePlannedAction(const ExpandedAction &expanded, uint32_t id) {
     action->scalarOp = ProcessScalarOperationPlan(std::move(scalar));
   }
   if (action->kind == ProcessActionKind::Original && action->sourceOperation) {
-    if (isa<ac::TrySendOp, ac::TryRecvOp, ac::PeekOp, ac::SpaceOp,
-            ac::ScheduleOp, ac::TryEventOp, ac::AssertOp>(
+    if (isa<ac::TrySendOp, ac::TryRecvOp, ac::TryTransferOp, ac::PeekOp,
+            ac::SpaceOp, ac::ScheduleOp, ac::TryEventOp, ac::AssertOp>(
             action->sourceOperation)) {
       action->emission = ProcessEmissionClass::Invoke;
       action->cost = 1;
@@ -500,8 +500,8 @@ PlanSetBuilder::planProcessContinuation(const ExpandedProcess &expanded,
         act->scalarOp = ProcessScalarOperationPlan(std::move(scalar));
       }
       if (act->kind == ProcessActionKind::Original && act->sourceOperation) {
-        if (isa<ac::TrySendOp, ac::TryRecvOp, ac::PeekOp, ac::SpaceOp,
-                ac::ScheduleOp, ac::TryEventOp, ac::AssertOp>(
+        if (isa<ac::TrySendOp, ac::TryRecvOp, ac::TryTransferOp, ac::PeekOp,
+                ac::SpaceOp, ac::ScheduleOp, ac::TryEventOp, ac::AssertOp>(
                 act->sourceOperation)) {
           act->emission = ProcessEmissionClass::Invoke;
           act->cost = 1;

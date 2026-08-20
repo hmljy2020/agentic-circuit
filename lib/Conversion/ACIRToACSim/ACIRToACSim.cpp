@@ -617,6 +617,7 @@ public:
 
 private:
   mlir::LogicalResult lower(mlir::ModuleOp input);
+  mlir::LogicalResult lowerArbiters(mlir::ModuleOp input);
 
   /// Validation and planning. No IR mutation happens in this phase.
   mlir::LogicalResult plan(mlir::ModuleOp input);
@@ -1200,6 +1201,13 @@ mlir::LogicalResult ACIRToACSimPass::planModule(ac::ModuleOp module,
       flowExports;
   llvm::DenseMap<Value, std::pair<std::string, bindings::PortBinding>>
       flowImports;
+  llvm::StringSet<> arbitrationResources;
+  module.walk([&](ac::ArbitrateOp arbiter) {
+    for (Attribute candidate : arbiter.getCandidateResources())
+      for (Attribute resource : cast<ArrayAttr>(candidate))
+        arbitrationResources.insert(
+            cast<FlatSymbolRefAttr>(resource).getValue());
+  });
   ac::ReturnOp moduleReturn;
   for (Operation &operation : module.getBody().front()) {
     if (auto instance = dyn_cast<ac::InstanceOp>(operation)) {
@@ -1478,6 +1486,12 @@ mlir::LogicalResult ACIRToACSimPass::planModule(ac::ModuleOp module,
       timeDomains.push_back(domain);
       continue;
     }
+    if (auto resource = dyn_cast<ac::ResourceOp>(operation);
+        resource && arbitrationResources.contains(resource.getSymName())) {
+      // Capacity-1 arbitration resources are compile-time conflict tokens.
+      // They intentionally have no ACSim owner, binding, or runtime object.
+      continue;
+    }
     if (auto returnOp = dyn_cast<ac::ReturnOp>(operation)) {
       moduleReturn = returnOp;
       continue;
@@ -1630,7 +1644,10 @@ mlir::LogicalResult ACIRToACSimPass::planModule(ac::ModuleOp module,
     llvm::StringSet<> referencedQueues;
     llvm::StringSet<> consumedEventQueues;
     target.process.walk([&](Operation *operation) {
-      if (auto send = dyn_cast<ac::TrySendOp>(operation))
+      if (auto transfer = dyn_cast<ac::TryTransferOp>(operation)) {
+        referencedQueues.insert(transfer.getSource());
+        referencedQueues.insert(transfer.getDestination());
+      } else if (auto send = dyn_cast<ac::TrySendOp>(operation))
         referencedQueues.insert(send.getQueue());
       else if (auto recv = dyn_cast<ac::TryRecvOp>(operation))
         referencedQueues.insert(recv.getQueue());
@@ -1999,7 +2016,10 @@ mlir::LogicalResult ACIRToACSimPass::plan(mlir::ModuleOp input) {
     if (failed(planModule(module.source, modules[index])))
       return mlir::failure();
 
-  if (failed(planProcesses(input)))
+  // Topology integrity and all grant-provenance checks above operate on the
+  // exact frozen ACIR.  Only after those checks do we expand the pure arbiter
+  // into ordinary Boolean SSA for ProcessState planning and emission.
+  if (failed(lowerArbiters(input)) || failed(planProcesses(input)))
     return mlir::failure();
 
   // Intern every binding-record realization identity.
@@ -2304,6 +2324,33 @@ void ACIRToACSimPass::emitProcessBody(
   llvm::StringSet<> seenQueues;
   ac::ProcessOp sourceProcess = placement.process;
   sourceProcess.walk([&](Operation *operation) {
+    auto addQueueReference = [&](FlatSymbolRefAttr reference) {
+      if (!reference || !seenQueues.insert(reference.getValue()).second)
+        return;
+      Operation *queue =
+          SymbolTable::lookupNearestSymbolFrom(operation, reference);
+      if (!isa_and_nonnull<ac::QueueOp, ac::EventQueueOp>(queue))
+        if (auto owner = operation->getParentOfType<ac::ModuleOp>())
+          for (Operation &candidate : owner.getBody().front())
+            if (isa<ac::QueueOp, ac::EventQueueOp>(candidate) &&
+                candidate
+                        .getAttrOfType<StringAttr>(
+                            SymbolTable::getSymbolAttrName())
+                        .getValue() == reference.getValue()) {
+              queue = &candidate;
+              break;
+            }
+      assert(queue && "validated queue reference must resolve");
+      llvm::StringRef path = isa<ac::QueueOp>(queue)
+                                 ? cast<ac::QueueOp>(queue).getPath()
+                                 : cast<ac::EventQueueOp>(queue).getPath();
+      referencedQueues.emplace_back(path.str(), reference.getValue().str());
+    };
+    if (auto transfer = dyn_cast<ac::TryTransferOp>(operation)) {
+      addQueueReference(transfer.getSourceAttr());
+      addQueueReference(transfer.getDestinationAttr());
+      return;
+    }
     FlatSymbolRefAttr reference;
     if (auto send = dyn_cast<ac::TrySendOp>(operation))
       reference = send.getQueueAttr();
@@ -2321,26 +2368,7 @@ void ACIRToACSimPass::emitProcessBody(
       reference = recv.getEventQueueAttr();
     else if (auto await = dyn_cast<ac::AwaitEventOp>(operation))
       reference = await.getEventQueueAttr();
-    if (!reference || !seenQueues.insert(reference.getValue()).second)
-      return;
-    Operation *queue =
-        SymbolTable::lookupNearestSymbolFrom(operation, reference);
-    if (!isa_and_nonnull<ac::QueueOp, ac::EventQueueOp>(queue))
-      if (auto owner = operation->getParentOfType<ac::ModuleOp>())
-        for (Operation &candidate : owner.getBody().front())
-          if (isa<ac::QueueOp, ac::EventQueueOp>(candidate) &&
-              candidate
-                      .getAttrOfType<StringAttr>(
-                          SymbolTable::getSymbolAttrName())
-                      .getValue() == reference.getValue()) {
-            queue = &candidate;
-            break;
-          }
-    assert(queue && "validated queue reference must resolve");
-    llvm::StringRef path = isa<ac::QueueOp>(queue)
-                               ? cast<ac::QueueOp>(queue).getPath()
-                               : cast<ac::EventQueueOp>(queue).getPath();
-    referencedQueues.emplace_back(path.str(), reference.getValue().str());
+    addQueueReference(reference);
   });
   llvm::sort(referencedQueues);
   for (const auto &[path, name] : referencedQueues) {
@@ -2602,8 +2630,16 @@ void ACIRToACSimPass::emitProcessBody(
       } else if (action.emission() == ProcessEmissionClass::Invoke) {
         llvm::StringRef identity =
             generatedCalleeIdentities[action.callee()->value()];
-        if (auto send =
-                dyn_cast_or_null<ac::TrySendOp>(action.sourceOperation()))
+        if (auto transfer =
+                dyn_cast_or_null<ac::TryTransferOp>(action.sourceOperation())) {
+          operands.insert(operands.begin(),
+                          queueArgumentsByPc[blockPlan.pc().value()].lookup(
+                              transfer.getDestination()));
+          operands.insert(operands.begin(),
+                          queueArgumentsByPc[blockPlan.pc().value()].lookup(
+                              transfer.getSource()));
+        } else if (auto send = dyn_cast_or_null<ac::TrySendOp>(
+                       action.sourceOperation()))
           operands.insert(operands.begin(),
                           queueArgumentsByPc[blockPlan.pc().value()].lookup(
                               send.getQueue()));
@@ -3177,12 +3213,85 @@ void ACIRToACSimPass::publish(mlir::ModuleOp input, mlir::ModuleOp staged) {
 }
 
 mlir::LogicalResult ACIRToACSimPass::lower(mlir::ModuleOp input) {
-  if (failed(plan(input)))
+  std::string frozenText;
+  {
+    llvm::raw_string_ostream output(frozenText);
+    input.print(output);
+  }
+  mlir::OwningOpRef<mlir::ModuleOp> lowered(
+      cast<mlir::ModuleOp>(input->clone()));
+  if (failed(plan(*lowered)))
     return mlir::failure();
-  auto staged = emit(input);
+  // The model fingerprint names the exact frozen ACIR input, not the private
+  // combinational clone used during conversion.
+  frozenAcirFingerprint = bindings::sha256Fingerprint(frozenText);
+  auto staged = emit(*lowered);
   if (failed(staged))
     return mlir::failure();
   publish(input, **staged);
+  return mlir::success();
+}
+
+mlir::LogicalResult ACIRToACSimPass::lowerArbiters(mlir::ModuleOp input) {
+  llvm::SmallVector<ac::ArbitrateOp> arbiters;
+  input.walk([&](ac::ArbitrateOp arbiter) { arbiters.push_back(arbiter); });
+  for (ac::ArbitrateOp arbiter : arbiters) {
+    if (failed(arbiter.verify()))
+      return mlir::failure();
+    OpBuilder builder(arbiter);
+    llvm::StringMap<unsigned> resourceIds;
+    llvm::SmallVector<Value> occupied;
+    auto resourceId = [&](Attribute resource) {
+      StringRef name = cast<FlatSymbolRefAttr>(resource).getValue();
+      auto [entry, inserted] =
+          resourceIds.try_emplace(name, resourceIds.size());
+      if (inserted)
+        occupied.push_back(Value());
+      return entry->second;
+    };
+    llvm::SmallVector<Value> grants;
+    Value trueValue;
+    for (auto [request, candidate] :
+         llvm::zip(arbiter.getRequests(), arbiter.getCandidateResources())) {
+      auto resources = cast<ArrayAttr>(candidate);
+      llvm::SmallVector<Value> blockers;
+      llvm::SmallDenseSet<Value, 4> seenBlockers;
+      blockers.reserve(resources.size());
+      for (Attribute resource : resources)
+        if (Value prior = occupied[resourceId(resource)];
+            prior && seenBlockers.insert(prior).second)
+          blockers.push_back(prior);
+
+      Value grant = request;
+      if (!blockers.empty()) {
+        Value blocked = blockers.front();
+        for (Value blocker : llvm::drop_begin(blockers))
+          blocked =
+              arith::OrIOp::create(builder, arbiter.getLoc(), blocked, blocker);
+        if (!trueValue)
+          trueValue = arith::ConstantOp::create(builder, arbiter.getLoc(),
+                                                builder.getI1Type(),
+                                                builder.getBoolAttr(true));
+        Value available = arith::XOrIOp::create(builder, arbiter.getLoc(),
+                                                blocked, trueValue);
+        grant = arith::AndIOp::create(builder, arbiter.getLoc(), request,
+                                      available);
+      }
+      grants.push_back(grant);
+      for (Attribute resource : resources) {
+        Value &slot = occupied[resourceId(resource)];
+        Value prior = slot;
+        slot = prior ? arith::OrIOp::create(builder, arbiter.getLoc(), prior,
+                                            grant)
+                     : grant;
+      }
+    }
+    if (grants.size() != arbiter.getNumResults())
+      return arbiter.emitOpError(
+          "cannot lower mismatched candidate and grant counts");
+    arbiter->replaceAllUsesWith(grants);
+    arbiter.erase();
+  }
   return mlir::success();
 }
 

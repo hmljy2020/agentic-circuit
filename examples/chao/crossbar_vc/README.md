@@ -6,11 +6,12 @@ eight logical queues (`in0.A/B`, `in1.A/B`, `out0.A/B`, `out1.A/B`). A single
 centralized scheduler process computes a matching every cycle and commits up to
 two transfers **atomically in the same simulation epoch**.
 
-This example is the deliverable of a feasibility evaluation that asked whether
-the v0.2 queue API can express an atomic input-to-output transfer. The answer
-is **yes — without a new op**: the *propose-then-Xfer discipline* below makes
-every grant a lossless, single-epoch transfer, so no `propose_transfer`
-operation is introduced and no compiler/runtime/spec source is touched.
+Two scheduler variants are provided. `model.mlir` preserves the original
+send/receive feasibility model. `model.rtl-ideal.mlir` is the preferred
+compiler-native variant: it uses `ac.arbitrate greedy_fixed_priority` and
+atomic `ac.try_transfer`, and is supported through ACSim and generated C++.
+The RTL backend, capacity greater than one, and fair/round-robin arbitration
+remain future work.
 
 ## What the model does
 
@@ -202,14 +203,16 @@ the two sink drains (10 + 10). The B-phase never grants — test 10.
 
 ```sh
 bash examples/chao/crossbar_vc/run.sh       # primary model (runs twice, diffs)
+bash examples/chao/crossbar_vc/run.sh --rtl-ideal # arbiter + atomic transfer
 bash examples/chao/crossbar_vc/scenarios/run_all.sh   # all six scenarios
 ```
 
 Both scripts set `ulimit -v 1900000` (this machine's DRAM budget), guard their
 build directories against symlink tricks, and rebuild from scratch. `run.sh`
 keeps the frozen ACIR, lowered ACSim, generated C++, and object files under
-`examples/chao/crossbar_vc/build/`, then links `bin/crossbar-demo` and executes
-it twice, diffing the two runs byte-for-byte (test 8). It also guards the
+`examples/chao/crossbar_vc/build-model/` (or `build-rtl-ideal/`), then links
+`bin/crossbar-demo` and executes it twice, diffing the two runs byte-for-byte
+(test 8). It also guards the
 generated object set: model + 1 module + 5 processes = 7 objects.
 
 ## Compilation stages

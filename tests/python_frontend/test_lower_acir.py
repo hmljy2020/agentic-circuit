@@ -114,6 +114,25 @@ class AcirLoweringTest(unittest.TestCase):
         )
         self.assertEqual(0, completed.returncode, completed.stderr)
 
+    def test_root_queue_process_actions_lower_and_verify(self) -> None:
+        result = elaborate(FIXTURES / "process_queue.py", FIXTURES)
+
+        self.assertEqual((), result.diagnostics)
+        assert result.acir is not None
+        self.assertIn("%accepted = ac.try_send @messages", result.acir)
+        self.assertIn("%value, %received = ac.try_recv @messages", result.acir)
+        verifier = acir_opt()
+        if verifier is None:
+            self.skipTest("acir-opt is not built")
+        completed = subprocess.run(
+            (str(verifier), "-o", "/dev/null", "-"),
+            input=result.acir,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(0, completed.returncode, completed.stderr)
+
     def test_equivalent_roots_emit_identical_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as first_root, tempfile.TemporaryDirectory() as second_root:
             first_path = Path(first_root) / "hierarchy.py"

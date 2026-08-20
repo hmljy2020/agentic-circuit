@@ -146,7 +146,8 @@ enum class ProcessHelperRole {
   ScalarWrap,
   ScalarUnwrap,
   WakeQueueReadable,
-  WakeQueueWritable
+  WakeQueueWritable,
+  QueueTryTransfer
 };
 enum class ProcessValueTypeMemberKind { Field, Element };
 enum class ProcessStorageSignedness { Signless, Signed, Unsigned };
@@ -538,6 +539,10 @@ ACIR_DECLARE_STRING_PAYLOAD(ProcessQueueTrySendPayload,
 ACIR_DECLARE_STRING_PAYLOAD(ProcessQueueTryRecvPayload,
                             llvm::StringRef element() const;
                             llvm::StringRef queue() const;);
+ACIR_DECLARE_STRING_PAYLOAD(ProcessQueueTryTransferPayload,
+                            llvm::StringRef element() const;
+                            llvm::StringRef source() const;
+                            llvm::StringRef destination() const;);
 ACIR_DECLARE_STRING_PAYLOAD(ProcessQueuePeekPayload,
                             llvm::StringRef element() const;
                             llvm::StringRef queue() const;);
@@ -615,6 +620,7 @@ public:
   const ProcessTraceDecodePayload &traceDecode() const;
   const ProcessQueueTrySendPayload &queueTrySend() const;
   const ProcessQueueTryRecvPayload &queueTryRecv() const;
+  const ProcessQueueTryTransferPayload &queueTryTransfer() const;
   const ProcessQueuePeekPayload &queuePeek() const;
   const ProcessQueueSpacePayload &queueSpace() const;
   const ProcessEventSchedulePayload &eventSchedule() const;

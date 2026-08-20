@@ -21,7 +21,7 @@ from ._definitions import (
     transaction,
 )
 from ._resources import address_map, address_space, queue
-from ._types import Endpoint, Flow, ResourceRef, Static, export_flow, import_flow
+from ._types import Endpoint, Flow, FlowBundle, ResourceRef, Static, export_flow, import_flow
 
 
 __all__ = (
@@ -45,9 +45,13 @@ __all__ = (
     "address_map",
     "Static",
     "Flow",
+    "FlowBundle",
     "export_flow",
     "import_flow",
     "Endpoint",
+    "try_send",
+    "try_recv",
+    "yield_sim",
 )
 
 
@@ -71,3 +75,15 @@ def instances(*values: object) -> Never:
 
 def view(value: object, *selectors: object) -> Never:
     return _not_implemented("view")
+
+
+def try_send(queue: object, value: int) -> Never:
+    return _not_implemented("try_send")
+
+
+def try_recv(queue: object) -> Never:
+    return _not_implemented("try_recv")
+
+
+def yield_sim() -> Never:
+    return _not_implemented("yield_sim")

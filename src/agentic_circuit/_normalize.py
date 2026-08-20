@@ -5,11 +5,14 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass
 
+from ._canonical_json import canonical_json_bytes, sha256_bytes
 from ._diagnostics import Diagnostic, DiagnosticBag, RelatedLocation, SourceSpan
 from ._frontend import CapturedProgram
 from ._naming import StableNameAllocator, StableNameError
 from ._resolve import (
     ResolvedCall,
+    PortBinding,
+    ResultBinding,
     ResolutionError,
     UnresolvedCall,
     ValueCategory,
@@ -31,6 +34,13 @@ class NormalizedScopeRegion:
 
 
 @dataclass(frozen=True, slots=True)
+class FlowBoundary:
+    value: ValueVersion
+    direction: str
+    queues: tuple[tuple[str, str, str, int], ...]
+
+
+@dataclass(frozen=True, slots=True)
 class NormalizedProgram:
     definition: str
     arguments: tuple[ValueVersion, ...]
@@ -39,6 +49,8 @@ class NormalizedProgram:
     returns: tuple[ValueVersion, ...]
     diagnostics: tuple[Diagnostic, ...]
     scopes: tuple[NormalizedScopeRegion, ...] = ()
+    captures: tuple[ValueVersion, ...] = ()
+    flow_boundaries: tuple[FlowBoundary, ...] = ()
 
     def value_names(self) -> tuple[str, ...]:
         return tuple(value.name for value in self.values)
@@ -63,6 +75,7 @@ def _annotation_category(annotation: ast.expr | None) -> ValueCategory:
         return {
             "Static": "static",
             "Flow": "flow",
+            "FlowBundle": "flow_bundle",
             "Endpoint": "endpoint",
             "ResourceRef": "resource",
         }.get(value.id, "static")
@@ -71,6 +84,8 @@ def _annotation_category(annotation: ast.expr | None) -> ValueCategory:
 
 def _result_category(type_key: str) -> ValueCategory:
     lowered = type_key.lower()
+    if "flowbundle" in lowered:
+        return "flow_bundle"
     if "flow" in lowered:
         return "flow"
     if "endpoint" in lowered:
@@ -78,6 +93,26 @@ def _result_category(type_key: str) -> ValueCategory:
     if "resource" in lowered:
         return "resource"
     return "result"
+
+
+def _bundle_spec_from_key(type_key: str) -> tuple[str, str, int] | None:
+    try:
+        expression = ast.parse(type_key, mode="eval").body
+    except SyntaxError:
+        return None
+    if not isinstance(expression, ast.Subscript) or not isinstance(expression.value, ast.Name):
+        return None
+    elements = expression.slice.elts if isinstance(expression.slice, ast.Tuple) else []
+    if (
+        expression.value.id != "FlowBundle"
+        or len(elements) != 3
+        or not isinstance(elements[0], ast.Name)
+        or not isinstance(elements[1], ast.Name)
+        or not isinstance(elements[2], ast.Constant)
+        or type(elements[2].value) is not int
+    ):
+        return None
+    return elements[0].id, elements[1].id, elements[2].value
 
 
 class _Normalizer:
@@ -100,6 +135,41 @@ class _Normalizer:
         self._scope_stack: list[str] = []
         self._names = StableNameAllocator()
         self._static_values = dict(captured.static_arguments)
+        self._consumed_bundles: dict[str, SourceSpan] = {}
+        self._bundle_outputs: dict[str, tuple[str, int, SourceSpan]] = {}
+        self._captures: list[ValueVersion] = []
+        self._flow_boundaries: list[FlowBoundary] = []
+        symbols = dict(captured.symbols)
+        from ._resources import QueueSpec
+        from ._types import FlowBundle
+        queues_by_name: dict[str, QueueSpec] = {}
+        for symbolic in symbols.values():
+            candidates = symbolic if isinstance(symbolic, (tuple, list)) else (symbolic,)
+            for candidate in candidates:
+                if isinstance(candidate, QueueSpec):
+                    queues_by_name[candidate.name] = candidate
+        for symbol_name, symbolic in captured.symbols:
+            if not isinstance(symbolic, FlowBundle) or len(symbolic.shape) != 1:
+                continue
+            protocol_name = getattr(symbolic.protocol, "__name__", "ReadyValid")
+            value = ValueVersion(
+                symbol_name,
+                0,
+                "flow_bundle",
+                f"FlowBundle[int, {protocol_name}, {symbolic.shape[0]}]",
+                "boundary:export",
+                "borrowed",
+            )
+            queue_specs = []
+            for leaf in symbolic.leaves:
+                queue_name = leaf.stable_name.removesuffix(".flow")
+                queue = queues_by_name.get(queue_name)
+                if queue is None:
+                    raise ResolutionError(f"exported Flow queue {queue_name!r} is not captured")
+                queue_specs.append((queue.name, queue.payload_type, queue.protocol, queue.depth))
+            self._current[symbol_name] = value
+            self._captures.append(value)
+            self._flow_boundaries.append(FlowBoundary(value, "export", tuple(queue_specs)))
         arguments: list[ValueVersion] = []
         for argument in [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]:
             value = ValueVersion(
@@ -202,11 +272,184 @@ class _Normalizer:
             return tuple(item.id for item in target.elts)
         raise ResolutionError("assignment target must be a name or name tuple")
 
+    def _context_target_names(self, target: ast.expr | None, instance: str) -> tuple[str, ...]:
+        if target is None or not isinstance(target, (ast.Tuple, ast.List)):
+            raise ResolutionError(
+                f"{instance} requires direct assignment to a non-empty flat tuple/list"
+            )
+        if not target.elts:
+            raise ResolutionError(f"{instance} requires at least one output target")
+        names: list[str] = []
+        for item in target.elts:
+            if isinstance(item, ast.Starred):
+                raise ResolutionError(f"{instance} does not allow a starred output target")
+            if not isinstance(item, ast.Name):
+                kind = "nested target" if isinstance(item, (ast.Tuple, ast.List)) else type(item).__name__
+                raise ResolutionError(f"{instance} output target must be a simple name, not {kind}")
+            names.append(item.id)
+        if len(names) != len(set(names)):
+            raise ResolutionError(f"{instance} output target names must be distinct")
+        return tuple(names)
+
+    def _consume_bundle(self, value: ValueVersion, node: ast.AST) -> None:
+        if value.category != "flow_bundle":
+            raise ResolutionError(
+                f"Crossbar input {value.source_name!r} must be a FlowBundle[int, ReadyValid]"
+            )
+        previous = self._consumed_bundles.get(value.name)
+        if previous is not None:
+            raise ResolutionError(
+                f"ACPY-FLOW-006: FlowBundle {value.source_name!r} is consumed more than once"
+            )
+        self._consumed_bundles[value.name] = _span(self._captured.source.path, node)
+
+    def _context_call(
+        self, target: ast.expr | None, node: ast.Call, schema: ComponentSchema
+    ) -> None:
+        source = _span(self._captured.source.path, node)
+        display_name = schema.identity.rsplit(".", 1)[-1]
+        diagnostic_name = display_name
+        for keyword in node.keywords:
+            if (
+                keyword.arg == "name"
+                and isinstance(keyword.value, ast.Constant)
+                and type(keyword.value.value) is str
+            ):
+                diagnostic_name = f"{display_name} instance {keyword.value.value!r}"
+                break
+        inferred_outputs = (
+            len(target.elts) if isinstance(target, (ast.Tuple, ast.List)) else None
+        )
+        try:
+            target_names = self._context_target_names(target, display_name)
+            if any(keyword.arg is None for keyword in node.keywords):
+                raise ResolutionError("keyword unpacking is not supported")
+            signature = signature_for(schema)
+            keyword_values = {
+                keyword.arg: keyword.value for keyword in node.keywords if keyword.arg is not None
+            }
+            bound = signature.bind(*node.args, **keyword_values)
+            bound.apply_defaults()
+            inputs_expression = bound.arguments["inputs"]
+            if not isinstance(inputs_expression, ast.Tuple) or not inputs_expression.elts:
+                raise ResolutionError("Crossbar inputs must be a non-empty fixed tuple")
+            if any(not isinstance(item, ast.Name) for item in inputs_expression.elts):
+                raise ResolutionError("Crossbar inputs must name individual physical-port FlowBundles")
+            input_values = tuple(self._value(item) for item in inputs_expression.elts)
+            if len({value.name for value in input_values}) != len(input_values):
+                raise ResolutionError("ACPY-FLOW-006: Crossbar input tuple repeats one FlowBundle")
+            static_values = {
+                parameter.name: self._static(bound.arguments[parameter.name])
+                for parameter in schema.parameters
+            }
+            explicit_name = self._static(bound.arguments["name"])
+            if explicit_name is not None and (type(explicit_name) is not str or not explicit_name):
+                raise ResolutionError("instance name must be a non-empty static string")
+            integers = (
+                "virtual_channels", "ingress_depth", "egress_depth", "route_offset", "route_width"
+            )
+            if any(type(static_values[name]) is not int for name in integers):
+                raise ResolutionError("Crossbar numeric parameters must be static integers")
+            vc = static_values["virtual_channels"]
+            ingress = static_values["ingress_depth"]
+            egress = static_values["egress_depth"]
+            offset = static_values["route_offset"]
+            width = static_values["route_width"]
+            assert isinstance(vc, int) and isinstance(ingress, int) and isinstance(egress, int)
+            assert isinstance(offset, int) and isinstance(width, int)
+            if vc < 1:
+                raise ResolutionError("Crossbar virtual_channels must be >= 1")
+            if ingress < 1 or egress < 1:
+                raise ResolutionError("Crossbar ingress_depth and egress_depth must be >= 1")
+            if offset < 0 or width < 1 or offset + width > 32:
+                raise ResolutionError("Crossbar route slice must satisfy 0 <= offset and offset + width <= 32")
+            if static_values["policy"] != "greedy_fixed_priority":
+                raise ResolutionError("Crossbar policy must be 'greedy_fixed_priority'")
+            input_ports = len(input_values)
+            output_ports = len(target_names)
+            if output_ports > 2**width:
+                raise ResolutionError("Crossbar output count exceeds route_width encoding")
+            if input_ports * output_ports * vc > 4096:
+                raise ResolutionError("Crossbar input_ports * output_ports * virtual_channels exceeds 4096")
+            for expression, value in zip(inputs_expression.elts, input_values, strict=True):
+                bundle_spec = _bundle_spec_from_key(value.type_key)
+                if bundle_spec is not None and bundle_spec != ("int", "ReadyValid", vc):
+                    raise ResolutionError(
+                        f"Crossbar input {value.source_name!r} must have shape ({vc},) and Flow[int, ReadyValid] leaves"
+                    )
+                self._consume_bundle(value, expression)
+        except (ResolutionError, ValueError, TypeError) as error:
+            count = (
+                f" (inferred output_ports={inferred_outputs})"
+                if inferred_outputs is not None
+                else ""
+            )
+            self._error(
+                "ACPY-CROSSBAR-001",
+                f"{diagnostic_name}{count}: {error}",
+                target or node,
+            )
+            return
+
+        entity_key = f"call:{node.lineno}:{node.col_offset + 1}"
+        try:
+            instance_name = self._names.allocate(
+                schema.identity, None, explicit_name, (node.lineno, node.col_offset + 1)
+            )
+        except StableNameError as error:
+            self._error("ACPY-NAME-002", str(error), node)
+            return
+        result_values = tuple(
+            self._new_value(
+                name,
+                "flow_bundle",
+                f"FlowBundle[int, ReadyValid, {vc}]",
+                entity_key,
+                "owned",
+            )
+            for name in target_names
+        )
+        for index, value in enumerate(result_values):
+            self._bundle_outputs[value.name] = (instance_name, index, source)
+        derived = {
+            **static_values,
+            "input_ports": input_ports,
+            "output_ports": output_ports,
+            "payload": "i32",
+            "protocol": "ready_valid",
+        }
+        fingerprint = sha256_bytes(
+            canonical_json_bytes({"schema": schema.fingerprint, **derived})
+        )
+        static_arguments = tuple(sorted(derived.items()))
+        self._calls.append(
+            ResolvedCall(
+                entity_key=entity_key,
+                schema=schema,
+                instance_name=instance_name,
+                static_arguments=static_arguments,
+                inputs=tuple(
+                    PortBinding(f"input{index}", value, "flow", "consumer")
+                    for index, value in enumerate(input_values)
+                ),
+                results=tuple(
+                    ResultBinding("output", value, index, (vc,))
+                    for index, value in enumerate(result_values)
+                ),
+                source=source,
+                specialization=fingerprint,
+            )
+        )
+
     def _call(self, target: ast.expr | None, node: ast.Call) -> None:
         if not isinstance(node.func, ast.Name):
             self._error("ACPY-CALL-001", "call target must be a registered name", node)
             return
         candidates = self._captured.registry.candidates(node.func.id)
+        generators = tuple(schema for schema in candidates if schema.generator is not None)
+        if len(generators) == 1 and len(candidates) == 1:
+            self._context_call(target, node, generators[0])
+            return
         viable: list[
             tuple[
                 ComponentSchema,
@@ -328,6 +571,52 @@ class _Normalizer:
         except ResolutionError as error:
             self._error("ACPY-SYMBOL-001", str(error), statement)
 
+    def _import_flow(self, node: ast.Call) -> None:
+        if len(node.args) != 2 or node.keywords or not isinstance(node.args[0], ast.Name):
+            self._error(
+                "ACPY-FLOW-007",
+                "import_flow requires one FlowBundle name and one fixed Queue tuple",
+                node,
+            )
+            return
+        queue_expression = node.args[1]
+        if not isinstance(queue_expression, (ast.Tuple, ast.List)) or not queue_expression.elts:
+            self._error("ACPY-FLOW-007", "import_flow queues must be a non-empty fixed tuple", node)
+            return
+        symbols = dict(self._captured.symbols)
+        from ._resources import QueueSpec
+        queues = []
+        for expression in queue_expression.elts:
+            queue = symbols.get(expression.id) if isinstance(expression, ast.Name) else None
+            if (
+                isinstance(expression, ast.Subscript)
+                and isinstance(expression.value, ast.Name)
+                and isinstance(expression.slice, ast.Constant)
+                and type(expression.slice.value) is int
+            ):
+                collection = symbols.get(expression.value.id)
+                index = expression.slice.value
+                if isinstance(collection, (tuple, list)) and 0 <= index < len(collection):
+                    queue = collection[index]
+            if not isinstance(queue, QueueSpec):
+                self._error("ACPY-FLOW-001", "import_flow requires captured Queue declarations", expression)
+                return
+            queues.append((queue.name, queue.payload_type, queue.protocol, queue.depth))
+        try:
+            value = self._value(node.args[0])
+            self._consume_bundle(value, node.args[0])
+        except ResolutionError as error:
+            self._error("ACPY-FLOW-007", str(error), node)
+            return
+        bundle = _bundle_spec_from_key(value.type_key)
+        if bundle is None or bundle[2] != len(queues):
+            self._error("ACPY-FLOW-007", "Queue tuple and FlowBundle shape must match", node)
+            return
+        if any(payload != "i32" or protocol != "ready_valid" for _, payload, protocol, _ in queues):
+            self._error("ACPY-FLOW-005", "Crossbar boundaries require i32/ready_valid queues", node)
+            return
+        self._flow_boundaries.append(FlowBoundary(value, "import", tuple(queues)))
+
     def _with_scope(self, statement: ast.With) -> None:
         valid = (
             len(statement.items) == 1
@@ -384,7 +673,11 @@ class _Normalizer:
         elif isinstance(statement, ast.Expr) and isinstance(
             statement.value, ast.Call
         ):
-            self._call(None, statement.value)
+            function = statement.value.func
+            if isinstance(function, ast.Name) and function.id == "import_flow":
+                self._import_flow(statement.value)
+            else:
+                self._call(None, statement.value)
         elif isinstance(statement, ast.Pass):
             return
         else:
@@ -397,6 +690,18 @@ class _Normalizer:
     def run(self) -> NormalizedProgram:
         for statement in self._node.body:
             self._statement(statement)
+        returned = {value.name for value in self._returns}
+        for value_name, (instance, port_index, source) in self._bundle_outputs.items():
+            if value_name not in self._consumed_bundles and value_name not in returned:
+                self._diagnostics.add(
+                    Diagnostic(
+                        stage="ssa-normalization",
+                        code="ACPY-FLOW-008",
+                        severity="error",
+                        message=f"unconnected linear output {instance}.output[{port_index}]",
+                        source=source,
+                    )
+                )
         return NormalizedProgram(
             definition=self._definition,
             arguments=self._arguments,
@@ -405,6 +710,8 @@ class _Normalizer:
             returns=self._returns,
             diagnostics=self._diagnostics.freeze(),
             scopes=tuple(scope for scope in self._scopes if scope is not None),
+            captures=tuple(self._captures),
+            flow_boundaries=tuple(self._flow_boundaries),
         )
 
 

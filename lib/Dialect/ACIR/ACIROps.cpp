@@ -1376,7 +1376,44 @@ verifyRuntimeReferences(ModuleOp module,
     return failure();
   for (ProcessOp process : module.getBody().front().getOps<ProcessOp>()) {
     WalkResult walk = process.getBody().walk([&](Operation *operation) {
-      if (auto send = dyn_cast<TrySendOp>(operation)) {
+      if (auto transfer = dyn_cast<TryTransferOp>(operation)) {
+        auto source = dyn_cast_or_null<QueueOp>(lookupExpected(
+            transfer, transfer.getSource(), QueueOp::getOperationName()));
+        auto destination = dyn_cast_or_null<QueueOp>(lookupExpected(
+            transfer, transfer.getDestination(), QueueOp::getOperationName()));
+        if (source && source.getPayload() != transfer.getPayload()) {
+          transfer.emitOpError() << "payload type " << transfer.getPayload()
+                                 << " does not match source queue payload type "
+                                 << source.getPayload();
+          result = failure();
+        }
+        if (destination && destination.getPayload() != transfer.getPayload()) {
+          transfer.emitOpError()
+              << "payload type " << transfer.getPayload()
+              << " does not match destination queue payload type "
+              << destination.getPayload();
+          result = failure();
+        }
+        if (source && destination &&
+            source.getProtocolAttr() != destination.getProtocolAttr()) {
+          transfer.emitOpError()
+              << "source and destination queue protocols must match";
+          result = failure();
+        }
+        if (exportedQueues.contains(transfer.getSource())) {
+          transfer.emitOpError() << "ACFLOW-QUEUE-ROLE: Flow source queue '"
+                                 << transfer.getSource()
+                                 << "' cannot be consumed by a local process";
+          result = failure();
+        }
+        if (importedQueues.contains(transfer.getDestination())) {
+          transfer.emitOpError()
+              << "ACFLOW-QUEUE-ROLE: Flow destination queue '"
+              << transfer.getDestination()
+              << "' cannot be written by a local process";
+          result = failure();
+        }
+      } else if (auto send = dyn_cast<TrySendOp>(operation)) {
         auto queue = dyn_cast_or_null<QueueOp>(
             lookupExpected(send, send.getQueue(), QueueOp::getOperationName()));
         if (queue && queue.getPayload() != send.getValue().getType()) {
@@ -1497,6 +1534,76 @@ verifyRuntimeReferences(ModuleOp module,
     if (walk.wasInterrupted())
       return failure();
   }
+
+  struct QueuePortUse {
+    Operation *operation = nullptr;
+    TryTransferOp transfer;
+  };
+  llvm::StringMap<llvm::SmallVector<QueuePortUse, 2>> popUses;
+  llvm::StringMap<llvm::SmallVector<QueuePortUse, 2>> pushUses;
+  llvm::DenseMap<Value, TryTransferOp> transferByGrant;
+  auto mutuallyExclusive = [](TryTransferOp left, TryTransferOp right) {
+    auto leftArbiter = left.getEnable().getDefiningOp<ArbitrateOp>();
+    auto rightArbiter = right.getEnable().getDefiningOp<ArbitrateOp>();
+    if (!leftArbiter || leftArbiter != rightArbiter ||
+        left.getEnable() == right.getEnable())
+      return false;
+    unsigned leftIndex = cast<OpResult>(left.getEnable()).getResultNumber();
+    unsigned rightIndex = cast<OpResult>(right.getEnable()).getResultNumber();
+    auto leftResources =
+        cast<ArrayAttr>(leftArbiter.getCandidateResources()[leftIndex]);
+    auto rightResources =
+        cast<ArrayAttr>(leftArbiter.getCandidateResources()[rightIndex]);
+    llvm::DenseSet<Attribute> occupied(leftResources.begin(),
+                                       leftResources.end());
+    return llvm::any_of(rightResources, [&](Attribute resource) {
+      return occupied.contains(resource);
+    });
+  };
+  auto recordPortUse = [&](Operation *operation, StringRef queue, bool pop,
+                           TryTransferOp transfer) {
+    auto &uses = pop ? popUses : pushUses;
+    auto &priorUses = uses[queue];
+    for (const QueuePortUse &prior : priorUses) {
+      if (!transfer && !prior.transfer)
+        continue;
+      if (transfer && prior.transfer &&
+          mutuallyExclusive(transfer, prior.transfer))
+        continue;
+      auto diagnostic = operation->emitOpError()
+                        << "queue '" << queue << "' has conflicting "
+                        << (pop ? "pop" : "push")
+                        << " operations in one commit epoch";
+      diagnostic.attachNote(prior.operation->getLoc())
+          << "conflicting operation is here";
+      result = failure();
+      break;
+    }
+    priorUses.push_back({operation, transfer});
+  };
+  for (ProcessOp process : module.getBody().front().getOps<ProcessOp>())
+    process.walk([&](Operation *operation) {
+      if (auto transfer = dyn_cast<TryTransferOp>(operation)) {
+        if (transfer.getEnable().getDefiningOp<ArbitrateOp>()) {
+          auto [prior, inserted] =
+              transferByGrant.try_emplace(transfer.getEnable(), transfer);
+          if (!inserted) {
+            auto diagnostic = transfer.emitOpError(
+                "one arbiter grant may directly enable at most one "
+                "ac.try_transfer");
+            diagnostic.attachNote(prior->second.getLoc())
+                << "first transfer enabled by this grant is here";
+            result = failure();
+          }
+        }
+        recordPortUse(operation, transfer.getSource(), true, transfer);
+        recordPortUse(operation, transfer.getDestination(), false, transfer);
+      } else if (auto send = dyn_cast<TrySendOp>(operation)) {
+        recordPortUse(operation, send.getQueue(), false, TryTransferOp());
+      } else if (auto recv = dyn_cast<TryRecvOp>(operation)) {
+        recordPortUse(operation, recv.getQueue(), true, TryTransferOp());
+      }
+    });
   return result;
 }
 
@@ -1508,12 +1615,12 @@ LogicalResult verifyProcessOperations(ModuleOp module) {
     process.getBody().walk([&](Operation *operation) {
       result =
           TypeSwitch<Operation *, LogicalResult>(operation)
-              .Case<TrySendOp, TryRecvOp, PeekOp, SpaceOp, ScheduleOp,
-                    TryEventOp, WaitUntilOp, WaitForOp, AwaitEventOp,
-                    AwaitQueueOp, YieldSimOp, TraceOpenOp, TraceNextOp,
-                    TraceDecodeOp, TraceEofOp, TracePositionOp, RequireOp,
-                    EnsureOp, AssertOp, ProbeOp, StatAddOp, InstrumentationOp>(
-                  [](auto op) { return op.verify(); })
+              .Case<TrySendOp, TryRecvOp, TryTransferOp, ArbitrateOp, PeekOp,
+                    SpaceOp, ScheduleOp, TryEventOp, WaitUntilOp, WaitForOp,
+                    AwaitEventOp, AwaitQueueOp, YieldSimOp, TraceOpenOp,
+                    TraceNextOp, TraceDecodeOp, TraceEofOp, TracePositionOp,
+                    RequireOp, EnsureOp, AssertOp, ProbeOp, StatAddOp,
+                    InstrumentationOp>([](auto op) { return op.verify(); })
               .Default([](Operation *) { return success(); });
       return failed(result) ? WalkResult::interrupt() : WalkResult::advance();
     });
@@ -1788,6 +1895,28 @@ LogicalResult ModuleOp::verify() {
     return failure();
   if (failed(verifyProcessOperations(*this)))
     return failure();
+  llvm::StringMap<ArbitrateOp> resourceArbiters;
+  for (ProcessOp process : entry.getOps<ProcessOp>()) {
+    WalkResult walk = process.getBody().walk([&](ArbitrateOp arbiter) {
+      for (Attribute candidate : arbiter.getCandidateResources())
+        for (Attribute resource : cast<ArrayAttr>(candidate)) {
+          StringRef name = cast<FlatSymbolRefAttr>(resource).getValue();
+          auto [prior, inserted] = resourceArbiters.try_emplace(name, arbiter);
+          if (!inserted && prior->second != arbiter) {
+            auto diagnostic = arbiter.emitOpError()
+                              << "resource '@" << name
+                              << "' may belong to only one arbiter in a "
+                                 "commit epoch";
+            diagnostic.attachNote(prior->second.getLoc())
+                << "first arbiter using this resource is here";
+            return WalkResult::interrupt();
+          }
+        }
+      return WalkResult::advance();
+    });
+    if (walk.wasInterrupted())
+      return failure();
+  }
   if (failed(verifyRuntimeReferences(*this, producerIndex)))
     return failure();
   for (ViewOp view : entry.getOps<ViewOp>())
@@ -2525,11 +2654,12 @@ bool isAllowedProcessOperation(Operation *operation) {
           operation))
     return true;
   return isa<RecordCreateOp, RecordGetOp, RecordWithOp, PacketSerializeOp,
-             PacketDeserializeOp, TrySendOp, TryRecvOp, PeekOp, SpaceOp,
-             ScheduleOp, TryEventOp, WaitUntilOp, WaitForOp, AwaitEventOp,
-             AwaitQueueOp, YieldSimOp, TraceOpenOp, TraceNextOp, TraceDecodeOp,
-             TraceEofOp, TracePositionOp, RequireOp, EnsureOp, AssertOp,
-             ProbeOp, StatAddOp, InstrumentationOp>(operation);
+             PacketDeserializeOp, TrySendOp, TryRecvOp, TryTransferOp, PeekOp,
+             SpaceOp, ScheduleOp, TryEventOp, WaitUntilOp, WaitForOp,
+             AwaitEventOp, AwaitQueueOp, YieldSimOp, TraceOpenOp, TraceNextOp,
+             TraceDecodeOp, TraceEofOp, TracePositionOp, RequireOp, EnsureOp,
+             AssertOp, ProbeOp, StatAddOp, InstrumentationOp, ArbitrateOp>(
+      operation);
 }
 
 std::optional<bool> constantBool(Value value) {
@@ -3087,8 +3217,8 @@ LogicalResult ProcessOp::verify() {
   LogicalResult result = success();
   walkOperationsIterative(getBody(), [&](Operation *operation) {
     if (getKind() == "monitor" &&
-        isa<TrySendOp, TryRecvOp, ScheduleOp, TryEventOp, WaitForOp,
-            AwaitEventOp>(operation)) {
+        isa<TrySendOp, TryRecvOp, TryTransferOp, ScheduleOp, TryEventOp,
+            WaitForOp, AwaitEventOp>(operation)) {
       operation->emitOpError(
           "monitor process cannot perform functional state effects");
       result = failure();
@@ -3129,8 +3259,152 @@ LogicalResult ProcessOp::verify() {
   return verifyTraceProvenance(*this);
 }
 
+ParseResult ArbitrateOp::parse(OpAsmParser &parser, OperationState &result) {
+  Builder &builder = parser.getBuilder();
+  StringRef policy;
+  SmallVector<OpAsmParser::UnresolvedOperand> requests;
+  SmallVector<Attribute> candidateResources;
+  if (parser.parseKeyword(&policy) || parser.parseKeyword("candidates") ||
+      parser.parseLSquare())
+    return failure();
+  if (failed(parser.parseOptionalRSquare())) {
+    do {
+      requests.emplace_back();
+      SmallVector<Attribute> resources;
+      if (parser.parseOperand(requests.back()) || parser.parseKeyword("uses") ||
+          parser.parseLSquare())
+        return failure();
+      if (failed(parser.parseOptionalRSquare())) {
+        do {
+          FlatSymbolRefAttr resource;
+          if (parser.parseAttribute(resource))
+            return failure();
+          resources.push_back(resource);
+        } while (succeeded(parser.parseOptionalComma()));
+        if (parser.parseRSquare())
+          return failure();
+      }
+      candidateResources.push_back(builder.getArrayAttr(resources));
+    } while (succeeded(parser.parseOptionalComma()));
+    if (parser.parseRSquare())
+      return failure();
+  }
+  result.addAttribute("policy", builder.getStringAttr(policy));
+  result.addAttribute("candidate_resources",
+                      builder.getArrayAttr(candidateResources));
+  if (parser.parseOptionalAttrDictWithKeyword(result.attributes) ||
+      parser.parseColon() || parser.parseLParen())
+    return failure();
+  SmallVector<Type> types;
+  if (failed(parser.parseOptionalRParen())) {
+    do {
+      Type type;
+      if (parser.parseType(type))
+        return failure();
+      types.push_back(type);
+    } while (succeeded(parser.parseOptionalComma()));
+    if (parser.parseRParen())
+      return failure();
+  }
+  if (types.size() != requests.size())
+    return parser.emitError(parser.getCurrentLocation(),
+                            "expected one i1 type per candidate");
+  if (parser.resolveOperands(requests, types, parser.getCurrentLocation(),
+                             result.operands))
+    return failure();
+  result.addTypes(types);
+  return success();
+}
+
+void ArbitrateOp::print(OpAsmPrinter &printer) {
+  printer << ' ' << getPolicy() << " candidates [";
+  llvm::interleaveComma(llvm::zip(getRequests(), getCandidateResources()),
+                        printer, [&](auto candidate) {
+                          printer << std::get<0>(candidate) << " uses [";
+                          llvm::interleaveComma(
+                              cast<ArrayAttr>(std::get<1>(candidate)), printer,
+                              [&](Attribute resource) { printer << resource; });
+                          printer << ']';
+                        });
+  printer << ']';
+  printer.printOptionalAttrDictWithKeyword((*this)->getAttrs(),
+                                           {"policy", "candidate_resources"});
+  printer << " : (";
+  llvm::interleaveComma(getRequests().getTypes(), printer,
+                        [&](Type type) { printer << type; });
+  printer << ')';
+}
+
+LogicalResult ArbitrateOp::verify() {
+  if (getPolicy() != "greedy_fixed_priority")
+    return emitOpError("policy must be exactly 'greedy_fixed_priority'");
+  auto process = dyn_cast_or_null<ProcessOp>((*this)->getParentOp());
+  if (!process)
+    return emitOpError(
+        "greedy_fixed_priority must be directly inside an ac.process body");
+  if (getRequests().size() != getGrants().size() ||
+      getRequests().size() != getCandidateResources().size())
+    return emitOpError(
+        "candidate, request, result, and resource-list counts must match");
+  for (Value request : getRequests())
+    if (!request.getType().isInteger(1))
+      return emitOpError("all requests must have type i1");
+  for (Value grant : getGrants())
+    if (!grant.getType().isInteger(1))
+      return emitOpError("all results must have type i1");
+
+  auto module = (*this)->getParentOfType<ModuleOp>();
+  if (!module)
+    return emitOpError("must be nested in an ac.module");
+  llvm::StringMap<ResourceOp> resources;
+  for (ResourceOp resource : module.getBody().front().getOps<ResourceOp>())
+    resources[resource.getSymName()] = resource;
+  for (auto [candidateIndex, resourceList] :
+       llvm::enumerate(getCandidateResources())) {
+    auto list = dyn_cast<ArrayAttr>(resourceList);
+    if (!list)
+      return emitOpError() << "candidate " << candidateIndex
+                           << " resources must be an array";
+    llvm::DenseSet<Attribute> seen;
+    for (Attribute attribute : list) {
+      auto reference = dyn_cast<FlatSymbolRefAttr>(attribute);
+      ResourceOp resource =
+          reference ? resources.lookup(reference.getValue()) : ResourceOp();
+      if (!reference || !resource)
+        return emitOpError()
+               << "candidate " << candidateIndex << " resource '" << attribute
+               << "' must resolve to an ac.resource in the same "
+                  "module";
+      if (!seen.insert(reference).second)
+        return emitOpError()
+               << "candidate " << candidateIndex
+               << " contains duplicate resource '" << reference << "'";
+      auto latency = resource.getLatencyModel();
+      auto kind = latency.getAs<StringAttr>("kind");
+      auto ticks = latency.getAs<IntegerAttr>("ticks");
+      if (resource.getCapacity() != 1 || resource.getIssueWidth() != 1 ||
+          resource.getInitiationInterval() != 1 || !kind ||
+          kind.getValue() != "fixed" || !ticks || ticks.getInt() != 1)
+        return emitOpError()
+               << "resource '" << reference
+               << "' must have capacity=1, issue_width=1, ii=1, and fixed "
+                  "latency of 1 tick";
+    }
+  }
+  return success();
+}
+
 LogicalResult TrySendOp::verify() { return requireProcess(*this); }
 LogicalResult TryRecvOp::verify() { return requireProcess(*this); }
+LogicalResult TryTransferOp::verify() {
+  if (failed(requireProcess(*this)))
+    return failure();
+  if (getSourceAttr() == getDestinationAttr())
+    return emitOpError("source and destination queues must be different");
+  if (!getEnable().getType().isInteger(1) || !getFire().getType().isInteger(1))
+    return emitOpError("enable and fire must both have type i1");
+  return success();
+}
 LogicalResult PeekOp::verify() { return requireProcess(*this); }
 LogicalResult SpaceOp::verify() { return requireProcess(*this); }
 LogicalResult TryEventOp::verify() { return requireProcess(*this); }
@@ -3285,9 +3559,10 @@ LogicalResult InstrumentationOp::verify() {
   LogicalResult result = success();
   walkOperationsIterative(getBody(), [&](Operation *operation) {
     if (isa<ObservationOpInterface>(operation) || isMemoryEffectFree(operation))
-      if (!isa<TrySendOp, TryRecvOp, ScheduleOp, TryEventOp, WaitUntilOp,
-               WaitForOp, AwaitEventOp, AwaitQueueOp, YieldSimOp, TraceOpenOp,
-               TraceNextOp, TraceEofOp, TracePositionOp>(operation))
+      if (!isa<TrySendOp, TryRecvOp, TryTransferOp, ScheduleOp, TryEventOp,
+               WaitUntilOp, WaitForOp, AwaitEventOp, AwaitQueueOp, YieldSimOp,
+               TraceOpenOp, TraceNextOp, TraceEofOp, TracePositionOp>(
+              operation))
         return WalkResult::advance();
     operation->emitOpError(
         "instrumentation may contain only removable observation operations");
@@ -3323,6 +3598,24 @@ void TryRecvOp::getEffects(
             ProtocolStateResource::get());
   addEffect(effects, *this, MemoryEffects::Write::get(), getQueue(), "protocol",
             ProtocolStateResource::get());
+}
+
+void TryTransferOp::getEffects(
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  auto addEndpoint = [&](StringRef queue) {
+    if (!isa_and_nonnull<QueueOp>(resolvedRuntimeTarget(*this, queue)))
+      return;
+    addEffect(effects, *this, MemoryEffects::Read::get(), queue, "queue",
+              QueueStateResource::get());
+    addEffect(effects, *this, MemoryEffects::Write::get(), queue, "queue",
+              QueueStateResource::get());
+    addEffect(effects, *this, MemoryEffects::Read::get(), queue, "protocol",
+              ProtocolStateResource::get());
+    addEffect(effects, *this, MemoryEffects::Write::get(), queue, "protocol",
+              ProtocolStateResource::get());
+  };
+  addEndpoint(getSource());
+  addEndpoint(getDestination());
 }
 
 void PeekOp::getEffects(

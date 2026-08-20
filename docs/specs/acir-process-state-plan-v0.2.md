@@ -896,12 +896,13 @@ enum class ProcessHelperRole {
   ScalarWrap,
   ScalarUnwrap,
   WakeQueueReadable,
-  WakeQueueWritable
+  WakeQueueWritable,
+  QueueTryTransfer
 };
 ```
 
 JSON converts each enumerator to its lower-snake-case spelling, from
-`record_create` through `wake_queue_writable`, in the same order.
+`record_create` through `queue_try_transfer`, in the same order.
 
 ### Closed helper payloads
 
@@ -958,6 +959,12 @@ class ProcessQueueTryRecvPayload {
 public:
   llvm::StringRef element() const;
   llvm::StringRef queue() const;
+};
+class ProcessQueueTryTransferPayload {
+public:
+  llvm::StringRef element() const;
+  llvm::StringRef source() const;
+  llvm::StringRef destination() const;
 };
 class ProcessEventSchedulePayload {
 public:
@@ -1049,6 +1056,7 @@ public:
   const ProcessTraceDecodePayload &traceDecode() const;
   const ProcessQueueTrySendPayload &queueTrySend() const;
   const ProcessQueueTryRecvPayload &queueTryRecv() const;
+  const ProcessQueueTryTransferPayload &queueTryTransfer() const;
   const ProcessEventSchedulePayload &eventSchedule() const;
   const ProcessTraceOpenPayload &traceOpen() const;
   const ProcessTraceNextPayload &traceNext() const;
@@ -1156,6 +1164,7 @@ pointer order.
 | `trace_decode` | `pure` | `inline` | One `entry` input; one `result`. |
 | `queue_try_send` | `stateful` | `invoke` | Inputs `queue-ref:@queue,element`; exact original accepted-result key. |
 | `queue_try_recv` | `stateful` | `invoke` | One `queue-ref:@queue` input; exact original element and received-flag result keys. |
+| `queue_try_transfer` | `stateful` | `invoke` | Inputs `queue-ref:@source,queue-ref:@destination,mlir:i1`; one `mlir:i1` fire result. Payload records `element`, `source`, and `destination`; specialization depends on element type, not concrete queue names. |
 | `queue_peek` | `stateful` | `invoke` | One `queue-ref:@queue` input; exact original element and valid-flag result keys. |
 | `queue_space` | `stateful` | `invoke` | One `queue-ref:@queue` input; a single `mlir:i32` free-slot result key. |
 | `event_schedule` | `stateful` | `invoke` | Inputs `event-queue-ref,value,delay`; one `i1` acceptance result. |

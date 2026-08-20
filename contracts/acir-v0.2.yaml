@@ -49,6 +49,8 @@ operations:
   - ac.packet.deserialize
   - ac.try_send
   - ac.try_recv
+  - ac.arbitrate
+  - ac.try_transfer
   - ac.peek
   - ac.space
   - ac.schedule

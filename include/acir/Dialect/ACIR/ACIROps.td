@@ -479,6 +479,24 @@ def ACIR_TryRecvOp : ACIR_RuntimeEffectOp<"try_recv"> {
   let assemblyFormat = "$queue attr-dict `:` type($value)";
 }
 
+def ACIR_ArbitrateOp : ACIR_Op<"arbitrate", [Pure]> {
+  let arguments = (ins Variadic<I1>:$requests, StrAttr:$policy,
+                       ArrayAttr:$candidate_resources);
+  let results = (outs Variadic<I1>:$grants);
+  let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
+}
+
+def ACIR_TryTransferOp : ACIR_RuntimeEffectOp<"try_transfer"> {
+  let arguments = (ins I1:$enable, FlatSymbolRefAttr:$source,
+                       FlatSymbolRefAttr:$destination, TypeAttr:$payload);
+  let results = (outs I1:$fire);
+  let hasVerifier = 1;
+  let assemblyFormat = [{
+    $source `to` $destination `when` $enable attr-dict `:` $payload
+  }];
+}
+
 def ACIR_PeekOp : ACIR_RuntimeEffectOp<"peek"> {
   let arguments = (ins FlatSymbolRefAttr:$queue);
   let results = (outs AnyType:$value, I1:$valid);

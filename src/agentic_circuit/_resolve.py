@@ -10,7 +10,7 @@ from ._schemas import ComponentSchema
 from ._static_eval import StaticValue
 
 
-ValueCategory = Literal["static", "flow", "endpoint", "resource", "result"]
+ValueCategory = Literal["static", "flow", "flow_bundle", "endpoint", "resource", "result"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +39,8 @@ class PortBinding:
 class ResultBinding:
     result: str
     value: ValueVersion
+    port_index: int | None = None
+    shape: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +62,7 @@ class ResolvedCall:
     inputs: tuple[PortBinding, ...]
     results: tuple[ResultBinding, ...]
     source: SourceSpan
+    specialization: str | None = None
 
 
 class ResolutionError(ValueError):

@@ -26,9 +26,13 @@ PUBLIC = {
     "address_map",
     "Static",
     "Flow",
+    "FlowBundle",
     "export_flow",
     "import_flow",
     "Endpoint",
+    "try_send",
+    "try_recv",
+    "yield_sim",
 }
 
 
@@ -100,6 +104,24 @@ class PublicApiTest(unittest.TestCase):
         api.import_flow(flow, first)
         with self.assertRaisesRegex(TypeError, "ACPY-FLOW-006"):
             api.import_flow(flow, second)
+
+    def test_flow_bundle_queue_boundaries_are_shape_checked(self) -> None:
+        api = importlib.import_module("agentic_circuit")
+        sources = tuple(
+            api.queue(f"source{index}", payload_type="i32", protocol="ready_valid", depth=1)
+            for index in range(2)
+        )
+        sinks = tuple(
+            api.queue(f"sink{index}", payload_type="i32", protocol="ready_valid", depth=1)
+            for index in range(2)
+        )
+
+        bundle = api.export_flow(sources, protocol=ReadyValid)
+
+        self.assertIsInstance(bundle, api.FlowBundle)
+        self.assertEqual((2,), bundle.shape)
+        self.assertEqual(2, len(bundle.leaves))
+        self.assertIsNone(api.import_flow(bundle, sinks))
 
     def test_decorators_create_immutable_definition_metadata(self) -> None:
         api = importlib.import_module("agentic_circuit")

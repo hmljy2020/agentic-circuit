@@ -959,6 +959,100 @@ TEST(GfsimQueueTest, PendingCommitTracksAcceptedProposals) {
   EXPECT_FALSE(queue.hasPendingCommit());
 }
 
+TEST(GfsimQueueTransferTest, ProcessHelperCommitsOneSnapshotVisibleElement) {
+  SimQueue<int> source("source", 1, nullptr, 3);
+  SimQueue<int> destination("destination", 2, nullptr, 3);
+  ASSERT_TRUE(source.proposePush(11));
+  ASSERT_TRUE(source.proposePush(12));
+  source.doXfer({0, 0});
+
+  ASSERT_TRUE(source.tryTransferTo(destination, true));
+  EXPECT_EQ(source.committedSize(), 2u);
+  EXPECT_TRUE(destination.isEmpty());
+  EXPECT_EQ(source.totalPops(), 0u);
+  EXPECT_EQ(destination.totalPushes(), 0u);
+
+  source.doXfer({1, 0});
+  destination.doXfer({1, 0});
+  ASSERT_NE(source.peek(), nullptr);
+  ASSERT_NE(destination.peek(), nullptr);
+  EXPECT_EQ(*source.peek(), 12);
+  EXPECT_EQ(*destination.peek(), 11);
+  EXPECT_EQ(source.totalPops(), 1u);
+  EXPECT_EQ(destination.totalPushes(), 1u);
+}
+
+TEST(GfsimQueueTransferTest, DisabledEmptyAndFullTransfersAreAtomicNoOps) {
+  SimQueue<int> source("source", 1, nullptr, 2);
+  SimQueue<int> destination("destination", 2, nullptr, 1);
+  ASSERT_TRUE(source.proposePush(7));
+  ASSERT_TRUE(destination.proposePush(99));
+  source.doXfer({0, 0});
+  destination.doXfer({0, 0});
+
+  EXPECT_FALSE(source.tryTransferTo(destination, false));
+  EXPECT_FALSE(source.tryTransferTo(destination, true));
+  source.doXfer({1, 0});
+  destination.doXfer({1, 0});
+  EXPECT_EQ(*source.peek(), 7);
+  EXPECT_EQ(*destination.peek(), 99);
+
+  SimQueue<int> empty("empty", 3, nullptr, 1);
+  SimQueue<int> sink("sink", 4, nullptr, 1);
+  EXPECT_FALSE(empty.tryTransferTo(sink, true));
+  EXPECT_FALSE(empty.hasPendingCommit());
+  EXPECT_FALSE(sink.hasPendingCommit());
+}
+
+TEST(GfsimQueueTransferTest, UsesCommittedCapacityAndCommittedHeadOnly) {
+  SimQueue<int> fullSource("full_source", 1, nullptr, 1);
+  SimQueue<int> fullDestination("full_destination", 2, nullptr, 1);
+  ASSERT_TRUE(fullSource.proposePush(5));
+  ASSERT_TRUE(fullDestination.proposePush(9));
+  fullSource.doXfer({0, 0});
+  fullDestination.doXfer({0, 0});
+  ASSERT_TRUE(fullDestination.proposePop().has_value());
+  EXPECT_FALSE(fullSource.tryTransferTo(fullDestination, true));
+
+  SimQueue<int> emptySource("empty_source", 3, nullptr, 1);
+  SimQueue<int> emptyDestination("empty_destination", 4, nullptr, 1);
+  ASSERT_TRUE(emptySource.proposePush(17));
+  EXPECT_FALSE(emptySource.tryTransferTo(emptyDestination, true));
+  emptySource.doXfer({1, 0});
+  emptyDestination.doXfer({1, 0});
+  EXPECT_EQ(*emptySource.peek(), 17);
+  EXPECT_TRUE(emptyDestination.isEmpty());
+}
+
+TEST(GfsimQueueTransferTest, EndpointResetDropsBothUncommittedProposals) {
+  SimQueue<int> source("source", 1, nullptr, 1);
+  SimQueue<int> destination("destination", 2, nullptr, 1);
+  ASSERT_TRUE(source.proposePush(3));
+  source.doXfer({0, 0});
+  ASSERT_TRUE(source.tryTransferTo(destination, true));
+  ASSERT_TRUE(source.hasPendingCommit());
+  ASSERT_TRUE(destination.hasPendingCommit());
+  source.reset();
+  destination.reset();
+  EXPECT_FALSE(source.hasPendingCommit());
+  EXPECT_FALSE(destination.hasPendingCommit());
+  EXPECT_TRUE(source.isEmpty());
+  EXPECT_TRUE(destination.isEmpty());
+}
+
+TEST(GfsimQueueTransferTest, RejectsEndpointsOwnedByDifferentSystems) {
+  SimSystem sourceSystem("source_system");
+  SimSystem destinationSystem("destination_system");
+  SimQueue<int> source("source", 1, nullptr, 1);
+  SimQueue<int> destination("destination", 2, nullptr, 1);
+  source.bindSystem(&sourceSystem);
+  destination.bindSystem(&destinationSystem);
+  EXPECT_FALSE(source.tryTransferTo(destination, true));
+  EXPECT_EQ(source.runtimeFailureCode(), "queue_transfer_system_mismatch");
+  EXPECT_FALSE(source.hasPendingCommit());
+  EXPECT_FALSE(destination.hasPendingCommit());
+}
+
 TEST(GfsimQueueLinkTest, EmptyAndFullEndpointsDoNotMutateSource) {
   Queue<int> source("source", 1, nullptr, 2);
   Queue<int> destination("destination", 2, nullptr, 1);

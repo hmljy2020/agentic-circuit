@@ -47,9 +47,9 @@
     },
     {
       "canonical_name": "ac.std.Crossbar",
-      "availability": "declared_unavailable",
+      "availability": "available",
       "schema_path": "schemas/stdlib/Crossbar.json",
-      "schema_fingerprint": "sha256:ebaa1a46cb5fa23ee1a2e984277b2637fff1eb01e9c0bfb4120884e52160fd35"
+      "schema_fingerprint": "sha256:20435d4c5d0b9cc95fd67303217a2999e76d0311f6aa3ce46cfaa3d0db79dbcc"
     },
     {
       "canonical_name": "ac.std.DependencyTracker",

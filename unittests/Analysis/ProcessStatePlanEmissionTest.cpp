@@ -183,5 +183,46 @@ TEST(ProcessStatePlanEmissionTest,
   EXPECT_GE(built->processes().front().wakes().size(), 9u);
 }
 
+TEST(ProcessStatePlanEmissionTest,
+     QueueTransfersShareOnePayloadSpecializationWithOrderedOwners) {
+  mlir::DialectRegistry registry;
+  registerAllDialects(registry);
+  mlir::MLIRContext context(registry);
+  auto module = test::parseAndFreezeQueueTransfers(context);
+  ASSERT_TRUE(module);
+  auto built = planProcessState(*module);
+  ASSERT_TRUE(mlir::succeeded(built));
+  ASSERT_TRUE(mlir::succeeded(verifyProcessStatePlan(*built)));
+
+  const ProcessGeneratedCalleePlan *transfer = nullptr;
+  size_t count = 0;
+  for (const ProcessGeneratedCalleePlan &callee : built->callees())
+    if (callee.role() == ProcessHelperRole::QueueTryTransfer) {
+      transfer = &callee;
+      ++count;
+    }
+  ASSERT_NE(transfer, nullptr);
+  EXPECT_EQ(count, 1u);
+  EXPECT_EQ(transfer->effect(), ProcessEffectKind::Stateful);
+  ASSERT_EQ(transfer->inputTypeKeys().size(), 3u);
+  EXPECT_EQ(transfer->inputTypeKeys()[0], "queue-ref:@source");
+  EXPECT_EQ(transfer->inputTypeKeys()[1], "queue-ref:@destination");
+  EXPECT_EQ(transfer->inputTypeKeys()[2], "mlir:i1");
+  ASSERT_EQ(transfer->resultTypeKeys().size(), 1u);
+  EXPECT_EQ(transfer->resultTypeKeys()[0], "mlir:i1");
+  EXPECT_EQ(transfer->payload().queueTryTransfer().element(), "mlir:i32");
+  EXPECT_EQ(transfer->payload().queueTryTransfer().source(), "@source");
+  EXPECT_EQ(transfer->payload().queueTryTransfer().destination(),
+            "@destination");
+  EXPECT_EQ(transfer->sourceOperations().size(), 2u);
+  EXPECT_EQ(transfer->declarations().size(), 4u);
+
+  auto report = serializeProcessStatePlan(*built);
+  ASSERT_TRUE(static_cast<bool>(report));
+  EXPECT_NE(report->find("\"role\":\"queue_try_transfer\""), std::string::npos);
+  EXPECT_NE(report->find("\"destination\":\"@destination\""),
+            std::string::npos);
+}
+
 } // namespace
 } // namespace acir

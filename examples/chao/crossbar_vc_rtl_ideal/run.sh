@@ -6,12 +6,9 @@ ulimit -v 1900000
 example_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "${example_root}/../../.." && pwd)"
 model_name="model.mlir"
-build_name="build-model"
-if [[ "${1:-}" == "--rtl-ideal" ]]; then
-  model_name="model.rtl-ideal.mlir"
-  build_name="build-rtl-ideal"
-elif [[ $# -ne 0 ]]; then
-  echo "usage: $0 [--rtl-ideal]" >&2
+build_name="build-rtl-ideal"
+if [[ $# -ne 0 ]]; then
+  echo "usage: $0" >&2
   exit 2
 fi
 build_root="${example_root}/${build_name}"

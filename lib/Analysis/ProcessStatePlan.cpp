@@ -81,7 +81,8 @@ llvm::StringRef helperRoleSpelling(ProcessHelperRole role) {
                                                   "scalar_wrap",
                                                   "scalar_unwrap",
                                                   "wake_queue_readable",
-                                                  "wake_queue_writable"};
+                                                  "wake_queue_writable",
+                                                  "queue_try_transfer"};
   return names[static_cast<unsigned>(role)];
 }
 
@@ -179,6 +180,15 @@ bool validCalleeSemantics(const ProcessGeneratedCalleePlan &callee) {
            inputs[0] == ("queue-ref:" + payload.queueTryRecv().queue()).str() &&
            results.size() == 2 &&
            results[0] == payload.queueTryRecv().element();
+  case ProcessHelperRole::QueueTryTransfer:
+    return inputs.size() == 3 && results.size() == 1 &&
+           inputs[0] ==
+               ("queue-ref:" + payload.queueTryTransfer().source()).str() &&
+           inputs[1] ==
+               ("queue-ref:" + payload.queueTryTransfer().destination())
+                   .str() &&
+           inputs[2] == "mlir:i1" && results[0] == "mlir:i1" &&
+           validTypeKey(payload.queueTryTransfer().element());
   case ProcessHelperRole::QueuePeek:
     return inputs.size() == 1 &&
            inputs[0] == ("queue-ref:" + payload.queuePeek().queue()).str() &&
@@ -463,6 +473,12 @@ detail::PlanSetBuilder::buildProduction(mlir::ModuleOp module,
                            ProcessHelperRole::QueueTrySend,
                            "mlir:" + typeSpelling(send.getValue().getType())}]
               .push_back(action);
+        } else if (auto transfer =
+                       mlir::dyn_cast_or_null<ac::TryTransferOp>(source)) {
+          queueActions[QueueCalleeKey{ProcessHelperRole::QueueTryTransfer,
+                                      "mlir:" +
+                                          typeSpelling(transfer.getPayload())}]
+              .push_back(action);
         } else if (auto recv = mlir::dyn_cast_or_null<ac::TryRecvOp>(source)) {
           queueActions[QueueCalleeKey{
                            ProcessHelperRole::QueueTryRecv,
@@ -504,6 +520,12 @@ detail::PlanSetBuilder::buildProduction(mlir::ModuleOp module,
       arm->queue = "@queue";
       arm->element = key.element;
       payload->queueTryRecv = ProcessQueueTryRecvPayload(arm);
+    } else if (key.role == ProcessHelperRole::QueueTryTransfer) {
+      auto arm = std::make_shared<ProcessQueueTryTransferPayload::Impl>();
+      arm->source = "@source";
+      arm->destination = "@destination";
+      arm->element = key.element;
+      payload->queueTryTransfer = ProcessQueueTryTransferPayload(arm);
     } else if (key.role == ProcessHelperRole::QueuePeek) {
       auto arm = std::make_shared<ProcessQueuePeekPayload::Impl>();
       arm->queue = "@queue";
@@ -533,6 +555,9 @@ detail::PlanSetBuilder::buildProduction(mlir::ModuleOp module,
                            key.role == ProcessHelperRole::EventTryRecv;
     callee->inputTypeKeyStorage = {eventRole ? "event-queue-ref:@event"
                                              : "queue-ref:@queue"};
+    if (key.role == ProcessHelperRole::QueueTryTransfer)
+      callee->inputTypeKeyStorage = {"queue-ref:@source",
+                                     "queue-ref:@destination", "mlir:i1"};
     if (key.role == ProcessHelperRole::QueueTrySend ||
         key.role == ProcessHelperRole::EventSchedule)
       callee->inputTypeKeyStorage.push_back(key.element);
@@ -540,11 +565,12 @@ detail::PlanSetBuilder::buildProduction(mlir::ModuleOp module,
       callee->inputTypeKeyStorage.push_back("mlir:i64");
     callee->resultTypeKeyStorage =
         key.role == ProcessHelperRole::QueueTrySend ||
+                key.role == ProcessHelperRole::QueueTryTransfer ||
                 key.role == ProcessHelperRole::EventSchedule
             ? std::vector<std::string>{"mlir:i1"}
-            : key.role == ProcessHelperRole::QueueSpace
-                ? std::vector<std::string>{"mlir:i32"}
-                : std::vector<std::string>{key.element, "mlir:i1"};
+        : key.role == ProcessHelperRole::QueueSpace
+            ? std::vector<std::string>{"mlir:i32"}
+            : std::vector<std::string>{key.element, "mlir:i1"};
     for (const std::string &value : callee->inputTypeKeyStorage)
       callee->inputTypeKeys.push_back(value);
     for (const std::string &value : callee->resultTypeKeyStorage)
@@ -556,32 +582,41 @@ detail::PlanSetBuilder::buildProduction(mlir::ModuleOp module,
       mlir::Operation *source = action.sourceOperation();
       sources.insert(source);
       paths.insert(action.occurrence().original().operationPath());
-      mlir::FlatSymbolRefAttr queue =
-          mlir::isa<ac::TrySendOp>(source)
-              ? mlir::cast<ac::TrySendOp>(source).getQueueAttr()
-          : mlir::isa<ac::TryRecvOp>(source)
-              ? mlir::cast<ac::TryRecvOp>(source).getQueueAttr()
-          : mlir::isa<ac::PeekOp>(source)
-              ? mlir::cast<ac::PeekOp>(source).getQueueAttr()
-          : mlir::isa<ac::SpaceOp>(source)
-              ? mlir::cast<ac::SpaceOp>(source).getQueueAttr()
-          : mlir::isa<ac::ScheduleOp>(source)
-              ? mlir::cast<ac::ScheduleOp>(source).getTargetAttr()
-              : mlir::cast<ac::TryEventOp>(source).getEventQueueAttr();
-      mlir::Operation *declaration =
-          mlir::SymbolTable::lookupNearestSymbolFrom(source, queue);
-      if (!declaration)
-        if (auto owner = source->getParentOfType<ac::ModuleOp>())
-          for (mlir::Operation &candidate : owner.getBody().front()) {
-            auto symbol = candidate.getAttrOfType<mlir::StringAttr>(
-                mlir::SymbolTable::getSymbolAttrName());
-            if (symbol && symbol.getValue() == queue.getValue()) {
-              declaration = &candidate;
-              break;
+      llvm::SmallVector<mlir::FlatSymbolRefAttr, 2> queues;
+      if (auto transfer = mlir::dyn_cast<ac::TryTransferOp>(source)) {
+        queues.push_back(transfer.getSourceAttr());
+        queues.push_back(transfer.getDestinationAttr());
+      } else {
+        mlir::FlatSymbolRefAttr queue =
+            mlir::isa<ac::TrySendOp>(source)
+                ? mlir::cast<ac::TrySendOp>(source).getQueueAttr()
+            : mlir::isa<ac::TryRecvOp>(source)
+                ? mlir::cast<ac::TryRecvOp>(source).getQueueAttr()
+            : mlir::isa<ac::PeekOp>(source)
+                ? mlir::cast<ac::PeekOp>(source).getQueueAttr()
+            : mlir::isa<ac::SpaceOp>(source)
+                ? mlir::cast<ac::SpaceOp>(source).getQueueAttr()
+            : mlir::isa<ac::ScheduleOp>(source)
+                ? mlir::cast<ac::ScheduleOp>(source).getTargetAttr()
+                : mlir::cast<ac::TryEventOp>(source).getEventQueueAttr();
+        queues.push_back(queue);
+      }
+      for (mlir::FlatSymbolRefAttr queue : queues) {
+        mlir::Operation *declaration =
+            mlir::SymbolTable::lookupNearestSymbolFrom(source, queue);
+        if (!declaration)
+          if (auto owner = source->getParentOfType<ac::ModuleOp>())
+            for (mlir::Operation &candidate : owner.getBody().front()) {
+              auto symbol = candidate.getAttrOfType<mlir::StringAttr>(
+                  mlir::SymbolTable::getSymbolAttrName());
+              if (symbol && symbol.getValue() == queue.getValue()) {
+                declaration = &candidate;
+                break;
+              }
             }
-          }
-      if (declaration)
-        declarations.insert(declaration);
+        if (declaration)
+          declarations.insert(declaration);
+      }
     }
     callee->sourceOperations.assign(sources.begin(), sources.end());
     callee->declarations.assign(declarations.begin(), declarations.end());
@@ -829,6 +864,24 @@ detail::PlanSetBuilder::buildProduction(mlir::ModuleOp module,
     }
     for (auto &block : item.control->blocks) {
       for (const ProcessActionPlan &action : block->actions) {
+        if (auto transfer = mlir::dyn_cast_or_null<ac::TryTransferOp>(
+                action.sourceOperation())) {
+          std::string elementKey =
+              "mlir:" + typeSpelling(transfer.getPayload());
+          auto found = llvm::find_if(callees, [&](const auto &callee) {
+            return callee->role == ProcessHelperRole::QueueTryTransfer &&
+                   callee->inputTypeKeys.size() == 3 &&
+                   callee->inputTypeKeys[0] == "queue-ref:@source" &&
+                   callee->inputTypeKeys[1] == "queue-ref:@destination" &&
+                   callee->inputTypeKeys[2] == "mlir:i1" &&
+                   callee->payload->queueTryTransfer().element() == elementKey;
+          });
+          if (found == callees.end())
+            return mlir::failure();
+          std::const_pointer_cast<ProcessActionPlan::Impl>(action.impl_)
+              ->callee = (*found)->id;
+          continue;
+        }
         if (auto send = mlir::dyn_cast_or_null<ac::TrySendOp>(
                 action.sourceOperation())) {
           std::string queueKey = "queue-ref:@queue";
@@ -3215,6 +3268,7 @@ detail::PlanSetBuilder::structuralError(const ProcessStatePlanSet &plans) {
                       static_cast<unsigned>(p.traceDecode.has_value()) +
                       static_cast<unsigned>(p.queueTrySend.has_value()) +
                       static_cast<unsigned>(p.queueTryRecv.has_value()) +
+                      static_cast<unsigned>(p.queueTryTransfer.has_value()) +
                       static_cast<unsigned>(p.queuePeek.has_value()) +
                       static_cast<unsigned>(p.queueSpace.has_value()) +
                       static_cast<unsigned>(p.eventSchedule.has_value()) +
@@ -3258,6 +3312,8 @@ detail::PlanSetBuilder::structuralError(const ProcessStatePlanSet &plans) {
       return present(p.queueTrySend);
     case ProcessHelperRole::QueueTryRecv:
       return present(p.queueTryRecv);
+    case ProcessHelperRole::QueueTryTransfer:
+      return present(p.queueTryTransfer);
     case ProcessHelperRole::QueuePeek:
       return present(p.queuePeek);
     case ProcessHelperRole::QueueSpace:
@@ -4201,6 +4257,7 @@ mlir::LogicalResult verifyProcessStatePlan(const ProcessStatePlanSet &plans,
         callee.role() <= ProcessHelperRole::PacketDeserialize ||
         callee.role() == ProcessHelperRole::QueueTrySend ||
         callee.role() == ProcessHelperRole::QueueTryRecv ||
+        callee.role() == ProcessHelperRole::QueueTryTransfer ||
         callee.role() == ProcessHelperRole::QueuePeek ||
         callee.role() == ProcessHelperRole::QueueSpace ||
         callee.role() == ProcessHelperRole::EventSchedule ||
@@ -4217,6 +4274,48 @@ mlir::LogicalResult verifyProcessStatePlan(const ProcessStatePlanSet &plans,
         }))
       return reject(plans, "process-state plan invariant violated: callee "
                            "specialization mismatch");
+    if (callee.role() == ProcessHelperRole::QueueTryTransfer) {
+      auto typeKey = [](mlir::Type type) {
+        std::string spelling;
+        llvm::raw_string_ostream stream(spelling);
+        stream << type;
+        return "mlir:" + spelling;
+      };
+      llvm::SmallPtrSet<mlir::Operation *, 8> declarations(
+          callee.declarations().begin(), callee.declarations().end());
+      if (llvm::any_of(callee.declarations(), [&](mlir::Operation *operation) {
+            auto queue = mlir::dyn_cast<ac::QueueOp>(operation);
+            return !queue || typeKey(queue.getPayload()) !=
+                                 callee.payload().queueTryTransfer().element();
+          }))
+        return reject(plans, "process-state plan invariant violated: callee "
+                             "specialization mismatch");
+      for (mlir::Operation *operation : callee.sourceOperations()) {
+        auto transfer = mlir::dyn_cast<ac::TryTransferOp>(operation);
+        if (!transfer)
+          return reject(plans, "process-state plan invariant violated: callee "
+                               "specialization mismatch");
+        for (mlir::FlatSymbolRefAttr reference :
+             {transfer.getSourceAttr(), transfer.getDestinationAttr()}) {
+          mlir::Operation *declaration =
+              mlir::SymbolTable::lookupNearestSymbolFrom(operation, reference);
+          if (!declaration)
+            if (auto owner = operation->getParentOfType<ac::ModuleOp>())
+              for (mlir::Operation &candidate : owner.getBody().front()) {
+                auto symbol = candidate.getAttrOfType<mlir::StringAttr>(
+                    mlir::SymbolTable::getSymbolAttrName());
+                if (symbol && symbol.getValue() == reference.getValue()) {
+                  declaration = &candidate;
+                  break;
+                }
+              }
+          if (!declarations.contains(declaration))
+            return reject(plans,
+                          "process-state plan invariant violated: callee "
+                          "specialization mismatch");
+        }
+      }
+    }
     auto canonical = detail::canonicalGeneratedCalleeSpecialization(callee);
     if (!canonical) {
       llvm::consumeError(canonical.takeError());
