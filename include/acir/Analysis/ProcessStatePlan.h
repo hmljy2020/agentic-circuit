@@ -127,6 +127,7 @@ enum class ProcessHelperRole {
   QueueTrySend,
   QueueTryRecv,
   QueuePeek,
+  QueueSpace,
   EventSchedule,
   EventTryRecv,
   TraceOpen,
@@ -540,6 +541,8 @@ ACIR_DECLARE_STRING_PAYLOAD(ProcessQueueTryRecvPayload,
 ACIR_DECLARE_STRING_PAYLOAD(ProcessQueuePeekPayload,
                             llvm::StringRef element() const;
                             llvm::StringRef queue() const;);
+ACIR_DECLARE_STRING_PAYLOAD(ProcessQueueSpacePayload,
+                            llvm::StringRef queue() const;);
 ACIR_DECLARE_STRING_PAYLOAD(ProcessEventSchedulePayload,
                             llvm::StringRef delay() const;
                             llvm::StringRef target() const;
@@ -613,6 +616,7 @@ public:
   const ProcessQueueTrySendPayload &queueTrySend() const;
   const ProcessQueueTryRecvPayload &queueTryRecv() const;
   const ProcessQueuePeekPayload &queuePeek() const;
+  const ProcessQueueSpacePayload &queueSpace() const;
   const ProcessEventSchedulePayload &eventSchedule() const;
   const ProcessEventTryRecvPayload &eventTryRecv() const;
   const ProcessTraceOpenPayload &traceOpen() const;

@@ -1040,6 +1040,180 @@ LogicalResult ModelAnalysis::verifyFrozenIntegrity() {
   return success();
 }
 
+LogicalResult ModelAnalysis::verifyFlowConnections() {
+  ac::SystemOp selected;
+  for (ac::SystemOp system : model.getOps<ac::SystemOp>())
+    if (system.getSelected()) {
+      selected = system;
+      break;
+    }
+  if (!selected)
+    return success();
+
+  auto root = dyn_cast_or_null<ac::ModuleOp>(
+      lookupDefinition(model, selected.getRootAttr()));
+  if (!root)
+    return success(); // The system verifier owns the unresolved-root error.
+
+  struct Net {
+    ac::FlowExportOp source;
+    SmallVector<ac::FlowImportOp> sinks;
+    Operation *origin = nullptr;
+    std::string path;
+  };
+  SmallVector<Net> nets;
+  uint64_t visitedInstances = 0;
+  using NetId = unsigned;
+  using MaybeNet = std::optional<NetId>;
+
+  auto newNet = [&](Operation *origin, StringRef path,
+                    ac::FlowExportOp source = {}) -> NetId {
+    nets.push_back({source, {}, origin, path.str()});
+    return nets.size() - 1;
+  };
+
+  std::function<FailureOr<SmallVector<MaybeNet>>(ac::ModuleOp,
+                                                 ArrayRef<MaybeNet>, StringRef)>
+      analyze = [&](ac::ModuleOp module, ArrayRef<MaybeNet> inputs,
+                    StringRef path) -> FailureOr<SmallVector<MaybeNet>> {
+    if (++visitedInstances > kMaxModelAnalysisNodes) {
+      module.emitOpError("ACFLOW-LIMIT: instantiated Flow analysis exceeds "
+                         "the ACIR node limit");
+      return failure();
+    }
+    DenseMap<Value, NetId> values;
+    Block &body = module.getBody().front();
+    for (auto [index, argument] : llvm::enumerate(body.getArguments())) {
+      if (!isa<ac::FlowType>(argument.getType()))
+        continue;
+      MaybeNet input = index < inputs.size() ? inputs[index] : MaybeNet();
+      if (!input)
+        input = newNet(module, path);
+      values[argument] = *input;
+    }
+
+    for (Operation &operation : body)
+      if (auto exportOp = dyn_cast<ac::FlowExportOp>(operation))
+        values[exportOp.getFlow()] = newNet(exportOp, path, exportOp);
+
+    SmallVector<ac::InstanceOp> pending;
+    for (ac::InstanceOp instance : body.getOps<ac::InstanceOp>())
+      pending.push_back(instance);
+    while (!pending.empty()) {
+      auto ready = llvm::find_if(pending, [&](ac::InstanceOp instance) {
+        return llvm::all_of(instance.getInputs(), [&](Value operand) {
+          return !isa<ac::FlowType>(operand.getType()) || values.count(operand);
+        });
+      });
+      if (ready == pending.end()) {
+        pending.front().emitOpError(
+            "ACFLOW-DANGLING-IMPORT: Flow operand has no resolved source");
+        return failure();
+      }
+      ac::InstanceOp instance = *ready;
+      pending.erase(ready);
+      Operation *definition =
+          lookupDefinition(model, instance.getDefinitionAttr());
+      auto concrete = dyn_cast_or_null<ac::ModuleOp>(definition);
+      bool carriesFlow =
+          llvm::any_of(instance->getOperandTypes(),
+                       [](Type type) { return isa<ac::FlowType>(type); });
+      carriesFlow |= llvm::any_of(instance->getResultTypes(), [](Type type) {
+        return isa<ac::FlowType>(type);
+      });
+      if (!concrete) {
+        if (carriesFlow) {
+          instance.emitOpError("ACFLOW-MIXED-EXTERNAL: native Flow cannot bind "
+                               "an external or generated provider");
+          return failure();
+        }
+        continue;
+      }
+      SmallVector<MaybeNet> childInputs(instance.getNumOperands());
+      for (auto [index, operand] : llvm::enumerate(instance.getInputs())) {
+        if (!isa<ac::FlowType>(operand.getType()))
+          continue;
+        auto found = values.find(operand);
+        assert(found != values.end() && "ready instance must have Flow inputs");
+        childInputs[index] = found->second;
+      }
+      std::string childPath = (path + "." + instance.getPath()).str();
+      auto childOutputs = analyze(concrete, childInputs, childPath);
+      if (failed(childOutputs))
+        return failure();
+      for (auto [index, output] : llvm::enumerate(instance.getOutputs()))
+        if (isa<ac::FlowType>(output.getType()) &&
+            index < childOutputs->size() && (*childOutputs)[index])
+          values[output] = *(*childOutputs)[index];
+    }
+
+    for (ac::FlowImportOp importOp : body.getOps<ac::FlowImportOp>()) {
+      auto found = values.find(importOp.getFlow());
+      if (found == values.end()) {
+        importOp.emitOpError(
+            "ACFLOW-DANGLING-IMPORT: Flow import has no resolved source");
+        return failure();
+      }
+      nets[found->second].sinks.push_back(importOp);
+    }
+
+    auto returnOp = dyn_cast<ac::ReturnOp>(body.getTerminator());
+    SmallVector<MaybeNet> outputs(module.getFunctionType().getNumResults());
+    if (!returnOp)
+      return outputs;
+    for (auto [index, operand] : llvm::enumerate(returnOp.getOperands())) {
+      if (!isa<ac::FlowType>(operand.getType()))
+        continue;
+      auto found = values.find(operand);
+      if (found == values.end()) {
+        returnOp.emitOpError(
+            "ACFLOW-DANGLING-EXPORT: returned Flow has no resolved export");
+        return failure();
+      }
+      outputs[index] = found->second;
+    }
+    return outputs;
+  };
+
+  SmallVector<MaybeNet> rootInputs(root.getFunctionType().getNumInputs());
+  for (auto [index, type] : llvm::enumerate(root.getFunctionType().getInputs()))
+    if (isa<ac::FlowType>(type)) {
+      root.emitOpError() << "ACFLOW-ROOT-ESCAPE: selected root Flow input "
+                         << index << " would require a harness provider";
+      return failure();
+    }
+  auto rootOutputs = analyze(root, rootInputs, selected.getRootName());
+  if (failed(rootOutputs))
+    return failure();
+  for (auto [index, output] : llvm::enumerate(*rootOutputs))
+    if (output) {
+      root.emitOpError() << "ACFLOW-ROOT-ESCAPE: selected root Flow result "
+                         << index << " escapes to the harness";
+      return failure();
+    }
+
+  for (Net &net : nets) {
+    if (!net.source) {
+      net.origin->emitOpError(
+          "ACFLOW-DANGLING-IMPORT: Flow has no source export in the selected "
+          "root hierarchy");
+      return failure();
+    }
+    if (net.sinks.empty()) {
+      net.source.emitOpError(
+          "ACFLOW-DANGLING-EXPORT: Flow export has no import in the selected "
+          "root hierarchy");
+      return failure();
+    }
+    if (net.sinks.size() > 1) {
+      net.sinks[1].emitOpError(
+          "ACFLOW-FANOUT: one Flow export resolves to multiple imports");
+      return failure();
+    }
+  }
+  return success();
+}
+
 LogicalResult ModelAnalysis::verify() {
   if (failed(detail::preflightModelStructure(model)))
     return failure();
@@ -1053,6 +1227,8 @@ LogicalResult ModelAnalysis::verify() {
   if (failed(verifyPureProcessCalls()))
     return failure();
   if (failed(mlir::verify(model)))
+    return failure();
+  if (failed(verifyFlowConnections()))
     return failure();
   WalkResult types = model.walk([&](Operation *operation) {
     return failed(ac::verifyTopologyTypeUses(operation))

@@ -959,6 +959,78 @@ TEST(GfsimQueueTest, PendingCommitTracksAcceptedProposals) {
   EXPECT_FALSE(queue.hasPendingCommit());
 }
 
+TEST(GfsimQueueLinkTest, EmptyAndFullEndpointsDoNotMutateSource) {
+  Queue<int> source("source", 1, nullptr, 2);
+  Queue<int> destination("destination", 2, nullptr, 1);
+  QueueLink<int> link("link", 3, nullptr, source, destination);
+
+  link.doWork({0, 0});
+  EXPECT_EQ(link.stalledEmpty(), 1u);
+  EXPECT_FALSE(link.hasPendingCommit());
+
+  ASSERT_TRUE(source.proposePush(7));
+  ASSERT_TRUE(destination.proposePush(99));
+  source.doXfer({0, 0});
+  destination.doXfer({0, 0});
+  link.doWork({1, 0});
+  EXPECT_EQ(link.stalledFull(), 1u);
+  EXPECT_EQ(source.committedSize(), 1u);
+  EXPECT_EQ(*source.peek(), 7);
+  EXPECT_FALSE(link.hasPendingCommit());
+}
+
+TEST(GfsimQueueLinkTest, CommitsPairedTransferAndPreservesFifo) {
+  Queue<int> source("source", 1, nullptr, 2);
+  Queue<int> destination("destination", 2, nullptr, 2);
+  QueueLink<int> link("link", 3, nullptr, source, destination);
+  ASSERT_TRUE(source.proposePush(11));
+  ASSERT_TRUE(source.proposePush(12));
+  source.doXfer({0, 0});
+
+  link.doWork({1, 0});
+  link.doWork({1, 0});
+  ASSERT_TRUE(link.hasPendingCommit());
+  EXPECT_EQ(source.committedSize(), 2u);
+  EXPECT_EQ(destination.committedSize(), 0u);
+  source.doXfer({1, 0});
+  destination.doXfer({1, 0});
+  link.doXfer({1, 0});
+  EXPECT_EQ(source.committedSize(), 1u);
+  ASSERT_NE(destination.peek(), nullptr);
+  EXPECT_EQ(*destination.peek(), 11);
+  EXPECT_EQ(link.transferred(), 1u);
+
+  ASSERT_TRUE(destination.proposePop().has_value());
+  destination.doXfer({2, 0});
+  link.doWork({2, 0});
+  source.doXfer({2, 0});
+  destination.doXfer({2, 0});
+  link.doXfer({2, 0});
+  ASSERT_NE(destination.peek(), nullptr);
+  EXPECT_EQ(*destination.peek(), 12);
+  EXPECT_EQ(link.transferred(), 2u);
+}
+
+TEST(GfsimQueueLinkTest, ResetClearsOnlyLinkLocalState) {
+  Queue<int> source("source", 1, nullptr, 1);
+  Queue<int> destination("destination", 2, nullptr, 1);
+  QueueLink<int> link("link", 3, nullptr, source, destination);
+  ASSERT_TRUE(source.proposePush(5));
+  source.doXfer({0, 0});
+  link.doWork({1, 0});
+  source.doXfer({1, 0});
+  destination.doXfer({1, 0});
+  link.doXfer({1, 0});
+  ASSERT_EQ(link.transferred(), 1u);
+
+  link.reset();
+  EXPECT_EQ(link.transferred(), 0u);
+  EXPECT_EQ(link.stalledEmpty(), 0u);
+  EXPECT_EQ(link.stalledFull(), 0u);
+  EXPECT_EQ(destination.committedSize(), 1u);
+  EXPECT_EQ(*destination.peek(), 5);
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // EventQueue
 // ═══════════════════════════════════════════════════════════════════════

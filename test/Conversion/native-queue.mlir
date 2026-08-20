@@ -28,6 +28,7 @@ builtin.module attributes {ac.contract_epoch = "0.2"} {
       } else {
         ac.await_queue @fifo_queue until "readable"
       }
+      %space = ac.space @fifo_queue
       %value, %received = ac.try_recv @fifo_queue : i32
       scf.if %received {
       } else {
@@ -47,6 +48,7 @@ builtin.module attributes {ac.contract_epoch = "0.2"} {
 // CHECK: acsim.invoke @acir_impl_wake_queue_writable_{{[0-9a-f]+}}(%{{.+}})
 // CHECK: acsim.invoke @acir_impl_queue_peek_{{[0-9a-f]+}}(%{{.+}}) : (!acsim.owner<@acir_queue_{{[0-9a-f]+}}>) -> (i32, i1)
 // CHECK: acsim.invoke @acir_impl_wake_queue_readable_{{[0-9a-f]+}}(%{{.+}})
+// CHECK: acsim.invoke @acir_impl_queue_space_{{[0-9a-f]+}}(%{{.+}}) : (!acsim.owner<@acir_queue_{{[0-9a-f]+}}>) -> i32
 // CHECK: acsim.invoke @acir_impl_queue_try_recv_{{[0-9a-f]+}}(%{{.+}}) : (!acsim.owner<@acir_queue_{{[0-9a-f]+}}>) -> (i32, i1)
 // CHECK: acsim.invoke @acir_impl_wake_queue_readable_{{[0-9a-f]+}}(%{{.+}})
 // CHECK: acsim.dispatch @Top::@fifo_queue path "root.fifo_queue"

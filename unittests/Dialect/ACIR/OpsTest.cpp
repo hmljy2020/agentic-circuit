@@ -269,6 +269,8 @@ TEST(ACIROpsTest, TaskFiveRegistryContainsExactlyTheRequiredNewOperations) {
       "ac.ensure",
       "ac.event",
       "ac.event_queue",
+      "ac.flow.export",
+      "ac.flow.import",
       "ac.guarantee",
       "ac.interface",
       "ac.instance",
@@ -308,6 +310,7 @@ TEST(ACIROpsTest, TaskFiveRegistryContainsExactlyTheRequiredNewOperations) {
       "ac.try_recv",
       "ac.try_event",
       "ac.peek",
+      "ac.space",
       "ac.try_send",
       "ac.type_alias",
       "ac.type_scope",
@@ -478,7 +481,9 @@ TEST(ACIROpsTest, PublicBuildersConstructEveryTaskEightOperation) {
                                 builder.getI1Type(), "q");
   auto peek = PeekOp::create(builder, loc, builder.getI32Type(),
                              builder.getI1Type(), "q");
-  EXPECT_TRUE(send && recv && peek);
+  auto space = SpaceOp::create(builder, loc, builder.getI32Type(), "q");
+  EXPECT_TRUE(send && recv && peek && space);
+  EXPECT_EQ(space.getQueue(), "q");
   auto schedule =
       ScheduleOp::create(builder, loc, builder.getI1Type(), i32, i64, "events");
   auto tryEvent = TryEventOp::create(builder, loc, builder.getI32Type(),
@@ -680,22 +685,22 @@ TEST(ACIROpsTest, UnresolvedRuntimeReferencesDoNotInventEffects) {
 TEST(ACIROpsTest, TaskEightRegistryDeltaIsExactlyTwentyOperations) {
   mlir::MLIRContext context;
   context.loadDialect<ACIRDialect>();
-  const std::array<llvm::StringLiteral, 23> names = {
-      "ac.process",        "ac.try_send",        "ac.try_recv",
-      "ac.peek",           "ac.try_event",       "ac.schedule",
-      "ac.wait_until",     "ac.wait_for",        "ac.await_event",
-      "ac.await_queue",    "ac.yield_sim",       "ac.trace.open",
-      "ac.trace.next",     "ac.trace.decode",    "ac.trace.eof",
-      "ac.trace.position", "ac.require",         "ac.ensure",
-      "ac.assert",         "ac.probe",           "ac.stat",
-      "ac.stat.add",       "ac.instrumentation",
+  const std::array<llvm::StringLiteral, 24> names = {
+      "ac.process",     "ac.try_send",       "ac.try_recv",
+      "ac.peek",        "ac.space",          "ac.try_event",
+      "ac.schedule",    "ac.wait_until",     "ac.wait_for",
+      "ac.await_event", "ac.await_queue",    "ac.yield_sim",
+      "ac.trace.open",  "ac.trace.next",     "ac.trace.decode",
+      "ac.trace.eof",   "ac.trace.position", "ac.require",
+      "ac.ensure",      "ac.assert",         "ac.probe",
+      "ac.stat",        "ac.stat.add",       "ac.instrumentation",
   };
   for (llvm::StringLiteral name : names)
     EXPECT_TRUE(mlir::OperationName(name, &context).isRegistered())
         << name.str();
   EXPECT_FALSE(mlir::OperationName("ac.try_issue", &context).isRegistered());
   EXPECT_FALSE(mlir::OperationName("ac.connect", &context).isRegistered());
-  EXPECT_EQ(context.getRegisteredOperationsByDialect("ac").size(), 58u);
+  EXPECT_EQ(context.getRegisteredOperationsByDialect("ac").size(), 61u);
 }
 
 TEST(ACIROpsTest, ProcessLinearLivenessDoesNotRescanBlockPerValue) {

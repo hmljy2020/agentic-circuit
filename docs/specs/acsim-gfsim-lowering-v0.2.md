@@ -258,6 +258,14 @@ increment.
 
 ## Verifier invariants
 
+Scalar native Flow connections lower without a binding record or provider.
+The source and destination native queues retain compiler ownership, and one
+typed `gfsim::QueueLink<T>` is placed for each resolved export/import pair.
+Pass-through module arguments/results forward identity and do not introduce an
+additional link. Native Flow connections participate in specialization,
+construction ordering, dispatch, and activation fingerprints, but never in the
+external provider or binding-lock inventories.
+
 Canonical ACSim has exactly one `acsim.model` with epoch `"0.2"` and exact
 frozen-ACIR, binding-lock, provider, profile, toolchain, and schema-set
 fingerprints. It contains no unresolved type, symbol, parameter, view,
@@ -353,11 +361,13 @@ generator, or component schema.
   generated `executeProcessStep` switch returns an explicit continue, suspend,
   terminate, or fail action for every closed PC case. Runtime continuation and
   wake matching are exact; generated step dispatch is statically bound.
-- Native queue send/receive/peek helpers take `[queue_ref, element]`,
-  `[queue_ref]`, and `[queue_ref]` respectively. Peek lowers to a stateful
-  `acsim.invoke` and creates no proposal, binding, provider, or runtime object.
-  Queue-readable/writable wake helpers take the
-  same typed queue reference and materialize its object ID in the wake handle.
+- Native queue send/receive/peek/space helpers take `[queue_ref, element]`,
+  `[queue_ref]`, `[queue_ref]`, and `[queue_ref]` respectively. Peek and space
+  lower to a stateful `acsim.invoke` and create no proposal, binding, provider,
+  or runtime object. Space's single `mlir:i32` result maps to the generated
+  `SimQueue::space()` free-slot count. Queue-readable/writable wake helpers take
+  the same typed queue reference and materialize its object ID in the wake
+  handle.
 
 ### Dispatch and activation
 

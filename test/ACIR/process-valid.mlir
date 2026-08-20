@@ -35,6 +35,9 @@ builtin.module attributes {ac.contract_epoch = "0.2"} {
       %accepted = ac.try_send @ready %capture : i32
       %value, %received = ac.try_recv @ready : i32
       %peeked, %valid = ac.peek @ready : i32
+      %space = ac.space @ready
+      %c2 = arith.constant 0 : i32
+      %has_space = arith.cmpi sgt, %space, %c2 : i32
       scf.if %accepted {
       } else {
         ac.await_queue @ready until "writable"
@@ -47,6 +50,7 @@ builtin.module attributes {ac.contract_epoch = "0.2"} {
       } else {
         ac.await_queue @ready until "readable"
       }
+      ac.assert %has_space, "space observed free capacity"
       %event_accepted = ac.schedule @done %value after %c1 : i32
       ac.wait_until %ready
       ac.wait_for @compute
@@ -62,6 +66,7 @@ builtin.module attributes {ac.contract_epoch = "0.2"} {
     }
     ac.process @monitor kind "monitor" {
       %value, %valid = ac.peek @ready : i32
+      %space = ac.space @ready
       ac.yield_sim
     }
     ac.return
@@ -87,6 +92,7 @@ builtin.module attributes {ac.contract_epoch = "0.2"} {
 // CHECK: ac.try_send @ready
 // CHECK: ac.try_recv @ready
 // CHECK: ac.peek @ready
+// CHECK: ac.space @ready
 // CHECK: ac.await_queue @ready until "writable"
 // CHECK: ac.await_queue @ready until "readable"
 // CHECK: ac.schedule @done
@@ -100,6 +106,7 @@ builtin.module attributes {ac.contract_epoch = "0.2"} {
 // EFFECTS: ac.try_send
 // EFFECTS: ac.try_recv
 // EFFECTS: ac.peek
+// EFFECTS: ac.space
 // EFFECTS: ac.schedule
 // EFFECTS: ac.wait_until
 // EFFECTS: ac.wait_for

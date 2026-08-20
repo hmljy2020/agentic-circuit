@@ -226,6 +226,19 @@ but they are not part of the contract and cannot alter deterministic ordering.
 
 ## Queues and events
 
+### Compiler-native queue links
+
+`gfsim::QueueLink<T>` owns no payload storage and holds references to one
+source and one destination `gfsim::Queue<T>`. Its Work method observes only
+committed queue state and proposes at most one paired transfer per exact epoch.
+The proposal is all-or-nothing: a full destination leaves source occupancy
+unchanged. The two queues publish the pop and push at the same Xfer barrier.
+
+The compiler must prove that the link is the source's unique pop proposer and
+the destination's unique push proposer. Reset clears only link-local proposal
+state and the `transferred`, `stalled_empty`, and `stalled_full` counters; it
+does not alter either queue or its capacity.
+
 `SimQueue<T>` exposes committed state and private epoch proposals. It provides:
 
 - mandatory entry capacity;
@@ -240,8 +253,12 @@ and time-ordered event queues are distinct types.
 
 `tryRecv()` returns `{T{}, false}` when the committed snapshot is empty.
 `tryPeek() const` returns a copy of the committed head and `true`, or
-`{T{}, false}` when empty. It never creates a proposal, registers a commit
-participant, updates statistics, or changes the last-update epoch.
+`{T{}, false}` when empty. `space() const` returns the number of free entry
+slots the queue can accept this epoch — `max(0, entryCapacity − committed −
+pending pushes)` — matching the `proposePush` capacity snapshot, and is `0` when
+a byte capacity binds first. All three are pure reads: they never create a
+proposal, register a commit participant, update statistics, or change the
+last-update epoch.
 Accepted queue proposals register the queue as a cross-object commit
 participant. Queue commits activate only statically adjacent processes at
 `(time + 1, 0)`; queue-readable and queue-writable subscriptions additionally

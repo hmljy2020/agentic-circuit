@@ -507,6 +507,7 @@ mlir::Attribute convertBindingRecord(OpBuilder &builder,
 struct PortEndpointPlan {
   Value value;
   bindings::PortBinding metadata;
+  bool nativeFlow = false;
 };
 
 struct PlacementPlan {
@@ -529,18 +530,24 @@ struct PlacementPlan {
   std::string validate;
   llvm::SmallVector<PortEndpointPlan, 2> inputPorts;
   llvm::SmallVector<PortEndpointPlan, 2> outputPorts;
+  llvm::SmallVector<std::pair<Value, Value>, 2> flowAliases;
   // Process realization.
   ac::ProcessOp process;
   std::string processDefinitionKey;
   uint64_t fairnessCap = 1;
   ac::QueueOp queue;
   ac::EventQueueOp eventQueue;
+  bool flowLink = false;
 };
 
 struct BindingEdgePlan {
   unsigned sourcePlacement = 0;
   unsigned targetPlacement = 0;
   bool activates = true;
+  bool nativeFlow = false;
+  std::string sourceChild;
+  std::string targetChild;
+  unsigned linkPlacement = 0;
 };
 
 struct PureCallPlan {
@@ -561,6 +568,11 @@ struct ModulePortPlan {
   Value source;
   std::string name;
   bindings::PortBinding metadata;
+  std::string queue;
+  std::string localAccessor;
+  bool nativeFlow = false;
+  int64_t inputIndex = -1;
+  int64_t resultIndex = -1;
 };
 
 struct ModulePlan {
@@ -572,6 +584,7 @@ struct ModulePlan {
   llvm::SmallVector<PureCallPlan, 0> pureCalls;
   llvm::SmallVector<ModulePortPlan, 0> ports;
   llvm::SmallVector<ModuleResultPlan, 0> results;
+  llvm::SmallVector<std::pair<unsigned, unsigned>, 0> flowAliases;
   llvm::SmallVector<BindingEdgePlan, 0> bindingEdges;
 };
 
@@ -615,6 +628,10 @@ private:
                                          PlacementPlan &planned);
   mlir::LogicalResult planInstancePorts(ac::InstanceOp instance,
                                         PlacementPlan &planned);
+  mlir::FailureOr<bindings::PortBinding>
+  nativeFlowPort(Operation *reporter, ac::FlowType flow,
+                 llvm::StringRef direction, llvm::StringRef accessorIdentity,
+                 llvm::StringRef accessorCpp);
   mlir::LogicalResult planProcesses(mlir::ModuleOp input);
   mlir::LogicalResult expand(mlir::ModuleOp input);
 
@@ -674,6 +691,60 @@ private:
   // Set when owner expansion detects an instantiation cycle.
   bool expansionCycle = false;
 };
+
+mlir::FailureOr<bindings::PortBinding> ACIRToACSimPass::nativeFlowPort(
+    Operation *reporter, ac::FlowType flow, llvm::StringRef direction,
+    llvm::StringRef accessorIdentity, llvm::StringRef accessorCpp) {
+  auto payloadCpp = nativeQueueCppType(flow.getElementType(), reporter);
+  if (!payloadCpp) {
+    lowerError(reporter, "ACLOWER-TYPE-MISMATCH",
+               "native Flow payload has no closed C++ realization");
+    return failure();
+  }
+  std::string payloadSpelling;
+  llvm::raw_string_ostream(payloadSpelling) << flow.getElementType();
+  std::string payloadIdentity =
+      "acir_flow_payload_" +
+      llvm::StringRef(bindings::sha256Fingerprint(payloadSpelling))
+          .drop_front(7)
+          .str();
+  std::string protocolIdentity =
+      "acir_flow_protocol_" + flow.getProtocol().getValue().str();
+  constexpr llvm::StringLiteral interfaceIdentity =
+      "acir_native_flow_interface";
+  constexpr llvm::StringLiteral sourceRole = "acir_native_flow_source";
+  constexpr llvm::StringLiteral sinkRole = "acir_native_flow_sink";
+  constexpr llvm::StringLiteral timeDomain = "acir_native_flow_time";
+  if (failed(typeSymbols.intern(reporter, interfaceIdentity, "interface",
+                                "acir::native_flow_interface")) ||
+      failed(typeSymbols.intern(reporter, sourceRole, "role",
+                                "acir::native_flow_source")) ||
+      failed(typeSymbols.intern(reporter, sinkRole, "role",
+                                "acir::native_flow_sink")) ||
+      failed(typeSymbols.intern(reporter, timeDomain, "time_domain",
+                                "gfsim::TimeDomainRuntime")) ||
+      failed(typeSymbols.intern(
+          reporter, payloadIdentity,
+          isa<ac::PacketType>(flow.getElementType()) ? "packet" : "value",
+          *payloadCpp)) ||
+      failed(typeSymbols.intern(reporter, protocolIdentity, "protocol",
+                                "acir::native_flow_protocol")) ||
+      failed(typeSymbols.intern(reporter, accessorIdentity, "accessor",
+                                accessorCpp)))
+    return failure();
+  bindings::PortBinding port;
+  port.accessor = accessorIdentity.str();
+  port.cardinality = "exclusive";
+  port.delegation = "forbidden";
+  port.direction = direction.str();
+  port.interface = interfaceIdentity.str();
+  port.ownership = "owned";
+  port.payload = std::move(payloadIdentity);
+  port.protocol = std::move(protocolIdentity);
+  port.role = (direction == "output" ? sourceRole : sinkRole).str();
+  port.timeDomain = timeDomain.str();
+  return port;
+}
 
 std::string ACIRToACSimPass::moduleFingerprint(ac::ModuleOp module) {
   llvm::json::Object descriptor;
@@ -985,7 +1056,42 @@ mlir::LogicalResult ACIRToACSimPass::planInstanceTarget(
 
 mlir::LogicalResult ACIRToACSimPass::planInstancePorts(ac::InstanceOp instance,
                                                        PlacementPlan &planned) {
-  if (!planned.targetIsBinding || planned.targetIsPure)
+  if (!planned.targetIsBinding) {
+    auto target = moduleIndexByName.find(instance.getDefinition());
+    if (target == moduleIndexByName.end())
+      return mlir::success();
+    const ModulePlan &module = modules[target->second];
+    for (const ModulePortPlan &port : module.ports) {
+      if (!port.nativeFlow)
+        continue;
+      if (port.inputIndex >= 0) {
+        if (static_cast<unsigned>(port.inputIndex) >= instance.getNumOperands())
+          return lowerError(
+              instance, "ACLOWER-TYPE-MISMATCH",
+              "native Flow input index is outside instance interface");
+        planned.inputPorts.push_back(
+            {instance.getOperand(port.inputIndex), port.metadata, true});
+      } else if (port.resultIndex >= 0) {
+        if (static_cast<unsigned>(port.resultIndex) >= instance.getNumResults())
+          return lowerError(
+              instance, "ACLOWER-TYPE-MISMATCH",
+              "native Flow result index is outside instance interface");
+        planned.outputPorts.push_back(
+            {instance.getResult(port.resultIndex), port.metadata, true});
+      }
+    }
+    for (auto [resultIndex, inputIndex] : module.flowAliases) {
+      if (resultIndex >= instance.getNumResults() ||
+          inputIndex >= instance.getNumOperands())
+        return lowerError(
+            instance, "ACLOWER-TYPE-MISMATCH",
+            "native Flow pass-through index is outside instance interface");
+      planned.flowAliases.push_back(
+          {instance.getResult(resultIndex), instance.getOperand(inputIndex)});
+    }
+    return mlir::success();
+  }
+  if (planned.targetIsPure)
     return mlir::success();
   std::string key = ("@" + instance.getDefinition()).str();
   const bindings::ResolvedBinding *selection =
@@ -1071,12 +1177,13 @@ mlir::LogicalResult ACIRToACSimPass::planInstancePorts(ac::InstanceOp instance,
 mlir::LogicalResult ACIRToACSimPass::planModule(ac::ModuleOp module,
                                                 ModulePlan &planned) {
   FunctionType signature = module.getFunctionType();
-  if (signature.getNumInputs() != 0) {
+  if (llvm::any_of(signature.getInputs(),
+                   [](Type type) { return !isa<ac::FlowType>(type); })) {
     std::string printed;
     llvm::raw_string_ostream stream(printed);
     stream << signature;
     return lowerError(module, "ACLOWER-TYPE-MISMATCH",
-                      "generated ACSim modules do not carry dynamic block "
+                      "generated ACSim modules carry only structural Flow "
                       "arguments; module '@" +
                           module.getSymName() + "' has '" + stream.str() + "'");
   }
@@ -1089,6 +1196,10 @@ mlir::LogicalResult ACIRToACSimPass::planModule(ac::ModuleOp module,
   planned.specialization = moduleFingerprint(module);
 
   llvm::SmallVector<PlacementPlan, 0> processes;
+  llvm::DenseMap<Value, std::pair<std::string, bindings::PortBinding>>
+      flowExports;
+  llvm::DenseMap<Value, std::pair<std::string, bindings::PortBinding>>
+      flowImports;
   ac::ReturnOp moduleReturn;
   for (Operation &operation : module.getBody().front()) {
     if (auto instance = dyn_cast<ac::InstanceOp>(operation)) {
@@ -1333,6 +1444,36 @@ mlir::LogicalResult ACIRToACSimPass::planModule(ac::ModuleOp module,
       planned.placements.push_back(std::move(placement));
       continue;
     }
+    if (auto exportOp = dyn_cast<ac::FlowExportOp>(operation)) {
+      auto flow = cast<ac::FlowType>(exportOp.getFlow().getType());
+      std::string accessorIdentity = "acir_flow_source_accessor_" +
+                                     module.getSymName().str() + "_" +
+                                     exportOp.getQueue().str();
+      auto metadata = nativeFlowPort(exportOp, flow, "output", accessorIdentity,
+                                     "flowSource");
+      if (failed(metadata))
+        return failure();
+      flowExports[exportOp.getFlow()] = {exportOp.getQueue().str(),
+                                         std::move(*metadata)};
+      continue;
+    }
+    if (auto importOp = dyn_cast<ac::FlowImportOp>(operation)) {
+      auto argument = dyn_cast<BlockArgument>(importOp.getFlow());
+      if (!argument || argument.getOwner() != &module.getBody().front())
+        return lowerError(importOp, "ACLOWER-UNSUPPORTED-CONSTRUCT",
+                          "native Flow import must consume a module argument");
+      auto flow = cast<ac::FlowType>(importOp.getFlow().getType());
+      std::string accessorIdentity = "acir_flow_sink_accessor_" +
+                                     module.getSymName().str() + "_" +
+                                     importOp.getQueue().str();
+      auto metadata =
+          nativeFlowPort(importOp, flow, "input", accessorIdentity, "flowSink");
+      if (failed(metadata))
+        return failure();
+      flowImports[importOp.getFlow()] = {importOp.getQueue().str(),
+                                         std::move(*metadata)};
+      continue;
+    }
     if (auto domain = dyn_cast<ac::TimeDomainOp>(operation)) {
       timeDomains.push_back(domain);
       continue;
@@ -1353,26 +1494,109 @@ mlir::LogicalResult ACIRToACSimPass::planModule(ac::ModuleOp module,
              [](const PlacementPlan &left, const PlacementPlan &right) {
                return left.name < right.name;
              });
-  for (auto [targetIndex, target] : llvm::enumerate(planned.placements)) {
+  auto resolveFlowAlias = [&](Value value) {
+    for (size_t step = 0; step <= planned.placements.size(); ++step) {
+      Value next;
+      for (const PlacementPlan &candidate : planned.placements)
+        for (auto [result, source] : candidate.flowAliases)
+          if (result == value)
+            next = source;
+      if (!next)
+        return value;
+      value = next;
+    }
+    return Value();
+  };
+  const size_t endpointPlacementCount = planned.placements.size();
+  llvm::SmallVector<PlacementPlan, 0> flowLinks;
+  for (size_t targetIndex = 0; targetIndex < endpointPlacementCount;
+       ++targetIndex) {
+    PlacementPlan &target = planned.placements[targetIndex];
     for (const PortEndpointPlan &input : target.inputPorts) {
+      Value inputSource = resolveFlowAlias(input.value);
+      if (!inputSource)
+        return lowerError(target.inputPorts.front().value.getDefiningOp(),
+                          "ACLOWER-OWNERSHIP",
+                          "native Flow pass-through contains a cycle");
       std::optional<unsigned> sourceIndex;
-      for (auto [candidateIndex, candidate] :
-           llvm::enumerate(planned.placements))
-        if (llvm::any_of(candidate.outputPorts,
-                         [&](const PortEndpointPlan &output) {
-                           return output.value == input.value;
-                         })) {
-          sourceIndex = candidateIndex;
-          break;
-        }
+      const PortEndpointPlan *sourceEndpoint = nullptr;
+      for (size_t candidateIndex = 0; candidateIndex < endpointPlacementCount;
+           ++candidateIndex)
+        for (const PortEndpointPlan &output :
+             planned.placements[candidateIndex].outputPorts)
+          if (output.value == inputSource) {
+            sourceIndex = candidateIndex;
+            sourceEndpoint = &output;
+            break;
+          }
       if (!sourceIndex)
         return lowerError(target.inputPorts.front().value.getDefiningOp(),
                           "ACLOWER-TYPE-MISMATCH",
                           "typed endpoint input has no lowered producer");
-      planned.bindingEdges.push_back(
-          {*sourceIndex, static_cast<unsigned>(targetIndex)});
+      BindingEdgePlan edge{*sourceIndex, static_cast<unsigned>(targetIndex)};
+      edge.nativeFlow = input.nativeFlow;
+      if (edge.nativeFlow) {
+        const PlacementPlan &source = planned.placements[*sourceIndex];
+        auto sourceModule = moduleIndexByName.find(source.targetSymbol);
+        auto targetModule = moduleIndexByName.find(target.targetSymbol);
+        if (sourceModule == moduleIndexByName.end() ||
+            targetModule == moduleIndexByName.end())
+          return lowerError(target.inputPorts.front().value.getDefiningOp(),
+                            "ACLOWER-UNSUPPORTED-CONSTRUCT",
+                            "native Flow endpoints must be concrete modules");
+        for (const ModulePortPlan &port : modules[sourceModule->second].ports)
+          if (port.nativeFlow && port.resultIndex >= 0 &&
+              port.metadata.accessor == sourceEndpoint->metadata.accessor)
+            edge.sourceChild = port.queue;
+        for (const ModulePortPlan &port : modules[targetModule->second].ports)
+          if (port.nativeFlow && port.inputIndex >= 0 &&
+              port.metadata.accessor == input.metadata.accessor)
+            edge.targetChild = port.queue;
+        if (edge.sourceChild.empty() || edge.targetChild.empty())
+          return lowerError(target.inputPorts.front().value.getDefiningOp(),
+                            "ACLOWER-OWNERSHIP",
+                            "native Flow endpoint has no boundary queue");
+
+        auto flow = dyn_cast<ac::FlowType>(input.value.getType());
+        auto payloadCpp =
+            flow ? nativeQueueCppType(flow.getElementType(), planned.source)
+                 : std::optional<std::string>();
+        if (!payloadCpp)
+          return lowerError(target.inputPorts.front().value.getDefiningOp(),
+                            "ACLOWER-TYPE-MISMATCH",
+                            "native Flow link payload has no C++ realization");
+        std::string linkIdentity =
+            "acir_queue_link_" +
+            llvm::StringRef(bindings::sha256Fingerprint(*payloadCpp))
+                .drop_front(7)
+                .str();
+        if (failed(typeSymbols.intern(planned.source, linkIdentity,
+                                      "runtime_object",
+                                      "gfsim::QueueLink<" + *payloadCpp + ">")))
+          return failure();
+        PlacementPlan link;
+        link.kind = PlacementPlan::Kind::RuntimeObject;
+        link.name =
+            llvm::formatv("zz_flow_link_{0:08}", planned.bindingEdges.size())
+                .str();
+        link.targetSymbol = std::move(linkIdentity);
+        link.targetIsRuntimeObject = true;
+        link.staticArgs = builder.getArrayAttr({});
+        link.specialization = bindings::sha256Fingerprint(
+            link.targetSymbol + ":" + source.name + ":" + target.name);
+        link.work = "gfsim::QueueLinkRuntime::work";
+        link.xfer = "gfsim::QueueLinkRuntime::xfer";
+        link.reset = "gfsim::QueueLinkRuntime::reset";
+        link.validate = "gfsim::QueueLinkRuntime::validate";
+        link.flowLink = true;
+        edge.linkPlacement = endpointPlacementCount + flowLinks.size();
+        flowLinks.push_back(std::move(link));
+      }
+      planned.bindingEdges.push_back(std::move(edge));
     }
   }
+  for (PlacementPlan &link : flowLinks)
+    planned.placements.push_back(std::move(link));
   llvm::sort(processes,
              [](const PlacementPlan &left, const PlacementPlan &right) {
                return left.name < right.name;
@@ -1412,6 +1636,8 @@ mlir::LogicalResult ACIRToACSimPass::planModule(ac::ModuleOp module,
         referencedQueues.insert(recv.getQueue());
       else if (auto peek = dyn_cast<ac::PeekOp>(operation))
         referencedQueues.insert(peek.getQueue());
+      else if (auto space = dyn_cast<ac::SpaceOp>(operation))
+        referencedQueues.insert(space.getQueue());
       else if (auto await = dyn_cast<ac::AwaitQueueOp>(operation))
         referencedQueues.insert(await.getQueue());
       else if (auto schedule = dyn_cast<ac::ScheduleOp>(operation))
@@ -1446,7 +1672,57 @@ mlir::LogicalResult ACIRToACSimPass::planModule(ac::ModuleOp module,
     return lowerError(module, "ACLOWER-TYPE-MISMATCH",
                       "module return arity must match the declared result "
                       "interface");
+  for (auto &[value, endpoint] : flowImports) {
+    auto argument = cast<BlockArgument>(value);
+    ModulePortPlan port;
+    port.source = value;
+    port.name =
+        llvm::formatv("flow_input_{0:08}", argument.getArgNumber()).str();
+    port.metadata = endpoint.second;
+    port.queue = endpoint.first;
+    port.localAccessor = endpoint.second.accessor;
+    port.nativeFlow = true;
+    port.inputIndex = argument.getArgNumber();
+    std::string moduleAccessor = "acir_module_flow_accessor_" +
+                                 module.getSymName().str() + "_" + port.name;
+    if (failed(
+            typeSymbols.intern(module, moduleAccessor, "accessor", port.name)))
+      return failure();
+    port.metadata.accessor = std::move(moduleAccessor);
+    planned.ports.push_back(std::move(port));
+  }
   for (auto [index, operand] : llvm::enumerate(moduleReturn.getOperands())) {
+    if (isa<ac::FlowType>(operand.getType())) {
+      if (auto exported = flowExports.find(operand);
+          exported != flowExports.end()) {
+        ModulePortPlan port;
+        port.source = operand;
+        port.name = llvm::formatv("flow_output_{0:08}", index).str();
+        port.metadata = exported->second.second;
+        port.queue = exported->second.first;
+        port.localAccessor = exported->second.second.accessor;
+        port.nativeFlow = true;
+        port.resultIndex = index;
+        std::string moduleAccessor = "acir_module_flow_accessor_" +
+                                     module.getSymName().str() + "_" +
+                                     port.name;
+        if (failed(typeSymbols.intern(module, moduleAccessor, "accessor",
+                                      port.name)))
+          return failure();
+        port.metadata.accessor = std::move(moduleAccessor);
+        planned.ports.push_back(std::move(port));
+        continue;
+      }
+      auto argument = dyn_cast<BlockArgument>(operand);
+      if (argument && argument.getOwner() == &module.getBody().front()) {
+        planned.flowAliases.push_back(
+            {static_cast<unsigned>(index), argument.getArgNumber()});
+        continue;
+      }
+      return lowerError(moduleReturn, "ACLOWER-UNSUPPORTED-CONSTRUCT",
+                        "Flow result must resolve to flow.export or a direct "
+                        "pass-through module argument");
+    }
     const PortEndpointPlan *exportedPort = nullptr;
     for (const PlacementPlan &placement : planned.placements)
       for (const PortEndpointPlan &port : placement.outputPorts)
@@ -1478,6 +1754,10 @@ mlir::LogicalResult ACIRToACSimPass::planModule(ac::ModuleOp module,
     result.cppType = producer->cppType;
     planned.results.push_back(std::move(result));
   }
+  llvm::sort(planned.ports,
+             [](const ModulePortPlan &left, const ModulePortPlan &right) {
+               return left.name < right.name;
+             });
   return mlir::success();
 }
 
@@ -1844,7 +2124,10 @@ mlir::LogicalResult ACIRToACSimPass::plan(mlir::ModuleOp input) {
                       "expanded hierarchy exceeds the v0.2 capability bound");
   if (llvm::any_of(constructionOrder,
                    [&](const std::string &path) {
-                     return !frozenOwnerPaths.contains(path);
+                     llvm::StringRef leaf(path);
+                     leaf = leaf.rsplit('.').second;
+                     return !leaf.starts_with("zz_flow_link_") &&
+                            !frozenOwnerPaths.contains(path);
                    }) ||
       !frozenOwnerPaths.contains(selectedSystem.getRootName()))
     return lowerError(input, "ACLOWER-OWNERSHIP",
@@ -2028,6 +2311,8 @@ void ACIRToACSimPass::emitProcessBody(
       reference = recv.getQueueAttr();
     else if (auto peek = dyn_cast<ac::PeekOp>(operation))
       reference = peek.getQueueAttr();
+    else if (auto space = dyn_cast<ac::SpaceOp>(operation))
+      reference = space.getQueueAttr();
     else if (auto await = dyn_cast<ac::AwaitQueueOp>(operation))
       reference = await.getQueueAttr();
     else if (auto schedule = dyn_cast<ac::ScheduleOp>(operation))
@@ -2332,6 +2617,11 @@ void ACIRToACSimPass::emitProcessBody(
           operands.insert(operands.begin(),
                           queueArgumentsByPc[blockPlan.pc().value()].lookup(
                               peek.getQueue()));
+        else if (auto space =
+                     dyn_cast_or_null<ac::SpaceOp>(action.sourceOperation()))
+          operands.insert(operands.begin(),
+                          queueArgumentsByPc[blockPlan.pc().value()].lookup(
+                              space.getQueue()));
         else if (auto schedule =
                      dyn_cast_or_null<ac::ScheduleOp>(action.sourceOperation()))
           operands.insert(operands.begin(),
@@ -2602,14 +2892,29 @@ void ACIRToACSimPass::emitModuleBody(OpBuilder &builder,
           emitPort(owners[placementIndex], endpoint));
   }
 
+  // Pure Flow relay modules forward identity in SSA and therefore project no
+  // endpoint and create no runtime link.
+  bool aliasProgress = true;
+  while (aliasProgress) {
+    aliasProgress = false;
+    for (const PlacementPlan &placement : planned.placements)
+      for (auto [result, source] : placement.flowAliases)
+        if (!emittedValues.count(result))
+          if (Value resolved = emittedValues.lookup(source)) {
+            emittedValues[result] = resolved;
+            aliasProgress = true;
+          }
+  }
+
   // Rank 3: ACIR SSA endpoint uses become exact construction-time binds.
   for (auto [placementIndex, placement] : llvm::enumerate(planned.placements))
     for (auto [inputIndex, endpoint] : llvm::enumerate(placement.inputPorts)) {
       Value source = emittedValues.lookup(endpoint.value);
       assert(source && "validated endpoint producer must be projected");
-      acsim::BindOp::create(builder, planned.source->getLoc(), source,
-                            inputProjections[placementIndex][inputIndex],
-                            builder.getStringAttr("port"));
+      acsim::BindOp::create(
+          builder, planned.source->getLoc(), source,
+          inputProjections[placementIndex][inputIndex],
+          builder.getStringAttr(endpoint.nativeFlow ? "flow" : "port"));
     }
 
   // Rank 4: pure binding calls. Static constructor arguments specialize the
@@ -2627,7 +2932,17 @@ void ACIRToACSimPass::emitModuleBody(OpBuilder &builder,
   // Rank 6: ordered endpoint and scalar exports.
   llvm::SmallVector<Value> returned;
   for (const ModulePortPlan &port : planned.ports) {
-    Value value = emittedValues.lookup(port.source);
+    Value value;
+    if (port.nativeFlow) {
+      Value queue = queueOwners.lookup(port.queue);
+      assert(queue && "validated native Flow queue owner must be emitted");
+      bindings::PortBinding local = port.metadata;
+      local.accessor = port.localAccessor;
+      value = emitPort(queue, PortEndpointPlan{port.source, local, true});
+      emittedValues[port.source] = value;
+    } else {
+      value = emittedValues.lookup(port.source);
+    }
     assert(value && "validated module port producer must be emitted");
     auto exportOp = acsim::ExportOp::create(
         builder, planned.source->getLoc(), value.getType(), value,
@@ -2792,6 +3107,36 @@ ACIRToACSimPass::emit(mlir::ModuleOp input) {
       if (!edge.activates)
         continue;
       for (auto [sourceId, source] : llvm::enumerate(runtimeRows)) {
+        if (edge.nativeFlow) {
+          const PlacementPlan &sourcePlacement =
+              module.placements[edge.sourcePlacement];
+          const PlacementPlan &targetPlacement =
+              module.placements[edge.targetPlacement];
+          std::string sourceSuffix =
+              "." + sourcePlacement.name + "." + edge.sourceChild;
+          if (!StringRef(source.path).ends_with(sourceSuffix))
+            continue;
+          for (auto [targetId, target] : llvm::enumerate(runtimeRows)) {
+            std::string targetSuffix =
+                "." + targetPlacement.name + "." + edge.targetChild;
+            if (!StringRef(target.path).ends_with(targetSuffix))
+              continue;
+            for (auto [linkId, link] : llvm::enumerate(runtimeRows)) {
+              if (link.moduleIndex != moduleIndex ||
+                  link.placementIndex != edge.linkPlacement)
+                continue;
+              std::string sourcePath = link.contextPath + sourceSuffix;
+              std::string targetPath = link.contextPath + targetSuffix;
+              if (source.path != sourcePath || target.path != targetPath)
+                continue;
+              activationEdges.emplace(sourceId, linkId);
+              activationEdges.emplace(targetId, linkId);
+              activationEdges.emplace(linkId, sourceId);
+              activationEdges.emplace(linkId, targetId);
+            }
+          }
+          continue;
+        }
         if (source.moduleIndex != moduleIndex ||
             source.placementIndex != edge.sourcePlacement)
           continue;

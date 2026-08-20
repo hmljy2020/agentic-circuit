@@ -161,6 +161,7 @@ enum class PlacementKind {
   GeneratedModule,
   ExternalStateful,
   CompilerNative,
+  CompilerNativeFlowLink,
   HomogeneousArray,
 };
 

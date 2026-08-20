@@ -111,6 +111,52 @@ private:
   Queue<int> &queue_;
 };
 
+class FlowProducer final : public ProcessRuntime<FlowProducer> {
+public:
+  FlowProducer(ObjectId id, Queue<int> &queue)
+      : ProcessRuntime("flow_producer", id, nullptr, 0, 1), queue_(queue) {}
+
+  ProcessStep executeProcessStep(uint32_t, Epoch epoch) {
+    workEpochs.push_back(epoch.time);
+    if (!queue_.proposePush(7))
+      return ProcessStep::suspendAt(
+          0, {ProcessWakeKind::QueueWritable, queue_.id()}, 1);
+    return ProcessStep::terminate();
+  }
+
+  std::vector<Tick> workEpochs;
+
+private:
+  Queue<int> &queue_;
+};
+
+class FlowConsumer final : public ProcessRuntime<FlowConsumer> {
+public:
+  FlowConsumer(ObjectId id, Queue<int> &queue)
+      : ProcessRuntime("flow_consumer", id, nullptr, 0, 1), queue_(queue) {}
+
+  ProcessStep executeProcessStep(uint32_t, Epoch epoch) {
+    workEpochs.push_back(epoch.time);
+    if (workEpochs.size() == 1)
+      return ProcessStep::suspendAt(0, {ProcessWakeKind::NextDelta, 0}, 1);
+    auto [value, received] = queue_.tryRecv();
+    if (!received)
+      return ProcessStep::suspendAt(
+          0, {ProcessWakeKind::QueueReadable, queue_.id()}, 1);
+    values.push_back(value);
+    return values.size() == 2
+               ? ProcessStep::terminate()
+               : ProcessStep::suspendAt(
+                     0, {ProcessWakeKind::QueueReadable, queue_.id()}, 1);
+  }
+
+  std::vector<Tick> workEpochs;
+  std::vector<int> values;
+
+private:
+  Queue<int> &queue_;
+};
+
 struct RuntimeObservation {
   size_t activeWorkInvocations = 0;
   size_t idleWorkInvocations = 0;
@@ -202,6 +248,48 @@ TEST(GeneratedModelRuntimeTest,
   EXPECT_TRUE(queue.isEmpty());
   EXPECT_EQ(producer.status(), ProcessStatus::Terminated);
   EXPECT_EQ(consumer.status(), ProcessStatus::Terminated);
+}
+
+TEST(GeneratedModelRuntimeTest,
+     QueueLinkBackpressurePreservesDataAndHasTwoTickVisibility) {
+  SimSystem system("generated_native_flow");
+  Queue<int> source("source", 0, nullptr, 1);
+  Queue<int> destination("destination", 1, nullptr, 1);
+  QueueLink<int> link("link", 2, nullptr, source, destination);
+  FlowProducer producer(3, source);
+  FlowConsumer consumer(4, destination);
+
+  ASSERT_TRUE(destination.proposePush(99));
+  destination.doXfer({0, 0});
+  source.bindSystem(&system);
+  destination.bindSystem(&system);
+  link.bindSystem(&system);
+  const std::array rows = {
+      makeDispatchRow(&source),   makeDispatchRow(&destination),
+      makeDispatchRow(&link),     makeDispatchRow(&producer),
+      makeDispatchRow(&consumer),
+  };
+  constexpr std::array<uint32_t, 6> offsets = {0, 2, 5, 8, 9, 10};
+  constexpr std::array<ObjectId, 10> targets = {0, 2, 1, 2, 4, 0, 1, 2, 3, 4};
+  ASSERT_TRUE(system.setDispatchTable(rows));
+  ASSERT_TRUE(system.setActivationPlan(offsets, targets));
+  ASSERT_TRUE(system.scheduleWork(producer.id(), {0, 0}));
+  ASSERT_TRUE(system.scheduleWork(consumer.id(), {0, 0}));
+  ASSERT_TRUE(system.scheduleWork(link.id(), {0, 0}));
+
+  const TerminationResult result = system.run();
+  EXPECT_EQ(result.classification, TerminationClass::Completed);
+  EXPECT_EQ(consumer.values, (std::vector<int>{99, 7}));
+  EXPECT_EQ(producer.workEpochs, (std::vector<Tick>{0}));
+  EXPECT_EQ(consumer.workEpochs, (std::vector<Tick>{0, 1, 2, 3}));
+  EXPECT_EQ(link.stalledFull(), 1u);
+  EXPECT_EQ(link.transferred(), 1u);
+  EXPECT_EQ(source.totalPushes(), 1u);
+  EXPECT_EQ(source.totalPops(), 1u);
+  EXPECT_EQ(destination.totalPushes(), 2u);
+  EXPECT_EQ(destination.totalPops(), 2u);
+  EXPECT_TRUE(source.isEmpty());
+  EXPECT_TRUE(destination.isEmpty());
 }
 
 } // namespace

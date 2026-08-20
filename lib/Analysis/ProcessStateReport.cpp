@@ -197,6 +197,7 @@ llvm::StringRef spelling(ProcessHelperRole value) {
                                                   "queue_try_send",
                                                   "queue_try_recv",
                                                   "queue_peek",
+                                                  "queue_space",
                                                   "event_schedule",
                                                   "event_try_recv",
                                                   "trace_open",
@@ -396,6 +397,9 @@ Value json(const ProcessGeneratedCalleePayload &payload) {
   case ProcessHelperRole::QueuePeek:
     two("element", payload.queuePeek().element(), "queue",
         payload.queuePeek().queue());
+    break;
+  case ProcessHelperRole::QueueSpace:
+    object["queue"] = payload.queueSpace().queue();
     break;
   case ProcessHelperRole::EventSchedule:
     object["delay"] = payload.eventSchedule().delay();

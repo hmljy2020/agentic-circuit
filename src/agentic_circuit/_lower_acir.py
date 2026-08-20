@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import ast
 from dataclasses import dataclass
 
 from ._acpy import (
@@ -23,6 +24,51 @@ from ._static_eval import StaticValue
 
 
 _SYMBOL = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _snake_case(name: str) -> str:
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
+
+
+def _value_annotation_type(node: ast.expr) -> str:
+    if isinstance(node, ast.Name):
+        return {
+            "bool": "i1",
+            "int": "i32",
+            "float": "f64",
+        }.get(node.id, f"!ac.packet<@types::@{node.id}>")
+    raise ValueError("ACPY-TYPE-FLOW: unsupported Flow payload annotation")
+
+
+def _flow_spec(type_key: str) -> tuple[str, str] | None:
+    try:
+        expression = ast.parse(type_key, mode="eval").body
+    except SyntaxError:
+        return None
+    if not isinstance(expression, ast.Subscript) or not isinstance(
+        expression.value, ast.Name
+    ) or expression.value.id != "Flow":
+        return None
+    elements = (
+        expression.slice.elts
+        if isinstance(expression.slice, ast.Tuple)
+        else [expression.slice]
+    )
+    if len(elements) != 2 or not isinstance(elements[1], ast.Name):
+        raise ValueError("ACPY-TYPE-FLOW: Flow requires payload and protocol types")
+    return _value_annotation_type(elements[0]), _snake_case(elements[1].id)
+
+
+def annotation_type_to_acir(type_key: str) -> str:
+    """Lower one captured public annotation to its canonical ACIR spelling."""
+
+    flow = _flow_spec(type_key)
+    if flow is not None:
+        payload, protocol = flow
+        return f"!ac.flow<{payload}, @{protocol}>"
+    return {"bool": "i1", "RuntimeBool": "i1", "int": "i32"}.get(
+        type_key, type_key
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,15 +226,13 @@ def _static_arguments(values: tuple[tuple[str, StaticValue], ...]) -> str:
 
 
 def _argument_types(program: NormalizedProgram) -> dict[str, str]:
-    inferred: dict[str, str] = {}
+    inferred: dict[str, str] = {
+        argument.name: annotation_type_to_acir(argument.type_key)
+        for argument in program.arguments
+    }
     for call in program.calls:
         for port, binding in zip(call.schema.ports, call.inputs, strict=True):
-            inferred.setdefault(binding.value.name, port.acir_type)
-    for argument in program.arguments:
-        inferred.setdefault(
-            argument.name,
-            "i1" if argument.type_key in {"bool", "RuntimeBool"} else "i32",
-        )
+            inferred.setdefault(binding.value.name, annotation_type_to_acir(port.acir_type))
     return inferred
 
 
@@ -203,9 +247,9 @@ def _component_declarations(program: NormalizedProgram) -> list[str]:
             raise ValueError("ACPY-CALL-006: component symbol collision")
         symbols.add(symbol)
         arguments = ", ".join(
-            f"%{port.name} : {port.acir_type}" for port in schema.ports
+            f"%{port.name} : {annotation_type_to_acir(port.acir_type)}" for port in schema.ports
         )
-        result_types = tuple(result.acir_type for result in schema.results)
+        result_types = tuple(annotation_type_to_acir(result.acir_type) for result in schema.results)
         result_signature = (
             ""
             if not result_types
@@ -220,7 +264,7 @@ def _component_declarations(program: NormalizedProgram) -> list[str]:
         parameter_text = _static_arguments(schema_parameters)
         if schema.external_binding is not None:
             lines.append(
-                f"  ac.module.extern @{symbol} : ({', '.join(port.acir_type for port in schema.ports)})"
+                f"  ac.module.extern @{symbol} : ({', '.join(annotation_type_to_acir(port.acir_type) for port in schema.ports)})"
                 f" -> {('()' if not result_types else result_signature.removeprefix(' -> '))} "
                 f"parameters {{{parameter_text}}} implementation "
                 f"{{registry = \"cpp\", name = {json.dumps(schema.external_binding)}}}"
@@ -288,6 +332,40 @@ def lower_to_acir(
         "results {id = \"default\", format = \"json\"} selected true"
     )
     lines.append(system)
+    flow_specs: set[tuple[str, str]] = set()
+    for argument in program.arguments:
+        if (spec := _flow_spec(argument.type_key)) is not None:
+            flow_specs.add(spec)
+    for call in program.calls:
+        for port in call.schema.ports:
+            if (spec := _flow_spec(port.acir_type)) is not None:
+                flow_specs.add(spec)
+        for result in call.schema.results:
+            if (spec := _flow_spec(result.acir_type)) is not None:
+                flow_specs.add(spec)
+    protocols: dict[str, set[str]] = {}
+    for payload, protocol in flow_specs:
+        protocols.setdefault(protocol, set()).add(payload)
+    for protocol in sorted(protocols, key=utf16_sort_key):
+        lines.extend(
+            (
+                f"  ac.protocol @{protocol} {{",
+                '    ac.role @sender dual @receiver cardinality "exclusive"',
+                '    ac.role @receiver dual @sender cardinality "exclusive"',
+                "    ac.state @idle initial true terminal false",
+            )
+        )
+        for index, payload in enumerate(sorted(protocols[protocol], key=utf16_sort_key)):
+            lines.append(
+                f"    ac.event @transfer_{index} from @sender to @receiver payload {payload} action \"offer\""
+            )
+        lines.extend(
+            (
+                '    ac.guarantee "ordering" = "fifo"',
+                '    ac.guarantee "backpressure" = "capacity"',
+                "  }",
+            )
+        )
     declarations = _component_declarations(program)
     if declarations:
         lines.extend(declarations)
@@ -296,7 +374,7 @@ def lower_to_acir(
         f"%{argument.source_name} : {types[argument.name]}"
         for argument in program.arguments
     )
-    return_types = tuple(value.type_key for value in program.returns)
+    return_types = tuple(annotation_type_to_acir(value.type_key) for value in program.returns)
     result_signature = (
         ""
         if not return_types
@@ -311,7 +389,7 @@ def lower_to_acir(
     for call in program.calls:
         operands = ", ".join(names[binding.value.name] for binding in call.inputs)
         operand_types = ", ".join(
-            port.acir_type for port in call.schema.ports
+            annotation_type_to_acir(port.acir_type) for port in call.schema.ports
         )
         results = tuple(binding.value for binding in call.results)
         if len(results) > 1:
@@ -321,7 +399,7 @@ def lower_to_acir(
             name = f"%{_ssa(results[0])}"
             names[results[0].name] = name
             prefix = name + " = "
-        result_types = ", ".join(result.acir_type for result in call.schema.results)
+        result_types = ", ".join(annotation_type_to_acir(result.acir_type) for result in call.schema.results)
         arrow = result_types if len(call.schema.results) == 1 else f"({result_types})"
         lines.append(
             f"    {prefix}ac.instance @{_symbol(call.instance_name)} of @{_symbol(call.schema.identity)}({operands}) "

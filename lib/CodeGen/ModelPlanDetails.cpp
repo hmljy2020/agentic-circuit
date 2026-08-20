@@ -428,7 +428,8 @@ extractModule(acsim::ModuleOp module,
       if (moduleSymbols.contains(targetName)) {
         kind = PlacementKind::GeneratedModule;
       } else if (runtimeTypeSymbols.contains(targetName))
-        kind = PlacementKind::CompilerNative;
+        kind = staticArgs->empty() ? PlacementKind::CompilerNativeFlowLink
+                                   : PlacementKind::CompilerNative;
       result.placements.push_back(
           {kind,
            instance.getSymName().str(),
@@ -564,6 +565,18 @@ llvm::Error validateModelDetails(const ModelPlan &plan) {
       return detailError("ACLOWER-OWNERSHIP",
                          "module plan is incomplete or non-canonical");
     prior = module.symbol;
+    const size_t nativeFlowCount = std::count_if(
+        module.placements.begin(), module.placements.end(),
+        [](const PlacementPlan &placement) {
+          return placement.kind == PlacementKind::CompilerNativeFlowLink;
+        });
+    const size_t flowBindCount =
+        std::count_if(module.binds.begin(), module.binds.end(),
+                      [](const BindPlan &bind) { return bind.kind == "flow"; });
+    if (nativeFlowCount != flowBindCount)
+      return detailError(
+          "ACLOWER-OWNERSHIP",
+          "native QueueLink placements must exactly cover flow binds");
     for (const ProcessPlan &process : module.processes) {
       if (process.symbol.empty() || process.className.empty() ||
           process.fairnessWork == 0 || process.states.empty() ||

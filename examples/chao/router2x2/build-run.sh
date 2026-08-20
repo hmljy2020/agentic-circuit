@@ -32,8 +32,8 @@ out_root="${build_root}/generated"
 "${repo_root}/build/dev-llvm22/bin/acir-cxxgen" \
   "${build_root}/model.acsim.mlir" --stop-after=link \
   --output-root="${out_root}" \
-  --project-name=chao-adder --project-identity=project.chao.adder \
-  --system-name=adder_demo --system-identity=system.adder_demo \
+  --project-name=chao-router2x2 --project-identity=project.chao.router2x2 \
+  --system-name=router2x2_demo --system-identity=system.router2x2-demo \
   --profile=fast --compiler=/usr/bin/c++ --standard-library=libstdc++ \
   --abi-mode=default --object-format=elf --contract-flag=-std=c++20 \
   --include-root="${repo_root}/include" \
@@ -48,8 +48,8 @@ while IFS= read -r object; do
   fi
 done < <(find "${out_root}/obj" -maxdepth 1 -type f -name '*.o' | sort)
 
-# model + 1 module + 4 processes (source, delay, alu, sink).
-if [[ ${#generated_objects[@]} -ne 6 ]]; then
+# model + 1 module + 5 processes (producer0, producer1, arbiter, sink0, sink1).
+if [[ ${#generated_objects[@]} -ne 7 ]]; then
   echo "unexpected generated object set" >&2
   exit 1
 fi
@@ -59,6 +59,6 @@ fi
   "${example_root}/runner.cpp" "${generated_objects[@]}" \
   "${repo_root}/build/dev-llvm22/lib/gfsim/libgfsim.a" \
   "${repo_root}/build/dev-llvm22/lib/Bindings/libACIRBindings.a" \
-  -L/usr/lib/llvm-22/lib -lLLVM -o "${out_root}/bin/adder-demo"
+  -L/usr/lib/llvm-22/lib -lLLVM -o "${out_root}/bin/router2x2-demo"
 
-"${out_root}/bin/adder-demo"
+"${out_root}/bin/router2x2-demo"

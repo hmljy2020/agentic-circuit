@@ -1279,8 +1279,9 @@ LogicalResult verifyStaticArgumentSet(Operation *op, DictionaryAttr arguments,
 
 bool isStructuralGraphChild(Operation &child) {
   return isa<InstanceOp, ArrayOp, InstancesOp, ViewOp, QueueOp, EventQueueOp,
-             ResourceOp, AddressSpaceOp, AddressMapOp, TimeDomainOp, ProcessOp,
-             RequireOp, EnsureOp, StatOp, ReturnOp>(child) ||
+             FlowExportOp, FlowImportOp, ResourceOp, AddressSpaceOp,
+             AddressMapOp, TimeDomainOp, ProcessOp, RequireOp, EnsureOp, StatOp,
+             ReturnOp>(child) ||
          child.getName().getStringRef() == "arith.constant";
 }
 
@@ -1295,6 +1296,8 @@ verifyRuntimeReferences(ModuleOp module,
                         const llvm::StringMap<Operation *> &producerIndex) {
   LogicalResult result = success();
   llvm::StringMap<ProcessOp> eventConsumers;
+  llvm::StringSet<> exportedQueues;
+  llvm::StringSet<> importedQueues;
   auto lookupExpected = [&](Operation *operation, StringRef reference,
                             StringRef expectedName) -> Operation * {
     Operation *target = producerIndex.lookup(reference);
@@ -1312,6 +1315,65 @@ verifyRuntimeReferences(ModuleOp module,
     }
     return target;
   };
+  for (Operation &operation : module.getBody().front()) {
+    auto verifyFlowQueue = [&](Operation *endpoint, StringRef queueName,
+                               FlowType flow, bool isExport) {
+      Operation *target = producerIndex.lookup(queueName);
+      if (!target) {
+        endpoint->emitOpError()
+            << "ACFLOW-QUEUE-UNRESOLVED: queue '@" << queueName
+            << "' does not resolve to a local ac.queue";
+        result = failure();
+        return;
+      }
+      auto queue = dyn_cast<QueueOp>(target);
+      if (!queue) {
+        endpoint->emitOpError()
+            << "ACFLOW-QUEUE-UNRESOLVED: queue '@" << queueName
+            << "' does not resolve to a local ac.queue";
+        result = failure();
+        return;
+      }
+      if (!queue)
+        return;
+      if (queue.getPayload() != flow.getElementType()) {
+        endpoint->emitOpError()
+            << "ACFLOW-PAYLOAD-MISMATCH: flow element type "
+            << flow.getElementType() << " does not match queue payload type "
+            << queue.getPayload();
+        result = failure();
+      }
+      if (queue.getProtocolAttr() != flow.getProtocol()) {
+        endpoint->emitOpError()
+            << "ACFLOW-PROTOCOL-MISMATCH: flow protocol " << flow.getProtocol()
+            << " does not match queue protocol " << queue.getProtocolAttr();
+        result = failure();
+      }
+      llvm::StringSet<> &roles = isExport ? exportedQueues : importedQueues;
+      if (!roles.insert(queueName).second) {
+        endpoint->emitOpError()
+            << (isExport ? "ACFLOW-MULTIPLE-PRODUCER"
+                         : "ACFLOW-MULTIPLE-CONSUMER")
+            << ": queue '" << queueName
+            << "' has more than one structural Flow endpoint";
+        result = failure();
+      }
+      if ((isExport ? importedQueues : exportedQueues).contains(queueName)) {
+        endpoint->emitOpError()
+            << "ACFLOW-QUEUE-ROLE: queue '" << queueName
+            << "' cannot be both a Flow source and destination";
+        result = failure();
+      }
+    };
+    if (auto exportOp = dyn_cast<FlowExportOp>(operation))
+      verifyFlowQueue(exportOp, exportOp.getQueue(),
+                      cast<FlowType>(exportOp.getFlow().getType()), true);
+    else if (auto importOp = dyn_cast<FlowImportOp>(operation))
+      verifyFlowQueue(importOp, importOp.getQueue(),
+                      cast<FlowType>(importOp.getFlow().getType()), false);
+  }
+  if (failed(result))
+    return failure();
   for (ProcessOp process : module.getBody().front().getOps<ProcessOp>()) {
     WalkResult walk = process.getBody().walk([&](Operation *operation) {
       if (auto send = dyn_cast<TrySendOp>(operation)) {
@@ -1323,6 +1385,12 @@ verifyRuntimeReferences(ModuleOp module,
               << " does not match queue payload type " << queue.getPayload();
           result = failure();
         }
+        if (importedQueues.contains(send.getQueue())) {
+          send.emitOpError()
+              << "ACFLOW-QUEUE-ROLE: Flow destination queue '"
+              << send.getQueue() << "' cannot be written by a local process";
+          result = failure();
+        }
       } else if (auto recv = dyn_cast<TryRecvOp>(operation)) {
         auto queue = dyn_cast_or_null<QueueOp>(
             lookupExpected(recv, recv.getQueue(), QueueOp::getOperationName()));
@@ -1330,6 +1398,12 @@ verifyRuntimeReferences(ModuleOp module,
           recv.emitOpError()
               << "result type " << recv.getValue().getType()
               << " does not match queue payload type " << queue.getPayload();
+          result = failure();
+        }
+        if (exportedQueues.contains(recv.getQueue())) {
+          recv.emitOpError()
+              << "ACFLOW-QUEUE-ROLE: Flow source queue '" << recv.getQueue()
+              << "' cannot be consumed by a local process";
           result = failure();
         }
       } else if (auto peek = dyn_cast<PeekOp>(operation)) {
@@ -1341,6 +1415,9 @@ verifyRuntimeReferences(ModuleOp module,
               << " does not match queue payload type " << queue.getPayload();
           result = failure();
         }
+      } else if (auto space = dyn_cast<SpaceOp>(operation)) {
+        (void)dyn_cast_or_null<QueueOp>(lookupExpected(
+            space, space.getQueue(), QueueOp::getOperationName()));
       } else if (auto schedule = dyn_cast<ScheduleOp>(operation)) {
         auto target = dyn_cast_or_null<EventQueueOp>(lookupExpected(
             schedule, schedule.getTarget(), EventQueueOp::getOperationName()));
@@ -1429,14 +1506,15 @@ LogicalResult verifyProcessOperations(ModuleOp module) {
       return failure();
     LogicalResult result = success();
     process.getBody().walk([&](Operation *operation) {
-      result = TypeSwitch<Operation *, LogicalResult>(operation)
-                   .Case<TrySendOp, TryRecvOp, PeekOp, ScheduleOp, TryEventOp,
-                         WaitUntilOp, WaitForOp, AwaitEventOp, AwaitQueueOp,
-                         YieldSimOp, TraceOpenOp, TraceNextOp, TraceDecodeOp,
-                         TraceEofOp, TracePositionOp, RequireOp, EnsureOp,
-                         AssertOp, ProbeOp, StatAddOp, InstrumentationOp>(
-                       [](auto op) { return op.verify(); })
-                   .Default([](Operation *) { return success(); });
+      result =
+          TypeSwitch<Operation *, LogicalResult>(operation)
+              .Case<TrySendOp, TryRecvOp, PeekOp, SpaceOp, ScheduleOp,
+                    TryEventOp, WaitUntilOp, WaitForOp, AwaitEventOp,
+                    AwaitQueueOp, YieldSimOp, TraceOpenOp, TraceNextOp,
+                    TraceDecodeOp, TraceEofOp, TracePositionOp, RequireOp,
+                    EnsureOp, AssertOp, ProbeOp, StatAddOp, InstrumentationOp>(
+                  [](auto op) { return op.verify(); })
+              .Default([](Operation *) { return success(); });
       return failed(result) ? WalkResult::interrupt() : WalkResult::advance();
     });
     if (failed(result))
@@ -2143,6 +2221,68 @@ LogicalResult ReturnOp::verify() {
   return success();
 }
 
+namespace {
+
+LogicalResult verifyFlowQueueEndpoint(Operation *operation,
+                                      FlatSymbolRefAttr queueName,
+                                      FlowType flow) {
+  auto module = dyn_cast_or_null<ModuleOp>(operation->getParentOp());
+  if (!module)
+    return operation->emitOpError(
+        "ACFLOW-PLACEMENT: must be a direct child of a concrete ac.module "
+        "Graph region");
+
+  QueueOp queue;
+  for (QueueOp candidate : module.getBody().front().getOps<QueueOp>())
+    if (candidate.getSymName() == queueName.getValue()) {
+      queue = candidate;
+      break;
+    }
+  if (!queue)
+    return operation->emitOpError()
+           << "ACFLOW-QUEUE-UNRESOLVED: queue '" << queueName
+           << "' does not resolve to a local ac.queue";
+  if (queue.getPayload() != flow.getElementType())
+    return operation->emitOpError()
+           << "ACFLOW-PAYLOAD-MISMATCH: flow element type "
+           << flow.getElementType() << " does not match queue payload type "
+           << queue.getPayload();
+  if (queue.getProtocolAttr() != flow.getProtocol())
+    return operation->emitOpError()
+           << "ACFLOW-PROTOCOL-MISMATCH: flow protocol " << flow.getProtocol()
+           << " does not match queue protocol " << queue.getProtocolAttr();
+
+  ProtocolOp protocol = lookupProtocol(operation, flow.getProtocol());
+  if (!protocol)
+    return operation->emitOpError()
+           << "ACFLOW-PROTOCOL-UNRESOLVED: protocol '" << flow.getProtocol()
+           << "' cannot be resolved";
+  for (GuaranteeOp guarantee : protocol.getBody().getOps<GuaranteeOp>()) {
+    auto value = dyn_cast<StringAttr>(guarantee.getValue());
+    if (guarantee.getKind() == "ordering" &&
+        (!value || value.getValue() != "fifo"))
+      return operation->emitOpError(
+          "ACFLOW-PROTOCOL-UNSUPPORTED: Flow v1 requires FIFO ordering");
+    if (guarantee.getKind() == "backpressure" &&
+        (!value || value.getValue() == "none"))
+      return operation->emitOpError(
+          "ACFLOW-PROTOCOL-UNSUPPORTED: Flow v1 requires backpressure");
+  }
+  return success();
+}
+
+} // namespace
+
+LogicalResult FlowExportOp::verify() {
+  return verifyFlowQueueEndpoint(*this, getQueueAttr(),
+                                 cast<FlowType>(getFlow().getType()));
+}
+
+LogicalResult FlowImportOp::verify() {
+  return verifyFlowQueueEndpoint(*this, getQueueAttr(),
+                                 cast<FlowType>(getFlow().getType()));
+}
+
 LogicalResult verifyTopologyTypeUses(Operation *operation) {
   if (failed(verifyGraphStructure(operation)))
     return failure();
@@ -2385,11 +2525,11 @@ bool isAllowedProcessOperation(Operation *operation) {
           operation))
     return true;
   return isa<RecordCreateOp, RecordGetOp, RecordWithOp, PacketSerializeOp,
-             PacketDeserializeOp, TrySendOp, TryRecvOp, PeekOp, ScheduleOp,
-             TryEventOp, WaitUntilOp, WaitForOp, AwaitEventOp, AwaitQueueOp,
-             YieldSimOp, TraceOpenOp, TraceNextOp, TraceDecodeOp, TraceEofOp,
-             TracePositionOp, RequireOp, EnsureOp, AssertOp, ProbeOp, StatAddOp,
-             InstrumentationOp>(operation);
+             PacketDeserializeOp, TrySendOp, TryRecvOp, PeekOp, SpaceOp,
+             ScheduleOp, TryEventOp, WaitUntilOp, WaitForOp, AwaitEventOp,
+             AwaitQueueOp, YieldSimOp, TraceOpenOp, TraceNextOp, TraceDecodeOp,
+             TraceEofOp, TracePositionOp, RequireOp, EnsureOp, AssertOp,
+             ProbeOp, StatAddOp, InstrumentationOp>(operation);
 }
 
 std::optional<bool> constantBool(Value value) {
@@ -2992,6 +3132,7 @@ LogicalResult ProcessOp::verify() {
 LogicalResult TrySendOp::verify() { return requireProcess(*this); }
 LogicalResult TryRecvOp::verify() { return requireProcess(*this); }
 LogicalResult PeekOp::verify() { return requireProcess(*this); }
+LogicalResult SpaceOp::verify() { return requireProcess(*this); }
 LogicalResult TryEventOp::verify() { return requireProcess(*this); }
 
 LogicalResult ScheduleOp::verify() {
@@ -3185,6 +3326,14 @@ void TryRecvOp::getEffects(
 }
 
 void PeekOp::getEffects(
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  if (!isa_and_nonnull<QueueOp>(resolvedRuntimeTarget(*this, getQueue())))
+    return;
+  addEffect(effects, *this, MemoryEffects::Read::get(), getQueue(), "queue",
+            QueueStateResource::get());
+}
+
+void SpaceOp::getEffects(
     SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
   if (!isa_and_nonnull<QueueOp>(resolvedRuntimeTarget(*this, getQueue())))
     return;

@@ -400,14 +400,41 @@ in module topology. `T` is the carried payload or transaction type and
 `Protocol` is a concrete `ac.protocol` symbol reference. Neither parameter may
 be omitted or inferred in public ACIR v0.2 assembly.
 
-A flow is not a queue, channel implementation, or mutable simulator object. It
-does not imply capacity, buffering, arbitration, replication, or delay.
+A flow is not a queue, channel implementation, or mutable simulator object.
+The concrete buffering belongs to its two endpoint queues; the compiler-owned
+`gfsim::QueueLink<T>` is the runtime realization of the connection.
+
+Concrete modules introduce and terminate scalar flows with:
+
+```mlir
+%flow = ac.flow.export @source_queue : !ac.flow<i32, @ready_valid>
+ac.flow.import %flow to @destination_queue : !ac.flow<i32, @ready_valid>
+```
+
+Both operations are direct children of a concrete `ac.module` Graph region.
+The queue payload and protocol must exactly equal the Flow element and protocol.
+An export queue is locally push-only and an import queue is locally pop-only:
+local `ac.try_recv` from an export queue and local `ac.try_send` to an import
+queue are errors. Event queues are not Flow endpoints.
 
 Every flow value has exactly one SSA definition: a module argument or operation
 result. It has at most one functional use; use by `ac.return` counts as that
 functional use. Observation-only probes do not consume a flow. Replication
 requires an explicit component with broadcast or fork semantics. Fan-in
 requires an explicit merge, arbitration, scheduling, or interconnect component.
+
+Flow v1 is linear and compiler-native. Each resolved connection has exactly one
+export and one import in the selected-root hierarchy. Dangling flows, fanout,
+multiple producers, multiple consumers, payload/protocol/time-domain mismatch,
+and mixing a native endpoint with an external provider are deterministic
+errors. FlowArray, broadcast, merge, and cross-domain bridges are not part of
+v0.2 Flow v1.
+
+At tick start the link observes committed queue snapshots. If the source is
+non-empty and the destination has capacity, its Xfer atomically commits one
+source pop and one destination push. A source write committed at tick `t` is
+first link-visible at `t+1`; a transfer committed at `t+1` is first
+consumer-visible at `t+2`. Backpressure never pops the source.
 
 ### Channel
 
@@ -547,6 +574,17 @@ creating a proposal or commit participant. An empty queue returns `T{}` and
 observed by any peek in the same epoch. Peek has a stateful read effect so it
 must retain program order with queue operations, but it does not change queue
 occupancy, statistics, activation, or protocol state.
+
+`ac.space @queue` returns, as an `i32`, the number of free entry slots the queue
+can accept in the current epoch: `max(0, entries − committed − pending pushes)`,
+i.e. exactly the number of `ac.try_send` calls that would succeed right now.
+Pending pushes count as occupied and a pending pop does not release capacity,
+matching the proposal snapshot. `space` is a pure read: it creates no proposal
+and no commit participant, and it does not change occupancy, statistics,
+activation, or protocol state. Like peek, it has a stateful read effect so it
+retains program order with queue operations. Unlike `ac.peek`'s boolean `valid`
+(non-empty), `space > 0` is a capacity-aware writable test that works for any
+queue depth, and `space >= N` enables depth-aware scheduling.
 
 ### `ac.event_queue`
 
@@ -808,6 +846,7 @@ After `ac-freeze-topology`:
 - `ac.try_send`
 - `ac.try_recv`
 - `ac.peek`
+- `ac.space`
 - `ac.schedule`
 - `ac.wait_until`
 - `ac.wait_for`

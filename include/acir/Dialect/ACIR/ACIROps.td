@@ -352,6 +352,23 @@ def ACIR_QueueOp : ACIR_OwnedStateOp<"queue"> {
   }];
 }
 
+// Structural endpoints for one compiler-native, queue-to-queue Flow.  These
+// operations describe ownership at the module boundary; they do not perform a
+// runtime queue access themselves.
+def ACIR_FlowExportOp : ACIR_Op<"flow.export", [Pure]> {
+  let arguments = (ins FlatSymbolRefAttr:$queue);
+  let results = (outs ACIR_FlowType:$flow);
+  let hasVerifier = 1;
+  let assemblyFormat = "$queue attr-dict `:` qualified(type($flow))";
+}
+
+def ACIR_FlowImportOp : ACIR_Op<"flow.import", [Pure]> {
+  let arguments = (ins ACIR_FlowType:$flow, FlatSymbolRefAttr:$queue);
+  let hasVerifier = 1;
+  let assemblyFormat =
+      "$flow `to` $queue attr-dict `:` qualified(type($flow))";
+}
+
 def ACIR_EventQueueOp : ACIR_OwnedStateOp<"event_queue"> {
   let arguments = (ins SymbolNameAttr:$sym_name, StrAttr:$stable_id,
                        StrAttr:$path, TypeAttr:$payload, I64Attr:$capacity,
@@ -467,6 +484,13 @@ def ACIR_PeekOp : ACIR_RuntimeEffectOp<"peek"> {
   let results = (outs AnyType:$value, I1:$valid);
   let hasVerifier = 1;
   let assemblyFormat = "$queue attr-dict `:` type($value)";
+}
+
+def ACIR_SpaceOp : ACIR_RuntimeEffectOp<"space"> {
+  let arguments = (ins FlatSymbolRefAttr:$queue);
+  let results = (outs I32:$space);
+  let hasVerifier = 1;
+  let assemblyFormat = "$queue attr-dict";
 }
 
 def ACIR_ScheduleOp : ACIR_RuntimeEffectOp<"schedule"> {

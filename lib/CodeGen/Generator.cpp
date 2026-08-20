@@ -261,6 +261,10 @@ GeneratedFile makeFile(std::string path, std::string content) {
   return file;
 }
 
+llvm::Expected<std::string> moduleValueExpression(const ModelPlan &plan,
+                                                  const ModulePlan &module,
+                                                  llvm::StringRef value);
+
 llvm::Expected<GeneratedFile> moduleHeader(const ModelPlan &plan,
                                            const ModulePlan &module) {
   std::set<std::string> headers;
@@ -319,9 +323,21 @@ llvm::Expected<GeneratedFile> moduleHeader(const ModelPlan &plan,
          << " final : public gfsim::Module {\npublic:\n  " << module.className
          << "(std::string name, gfsim::ObjectId id, gfsim::SimObject "
             "*parent, gfsim::ObjectId &nextObjectId);\n";
-  for (const ExportPlan &exported : module.exports)
-    output << "  decltype(auto) " << exported.symbol << "();\n"
-           << "  decltype(auto) " << exported.symbol << "() const;\n";
+  for (const ExportPlan &exported : module.exports) {
+    if (llvm::StringRef(exported.resultType).starts_with("!acsim.port<")) {
+      auto expression =
+          moduleValueExpression(plan, module, exported.sourceValue);
+      if (!expression)
+        return expression.takeError();
+      output << "  decltype(auto) " << exported.symbol << "() { return "
+             << *expression << "; }\n"
+             << "  decltype(auto) " << exported.symbol << "() const { return "
+             << *expression << "; }\n";
+    } else {
+      output << "  decltype(auto) " << exported.symbol << "();\n"
+             << "  decltype(auto) " << exported.symbol << "() const;\n";
+    }
+  }
   output
       << "\nprivate:\n  friend class Model;\n  friend struct DispatchAccess;\n";
   for (const PlacementPlan &placement : module.placements) {
@@ -482,6 +498,39 @@ llvm::Expected<GeneratedFile> moduleSource(const ModelPlan &plan,
       if (runtimeType) {
         std::string initializer = placement.memberName + "(\"" +
                                   placement.symbol + "\", nextObjectId++, this";
+        switch (placement.kind) {
+        case PlacementKind::CompilerNativeFlowLink: {
+          size_t flowOrdinal = 0;
+          const BindPlan *flowBind = nullptr;
+          for (const BindPlan &candidate : module.binds) {
+            if (candidate.kind != "flow")
+              continue;
+            if (placement.symbol ==
+                llvm::formatv("zz_flow_link_{0:08}", flowOrdinal).str()) {
+              flowBind = &candidate;
+              break;
+            }
+            ++flowOrdinal;
+          }
+          if (!flowBind)
+            return generatorError("ACLOWER-OWNERSHIP",
+                                  "QueueLink placement has no flow bind");
+          auto source =
+              moduleValueExpression(plan, module, flowBind->sourceValue);
+          auto target =
+              moduleValueExpression(plan, module, flowBind->targetValue);
+          if (!source)
+            return source.takeError();
+          if (!target)
+            return target.takeError();
+          initializer.append(", ").append(*source).append(", ").append(*target);
+          initializer.push_back(')');
+          initializers.push_back(std::move(initializer));
+          continue;
+        }
+        default:
+          break;
+        }
         for (const llvm::json::Value &argument : placement.staticArguments) {
           auto literal = cppLiteral(argument);
           if (!literal)
@@ -525,9 +574,10 @@ llvm::Expected<GeneratedFile> moduleSource(const ModelPlan &plan,
   std::ostringstream output;
   output << "#include \"generated/modules/" << module.className
          << ".h\"\n\n#include <stdexcept>\n\nnamespace acsim_generated {\n\n";
-  if (std::any_of(
-          module.binds.begin(), module.binds.end(),
-          [](const BindPlan &bind) { return bind.kind != "pure_view"; }))
+  if (std::any_of(module.binds.begin(), module.binds.end(),
+                  [](const BindPlan &bind) {
+                    return bind.kind != "pure_view" && bind.kind != "flow";
+                  }))
     output << "namespace {\ntemplate <typename Source, typename Target>\n"
               "void bindStatic(Source &&source, Target &&target) {\n"
               "  if constexpr (requires { source.bind(target); })\n"
@@ -570,7 +620,7 @@ llvm::Expected<GeneratedFile> moduleSource(const ModelPlan &plan,
     output << "  if (!attachChild(" << process.symbol << "_))\n"
            << "    throw std::logic_error(\"ACLOWER-OWNERSHIP\");\n";
   for (const BindPlan &bind : module.binds) {
-    if (bind.kind == "pure_view")
+    if (bind.kind == "pure_view" || bind.kind == "flow")
       continue;
     auto source = moduleValueExpression(plan, module, bind.sourceValue);
     auto target = moduleValueExpression(plan, module, bind.targetValue);
@@ -582,6 +632,8 @@ llvm::Expected<GeneratedFile> moduleSource(const ModelPlan &plan,
   }
   output << "}\n";
   for (const ExportPlan &exported : module.exports) {
+    if (llvm::StringRef(exported.resultType).starts_with("!acsim.port<"))
+      continue;
     auto expression = moduleValueExpression(plan, module, exported.sourceValue);
     if (!expression)
       return expression.takeError();

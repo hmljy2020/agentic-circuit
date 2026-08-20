@@ -13,6 +13,7 @@
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/TypeSwitch.h"
+#include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
@@ -1732,6 +1733,17 @@ DictionaryAttr findProjectedEndpoint(Value value, const ModelIndex &index) {
   return {};
 }
 
+bool isNativeQueueFlowProjection(PortOp port, const ModelIndex &index) {
+  auto realization =
+      dyn_cast_or_null<TypeOp>(realizationForBase(port.getBase(), index));
+  auto accessor = dyn_cast_or_null<TypeOp>(
+      index.definitions.lookup(symbolKey(port.getAccessorAttr())));
+  return realization && realization.getKind() == "runtime_object" && accessor &&
+         accessor.getKind() == "accessor" &&
+         llvm::is_contained({StringRef("flowSource"), StringRef("flowSink")},
+                            accessor.getCppName());
+}
+
 ExportOp findModuleEndpointExport(ModuleOp module, StringRef field,
                                   FlatSymbolRefAttr accessor) {
   SmallVector<ExportOp> exports;
@@ -1811,7 +1823,12 @@ LogicalResult verifyPlacementTarget(Operation *operation,
     if (targetType.getKind() != "runtime_object")
       return operation->emitOpError(
           "acsim.type placement target must have kind runtime_object");
-    if (staticArguments.empty() || staticArguments.size() > 2)
+    const bool queueLink =
+        targetType.getCppName().starts_with("gfsim::QueueLink<");
+    if (queueLink && !staticArguments.empty())
+      return operation->emitOpError(
+          "compiler-native QueueLink requires an empty static argument list");
+    if (!queueLink && (staticArguments.empty() || staticArguments.size() > 2))
       return operation->emitOpError(
           "runtime_object static arguments require entry capacity and an "
           "optional byte capacity");
@@ -2119,12 +2136,15 @@ LogicalResult verifyModulesAndTypedGraph(ModelOp model,
       DictionaryAttr endpoint =
           findEndpoint(realization, "ports", port.getAccessorAttr());
       PortType type = cast<PortType>(port.getResult().getType());
-      if (!endpoint ||
-          endpoint.getAs<FlatSymbolRefAttr>("interface") !=
-              type.getInterface() ||
-          endpoint.getAs<FlatSymbolRefAttr>("role") != type.getRole() ||
-          endpoint.getAs<FlatSymbolRefAttr>("payload") != type.getPayload() ||
-          endpoint.getAs<FlatSymbolRefAttr>("protocol") != type.getProtocol())
+      bool nativeQueueProjection = isNativeQueueFlowProjection(port, index);
+      bool endpointMismatch =
+          endpoint &&
+          (endpoint.getAs<FlatSymbolRefAttr>("interface") !=
+               type.getInterface() ||
+           endpoint.getAs<FlatSymbolRefAttr>("role") != type.getRole() ||
+           endpoint.getAs<FlatSymbolRefAttr>("payload") != type.getPayload() ||
+           endpoint.getAs<FlatSymbolRefAttr>("protocol") != type.getProtocol());
+      if ((!endpoint && !nativeQueueProjection) || endpointMismatch)
         return port.emitOpError("port projection must exactly match its "
                                 "binding-lock endpoint record");
     } else if (auto resource = dyn_cast<ResourceOp>(operation)) {
@@ -2146,11 +2166,12 @@ LogicalResult verifyModulesAndTypedGraph(ModelOp model,
         return resource.emitOpError("resource projection must exactly match "
                                     "its binding-lock endpoint record");
     } else if (auto bind = dyn_cast<BindOp>(operation)) {
-      if (!llvm::is_contained({StringRef("port"), StringRef("resource"),
-                               StringRef("export"), StringRef("pure_view")},
+      if (!llvm::is_contained({StringRef("port"), StringRef("flow"),
+                               StringRef("resource"), StringRef("export"),
+                               StringRef("pure_view")},
                               bind.getKind()))
         return bind.emitOpError("unknown closed typed binding kind");
-      if (bind.getKind() == "port") {
+      if (bind.getKind() == "port" || bind.getKind() == "flow") {
         auto source = bind.getSource().getDefiningOp<PortOp>();
         auto target = bind.getTarget().getDefiningOp<PortOp>();
         DictionaryAttr sourceRecord =
@@ -2343,11 +2364,15 @@ LogicalResult verifyModulesAndTypedGraph(ModelOp model,
         auto type = dyn_cast<PortType>(exportOp.getValue().getType());
         DictionaryAttr endpoint =
             findProjectedEndpoint(exportOp.getValue(), index);
-        if (!projection || !type || !endpoint ||
-            projection.getAccessorAttr() !=
-                record.getAs<FlatSymbolRefAttr>("accessor") ||
-            endpoint.getAs<StringAttr>("delegation") !=
-                record.getAs<StringAttr>("delegation") ||
+        bool nativeQueueProjection =
+            projection && isNativeQueueFlowProjection(projection, index);
+        if (!projection || !type || (!endpoint && !nativeQueueProjection) ||
+            (!nativeQueueProjection &&
+             projection.getAccessorAttr() !=
+                 record.getAs<FlatSymbolRefAttr>("accessor")) ||
+            (!nativeQueueProjection &&
+             endpoint.getAs<StringAttr>("delegation") !=
+                 record.getAs<StringAttr>("delegation")) ||
             exportOp.getRoleAttr() != record.getAs<FlatSymbolRefAttr>("role") ||
             type.getInterface() !=
                 record.getAs<FlatSymbolRefAttr>("interface") ||
@@ -2461,11 +2486,14 @@ LogicalResult verifyDispatchAndActivation(ModelOp model,
             "realization");
     } else {
       auto type = cast<TypeOp>(row.realization);
+      const bool queueLink = type.getCppName().starts_with("gfsim::QueueLink<");
+      StringRef runtime =
+          queueLink ? "gfsim::QueueLinkRuntime" : "gfsim::QueueRuntime";
       if (type.getKind() != "runtime_object" ||
-          dispatch.getWork() != "gfsim::QueueRuntime::work" ||
-          dispatch.getXfer() != "gfsim::QueueRuntime::xfer" ||
-          dispatch.getReset() != "gfsim::QueueRuntime::reset" ||
-          dispatch.getValidate() != "gfsim::QueueRuntime::validate")
+          dispatch.getWork() != (runtime + "::work").str() ||
+          dispatch.getXfer() != (runtime + "::xfer").str() ||
+          dispatch.getReset() != (runtime + "::reset").str() ||
+          dispatch.getValidate() != (runtime + "::validate").str())
         return dispatch.emitOpError(
             "dispatch thunks must exactly match the compiler-native "
             "runtime object realization");
@@ -2654,6 +2682,7 @@ LogicalResult verifyDispatchAndActivation(ModelOp model,
   }
   for (auto [contextOrdinal, expansionContext] :
        llvm::enumerate(expansion.contexts)) {
+    unsigned flowBindOrdinal = 0;
     for (Operation &operation : expansionContext.module.getBody().front()) {
       if (auto bind = dyn_cast<BindOp>(operation)) {
         FailureOr<std::set<int64_t>> sources =
@@ -2662,6 +2691,37 @@ LogicalResult verifyDispatchAndActivation(ModelOp model,
             collectIds(bind.getTarget(), contextOrdinal, bind);
         if (failed(sources) || failed(targets))
           return failure();
+        if (bind.getKind() == "flow") {
+          std::string linkName =
+              llvm::formatv("zz_flow_link_{0:08}", flowBindOrdinal++).str();
+          InstanceOp link;
+          for (Operation &candidate : expansionContext.module.getBody().front())
+            if (auto instance = dyn_cast<InstanceOp>(candidate);
+                instance && instance.getSymName() == linkName) {
+              link = instance;
+              break;
+            }
+          auto linkRows = link ? expansionContext.objectIds.find(link)
+                               : expansionContext.objectIds.end();
+          if (!link || linkRows == expansionContext.objectIds.end() ||
+              linkRows->second.size() != 1)
+            return bind.emitOpError(
+                "flow bind must own exactly one compiler-native QueueLink");
+          int64_t linkId = linkRows->second.front();
+          for (int64_t source : *sources) {
+            expected.insert(
+                {expansion.runtimeRows[source].activationId, linkId});
+            expected.insert(
+                {expansion.runtimeRows[linkId].activationId, source});
+          }
+          for (int64_t target : *targets) {
+            expected.insert(
+                {expansion.runtimeRows[target].activationId, linkId});
+            expected.insert(
+                {expansion.runtimeRows[linkId].activationId, target});
+          }
+          continue;
+        }
         for (int64_t source : *sources)
           for (int64_t target : *targets)
             expected.insert(
@@ -2996,7 +3056,7 @@ LogicalResult BindOp::verify() {
         return &operation;
     return nullptr;
   };
-  if (getKind() == "port") {
+  if (getKind() == "port" || getKind() == "flow") {
     auto sourceOp = getSource().getDefiningOp<PortOp>();
     auto targetOp = getTarget().getDefiningOp<PortOp>();
     auto source = dyn_cast<PortType>(getSource().getType());
@@ -3009,6 +3069,15 @@ LogicalResult BindOp::verify() {
         targetOp ? findEndpoint(findRealization(targetOp.getBase()), "ports",
                                 targetOp.getAccessorAttr())
                  : DictionaryAttr();
+    auto isNativeFlowInterface = [&](PortType port) {
+      ModelOp model = (*this)->getParentOfType<ModelOp>();
+      auto definition =
+          model ? dyn_cast_or_null<TypeOp>(
+                      SymbolTable::lookupSymbolIn(model, port.getInterface()))
+                : TypeOp();
+      return definition && definition.getKind() == "interface" &&
+             definition.getCppName() == "acir::native_flow_interface";
+    };
     if (!source || !target || !sourceRecord || !targetRecord ||
         sourceRecord.getAs<StringAttr>("direction").getValue() != "output" ||
         targetRecord.getAs<StringAttr>("direction").getValue() != "input" ||
@@ -3028,6 +3097,16 @@ LogicalResult BindOp::verify() {
             target.getProtocol())
       return emitOpError("port bind endpoints must match exact output/input "
                          "binding-lock records");
+    const bool nativeFlow = isNativeFlowInterface(source);
+    if (getKind() == "flow" &&
+        (!nativeFlow ||
+         !isa_and_nonnull<ModuleOp>(findRealization(sourceOp.getBase())) ||
+         !isa_and_nonnull<ModuleOp>(findRealization(targetOp.getBase()))))
+      return emitOpError("flow bind accepts only compiler-native native-Flow "
+                         "generated-module ports");
+    if (getKind() == "port" && nativeFlow)
+      return emitOpError(
+          "port bind cannot consume compiler-native native-Flow ports");
     if (sourceRecord.get("interface") != targetRecord.get("interface") ||
         sourceRecord.get("payload") != targetRecord.get("payload") ||
         sourceRecord.get("protocol") != targetRecord.get("protocol") ||

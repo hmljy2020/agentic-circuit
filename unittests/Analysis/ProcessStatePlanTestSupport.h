@@ -71,6 +71,7 @@ parseAndFreezeQueueActions(mlir::MLIRContext &context) {
           } else {
             ac.await_queue @fifo_queue until "readable"
           }
+          %space = ac.space @fifo_queue
           %received_value, %received = ac.try_recv @fifo_queue : i32
           scf.if %received {
           } else {

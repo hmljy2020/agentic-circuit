@@ -760,6 +760,12 @@ llvm::Error emitOperation(const ModelPlan &plan, const ProcessPlan &process,
               output << call.arguments[0] << ".tryPeek();\n";
               return llvm::Error::success();
             }
+            if (calleeSymbol.starts_with("acir_impl_queue_space")) {
+              if (call.arguments.size() != 1)
+                return processError("queue space helper requires one queue");
+              output << call.arguments[0] << ".space();\n";
+              return llvm::Error::success();
+            }
             if (calleeSymbol.starts_with("acir_impl_event_schedule")) {
               if (call.arguments.size() != 3)
                 return processError(

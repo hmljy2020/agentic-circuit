@@ -149,7 +149,7 @@ A module parameter is classified from its annotation and declaration:
 
 | Category | Python meaning | ACIR meaning |
 | --- | --- | --- |
-| Flow | Symbolic immutable dataflow value | `!ac.flow<T>` module argument |
+| Flow | Symbolic immutable dataflow value | `!ac.flow<T, @protocol>` module argument |
 | Endpoint | Interface role handle | `!ac.endpoint<I, R>` module argument |
 | ResourceRef | Typed reference to a shared or delegated capability | `!ac.resource_ref<R, Role>` SSA module argument |
 | Static parameter | Elaboration-time immutable specialization input | Typed module specialization parameter |
@@ -635,9 +635,9 @@ Conceptually, the earlier example lowers to:
 
 ```mlir
 ac.module @Accelerator(
-  %trace : !ac.flow<!ac.packet<@PtoRecord>>,
+  %trace : !ac.flow<!ac.packet<@PtoRecord>, @ready_valid>,
   %memory : !ac.endpoint<@MemoryPort, @target>
-) -> !ac.flow<!ac.packet<@Completion>> graph {
+) -> !ac.flow<!ac.packet<@Completion>, @ready_valid> graph {
   %decoded = ac.instance @decoded of @TraceDecode(%trace)
   %scheduled = ac.instance @scheduled of @Scheduler(%decoded)
     {depth = 16, policy = #ac.std.fifo}
@@ -674,7 +674,7 @@ the smallest applicable explicit standard component.
 
 ### Flow linearity
 
-`!ac.flow<T>` is linear by default: one produced flow has at most one consuming
+`!ac.flow<T, @protocol>` is linear by default: one produced flow has at most one consuming
 component or module result. MLIR Graph regions permit multiple SSA uses, so the
 ACIR verifier MUST enforce this stronger semantic rule.
 

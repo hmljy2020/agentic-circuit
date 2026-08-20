@@ -32,6 +32,7 @@ public:
 
 private:
   mlir::LogicalResult verifyPureProcessCalls();
+  mlir::LogicalResult verifyFlowConnections();
   mlir::LogicalResult verifyZeroDelayDependencies();
   mlir::LogicalResult verifyFrozenIntegrity();
 

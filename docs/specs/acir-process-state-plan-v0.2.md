@@ -877,6 +877,8 @@ enum class ProcessHelperRole {
   TraceDecode,
   QueueTrySend,
   QueueTryRecv,
+  QueuePeek,
+  QueueSpace,
   EventSchedule,
   TraceOpen,
   TraceNext,
@@ -1075,6 +1077,7 @@ Payload JSON keys are exact:
 - packet serialize/deserialize: `{bytes,packet,packet_type}`;
 - trace decode: `{entry,result,source}`;
 - queue try-send/try-recv/peek: `{element,queue}`;
+- queue space: `{queue}`;
 - event schedule: `{delay,target,value}`;
 - trace open/eof/position: `{source}`;
 - trace next: `{entry,source}`;
@@ -1154,6 +1157,7 @@ pointer order.
 | `queue_try_send` | `stateful` | `invoke` | Inputs `queue-ref:@queue,element`; exact original accepted-result key. |
 | `queue_try_recv` | `stateful` | `invoke` | One `queue-ref:@queue` input; exact original element and received-flag result keys. |
 | `queue_peek` | `stateful` | `invoke` | One `queue-ref:@queue` input; exact original element and valid-flag result keys. |
+| `queue_space` | `stateful` | `invoke` | One `queue-ref:@queue` input; a single `mlir:i32` free-slot result key. |
 | `event_schedule` | `stateful` | `invoke` | Inputs `event-queue-ref,value,delay`; one `i1` acceptance result. |
 | `event_try_recv` | `stateful` | `invoke` | Input `event-queue-ref`; results `T,i1`. |
 | `trace_open` | `stateful` | `invoke` | No SSA input; exact original cursor result key. |

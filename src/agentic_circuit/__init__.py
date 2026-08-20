@@ -21,7 +21,7 @@ from ._definitions import (
     transaction,
 )
 from ._resources import address_map, address_space, queue
-from ._types import Endpoint, Flow, ResourceRef, Static
+from ._types import Endpoint, Flow, ResourceRef, Static, export_flow, import_flow
 
 
 __all__ = (
@@ -45,6 +45,8 @@ __all__ = (
     "address_map",
     "Static",
     "Flow",
+    "export_flow",
+    "import_flow",
     "Endpoint",
 )
 

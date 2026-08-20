@@ -26,6 +26,8 @@ PUBLIC = {
     "address_map",
     "Static",
     "Flow",
+    "export_flow",
+    "import_flow",
     "Endpoint",
 }
 
@@ -65,6 +67,39 @@ class PublicApiTest(unittest.TestCase):
         value = types._test_symbolic("request", object())
 
         self.assertEqual("SymbolicValue('request')", repr(value))
+
+    def test_queue_flow_constructors_preserve_payload_and_protocol(self) -> None:
+        api = importlib.import_module("agentic_circuit")
+        queue = api.queue(
+            "out", payload_type="i32", protocol="ready_valid", depth=2
+        )
+
+        flow = api.export_flow(queue, protocol=ReadyValid)
+        self.assertEqual("out.flow", flow.stable_name)
+        self.assertEqual(api.Flow["i32", ReadyValid], flow.annotation)
+        self.assertIsNone(api.import_flow(flow, queue))
+
+        with self.assertRaisesRegex(TypeError, "ACPY-FLOW-001"):
+            api.export_flow(object(), protocol=ReadyValid)
+        with self.assertRaisesRegex(TypeError, "ACPY-FLOW-004"):
+            api.import_flow(object(), queue)
+
+    def test_import_flow_rejects_fanout(self) -> None:
+        api = importlib.import_module("agentic_circuit")
+        source = api.queue(
+            "source", payload_type="i32", protocol="ready_valid", depth=1
+        )
+        first = api.queue(
+            "first", payload_type="i32", protocol="ready_valid", depth=1
+        )
+        second = api.queue(
+            "second", payload_type="i32", protocol="ready_valid", depth=1
+        )
+        flow = api.export_flow(source, protocol=ReadyValid)
+
+        api.import_flow(flow, first)
+        with self.assertRaisesRegex(TypeError, "ACPY-FLOW-006"):
+            api.import_flow(flow, second)
 
     def test_decorators_create_immutable_definition_metadata(self) -> None:
         api = importlib.import_module("agentic_circuit")

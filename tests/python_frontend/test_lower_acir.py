@@ -33,8 +33,19 @@ def registry(*, source_binding: str | None = "input"):
     refine = ComponentSchema(
         identity="test.Refine",
         fingerprint=ZERO_DIGEST,
-        ports=(PortSchema("input", "flow", "i32", "in", "consumer", 1),),
-        results=(ResultSchema("output", "i32", source_binding),),
+        ports=(
+            PortSchema(
+                "input",
+                "flow",
+                "Flow[int, ReadyValid]",
+                "in",
+                "consumer",
+                1,
+            ),
+        ),
+        results=(
+            ResultSchema("output", "Flow[int, ReadyValid]", source_binding),
+        ),
         parameters=(),
         availability="available",
         effect_kind="stateful",

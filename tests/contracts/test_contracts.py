@@ -489,6 +489,7 @@ class RepositoryContractsTest(unittest.TestCase):
             "trace_decode": {"entry": "mlir:i32", "result": "mlir:i64", "source": "trace"},
             "queue_try_send": {"element": "mlir:i32", "queue": "@queue"},
             "queue_try_recv": {"element": "mlir:i32", "queue": "@queue"},
+            "queue_space": {"queue": "@queue"},
             "event_schedule": {"delay": "mlir:i64", "target": "@event", "value": "mlir:i32"},
             "event_try_recv": {"element": "mlir:i32", "event_queue": "@event"},
             "trace_open": {"source": "trace"}, "trace_next": {"entry": "mlir:i32", "source": "trace"},
@@ -510,6 +511,8 @@ class RepositoryContractsTest(unittest.TestCase):
                 candidate.update(inputs=[], results=["@acir_wake_next_delta"])
             elif role == "wake_event_queue":
                 candidate.update(inputs=["event-queue-ref:@event"], results=["@acir_wake_event_queue"])
+            elif role == "queue_space":
+                candidate.update(inputs=["queue-ref:@queue"], results=["mlir:i32"])
             elif role == "event_schedule":
                 candidate.update(inputs=["event-queue-ref:@event", "mlir:i32", "mlir:i64"], results=["mlir:i1"])
             elif role == "event_try_recv":

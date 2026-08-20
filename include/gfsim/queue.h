@@ -71,6 +71,29 @@ public:
     return std::optional<T>(committed_[index]);
   }
 
+  /// Atomically propose one snapshot-visible FIFO transfer into another
+  /// queue.  No proposal is published unless both endpoints can participate.
+  /// The compiler verifies that the caller is the source's sole pop proposer
+  /// and the destination's sole push proposer.
+  bool proposeTransferTo(SimQueue<T> &destination) {
+    if (popProposalCount_ >= committed_.size())
+      return false;
+    const size_t destinationOccupied =
+        destination.pushProposals_.size() + destination.committedSize();
+    if (destinationOccupied >= destination.entryCapacity_ ||
+        destination.exceedsByteCapacity(destinationOccupied + 1))
+      return false;
+    if (system_ && !system_->registerCommitParticipant(id()))
+      return false;
+    if (destination.system_ &&
+        !destination.system_->registerCommitParticipant(destination.id()))
+      return false;
+
+    destination.pushProposals_.push_back(committed_[popProposalCount_]);
+    ++popProposalCount_;
+    return true;
+  }
+
   /// Typed process helper: failed receives return the normative zero value.
   std::pair<T, bool> tryRecv() {
     std::optional<T> value = proposePop();
@@ -88,6 +111,16 @@ public:
     const T *value = peek();
     return value ? std::pair<T, bool>{*value, true}
                  : std::pair<T, bool>{T{}, false};
+  }
+
+  /// Free entry slots the queue can accept right now: how many proposePush
+  /// calls would succeed this epoch. Pending pushes count as occupied, so the
+  /// value is max(0, entryCapacity - committed - pending pushes).
+  std::int32_t space() const {
+    size_t occupied = pushProposals_.size() + committedSize();
+    if (occupied >= entryCapacity_)
+      return 0;
+    return static_cast<std::int32_t>(entryCapacity_ - occupied);
   }
 
   // ── Arbitration ─────────────────────────────────────────────────────
@@ -213,6 +246,98 @@ public:
   static constexpr std::string_view contractName = "ac.std.Queue";
   static constexpr ObjectKind componentKind = ObjectKind::Queue;
   using SimQueue<T>::SimQueue;
+
+  Queue<T> &flowSource() { return *this; }
+  const Queue<T> &flowSource() const { return *this; }
+  Queue<T> &flowSink() { return *this; }
+  const Queue<T> &flowSink() const { return *this; }
+};
+
+/// Compiler-native, exactly-once link between two typed queues.  Work observes
+/// only committed endpoint state and proposes at most one transfer per epoch;
+/// the endpoint queues publish the paired pop/push at the Xfer barrier.
+template <typename T> class QueueLink final : public SimObject {
+public:
+  QueueLink(std::string name, ObjectId id, SimObject *parent, Queue<T> &source,
+            Queue<T> &destination)
+      : SimObject(ObjectKind::Link, std::move(name), id, parent),
+        source_(source), destination_(destination) {}
+
+  void doWork(Epoch epoch) override {
+    if (lastWorkEpoch_ && *lastWorkEpoch_ == epoch)
+      return;
+    lastWorkEpoch_ = epoch;
+    if (source_.isEmpty()) {
+      ++stalledEmpty_;
+      return;
+    }
+    if (destination_.isFull()) {
+      ++stalledFull_;
+      return;
+    }
+    if (system_ && !system_->registerCommitParticipant(id())) {
+      setRuntimeFailureCode("queue_link_commit_registration_failed");
+      return;
+    }
+    if (!source_.proposeTransferTo(destination_)) {
+      setRuntimeFailureCode("queue_link_atomic_proposal_failed");
+      return;
+    }
+    pendingTransfer_ = true;
+  }
+
+  void doXfer(Epoch epoch) override {
+    if (!pendingTransfer_)
+      return;
+    pendingTransfer_ = false;
+    ++transferred_;
+    lastUpdate_ = epoch;
+  }
+
+  bool hasPendingCommit() const override { return pendingTransfer_; }
+  bool isRunnable(Epoch) const override {
+    return !source_.isEmpty() && !destination_.isFull();
+  }
+
+  void bindSystem(SimSystem *system) override { system_ = system; }
+
+  uint64_t transferred() const { return transferred_; }
+  uint64_t stalledEmpty() const { return stalledEmpty_; }
+  uint64_t stalledFull() const { return stalledFull_; }
+
+  void collectStatistics(std::vector<StatSnapshot> &out) const override {
+    auto append = [&](std::string name, uint64_t value) {
+      out.push_back({.name = std::move(name),
+                     .objectPath = std::string(path()),
+                     .kind = StatisticKind::Counter,
+                     .value = value,
+                     .lastUpdate = lastUpdate_});
+    };
+    append("transferred", transferred_);
+    append("stalled_empty", stalledEmpty_);
+    append("stalled_full", stalledFull_);
+  }
+
+  void reset() override {
+    pendingTransfer_ = false;
+    lastWorkEpoch_.reset();
+    transferred_ = 0;
+    stalledEmpty_ = 0;
+    stalledFull_ = 0;
+    lastUpdate_ = {};
+    clearRuntimeFailureCode();
+  }
+
+private:
+  Queue<T> &source_;
+  Queue<T> &destination_;
+  SimSystem *system_ = nullptr;
+  std::optional<Epoch> lastWorkEpoch_;
+  bool pendingTransfer_ = false;
+  uint64_t transferred_ = 0;
+  uint64_t stalledEmpty_ = 0;
+  uint64_t stalledFull_ = 0;
+  Epoch lastUpdate_;
 };
 
 // ── EventQueue ────────────────────────────────────────────────────────
