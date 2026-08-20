@@ -22,8 +22,9 @@
 // The physical-channel rules (<=1 flit per physical input, <=1 per physical
 // output, per cycle) are MODEL rules enforced by the scheduler's matching: the
 // four output VCs are independent SimQueues, so nothing at runtime enforces a
-// "physical output" limit. Depth-1 output VCs make "writable" a plain peek:
-// writable == empty == peek returns false.
+// "physical output" limit. Output VCs are depth 2 and the scheduler checks
+// writability with ac.space (free-slot count > 0), so an output VC stays
+// writable while a sink drains it (no more alternating A/B steady state).
 //
 // Flit layout (i32 bit-fields):
 //   [1:0] dst     = destination output (0 or 1)
@@ -33,10 +34,11 @@
 //   [31:8] payload = seq*97 + src + vc*16   (identity + corruption check)
 //
 // Traffic (steady state): producer0 injects A->out0 and B->out1; producer1
-// injects A->out1 and B->out0. Input VCs are depth 2 (queueing + backpressure),
-// output VCs are depth 1. Because every output VC alternates filled/drained,
-// the scheduler grants 2 A-transfers on one tick, then 2 B-transfers on the
-// next: two independent transfers commit in the same epoch, every cycle.
+// injects A->out1 and B->out0. Input and output VCs are depth 2. Under the
+// strict A>B priority, the output VCs never fill (sinks drain them every tick),
+// so the scheduler grants both A transfers every tick and the B-phase never
+// finds a free output: B is fully starved. Two independent A transfers commit
+// in the same epoch, every cycle.
 
 builtin.module attributes {ac.contract_epoch = "0.2"} {
   ac.protocol @fifo {
@@ -63,14 +65,14 @@ builtin.module attributes {ac.contract_epoch = "0.2"} {
     ac.queue @in1_B payload i32 entries 2 bytes 8 ordering "fifo"
         protocol @fifo ownership "exclusive" id "in1_B" path "in1_B"
 
-    // ---- output VCs (depth 1: writable == empty) ----
-    ac.queue @out0_A payload i32 entries 1 bytes 4 ordering "fifo"
+    // ---- output VCs (depth 2: free capacity via ac.space) ----
+    ac.queue @out0_A payload i32 entries 2 bytes 8 ordering "fifo"
         protocol @fifo ownership "exclusive" id "out0_A" path "out0_A"
-    ac.queue @out0_B payload i32 entries 1 bytes 4 ordering "fifo"
+    ac.queue @out0_B payload i32 entries 2 bytes 8 ordering "fifo"
         protocol @fifo ownership "exclusive" id "out0_B" path "out0_B"
-    ac.queue @out1_A payload i32 entries 1 bytes 4 ordering "fifo"
+    ac.queue @out1_A payload i32 entries 2 bytes 8 ordering "fifo"
         protocol @fifo ownership "exclusive" id "out1_A" path "out1_A"
-    ac.queue @out1_B payload i32 entries 1 bytes 4 ordering "fifo"
+    ac.queue @out1_B payload i32 entries 2 bytes 8 ordering "fifo"
         protocol @fifo ownership "exclusive" id "out1_B" path "out1_B"
 
     // Producer 0 (src = 0): re-proposes one A flit (dst 0) into in0_A and one
@@ -106,11 +108,11 @@ builtin.module attributes {ac.contract_epoch = "0.2"} {
       %h1a, %v1a = ac.peek @in1_A : i32
       %h1b, %v1b = ac.peek @in1_B : i32
 
-      // ---- 2. snapshot output VCs (writable == empty == !valid) ----
-      %o0a, %full0a = ac.peek @out0_A : i32
-      %o0b, %full0b = ac.peek @out0_B : i32
-      %o1a, %full1a = ac.peek @out1_A : i32
-      %o1b, %full1b = ac.peek @out1_B : i32
+      // ---- 2. snapshot output VCs (writable == free slots > 0) ----
+      %s0a = ac.space @out0_A
+      %s0b = ac.space @out0_B
+      %s1a = ac.space @out1_A
+      %s1b = ac.space @out1_B
 
       %c0 = arith.constant 0 : i32
       %c1 = arith.constant 1 : i32
@@ -124,11 +126,11 @@ builtin.module attributes {ac.contract_epoch = "0.2"} {
       %d1a = arith.andi %h1a, %c3 : i32
       %d1b = arith.andi %h1b, %c3 : i32
 
-      // ---- output writable flags ----
-      %w0a = arith.xori %full0a, %true : i1
-      %w0b = arith.xori %full0b, %true : i1
-      %w1a = arith.xori %full1a, %true : i1
-      %w1b = arith.xori %full1b, %true : i1
+      // ---- output writable flags (free capacity > 0) ----
+      %w0a = arith.cmpi sgt, %s0a, %c0 : i32
+      %w0b = arith.cmpi sgt, %s0b, %c0 : i32
+      %w1a = arith.cmpi sgt, %s1a, %c0 : i32
+      %w1b = arith.cmpi sgt, %s1b, %c0 : i32
 
       %d0a_is0 = arith.cmpi eq, %d0a, %c0 : i32
       %d0a_is1 = arith.cmpi eq, %d0a, %c1 : i32

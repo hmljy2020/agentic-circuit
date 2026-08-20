@@ -5,7 +5,8 @@
 #include <map>
 #include <string>
 
-// Runner for the 2x2 input-queued crossbar (two VCs per physical channel).
+// Runner for the 2x2 input-queued crossbar (two VCs per physical channel,
+// output VCs depth 2, writability via ac.space free-capacity).
 // Proves, on the committed statistics and observation streams:
 //   * Test 1 (concurrency): two independent transfers commit in one cycle.
 //     The scheduler is the sole pop proposer and runs exactly once per epoch
@@ -20,6 +21,10 @@
 //   * Test 7 (backpressure / no loss): accepted == completed + occupancy and
 //     occupancy_peak <= entries on all 8 queues.
 //   * Test 8 (determinism): run.sh executes the binary twice and diffs.
+//   * Test 10 (B starvation, now the primary observable): with depth-2 output
+//     VCs the A-phase grants every tick, so B never finds a free output VC:
+//     in*_B fill to depth 2 and never drain, out*_B stay empty. The A queues
+//     reach 11 completions in 12 ticks; the B queues complete 0.
 int main() {
   acsim_generated::Model model;
   gfsim::RuntimeLimits limits;
@@ -82,34 +87,34 @@ int main() {
       result.finalEpoch == gfsim::Epoch{12, 0} &&
       conservation("in0_A", 2) && conservation("in0_B", 2) &&
       conservation("in1_A", 2) && conservation("in1_B", 2) &&
-      conservation("out0_A", 1) && conservation("out0_B", 1) &&
-      conservation("out1_A", 1) && conservation("out1_B", 1) &&
+      conservation("out0_A", 2) && conservation("out0_B", 2) &&
+      conservation("out1_A", 2) && conservation("out1_B", 2) &&
       inCompletions > 12 &&
-      // Pinned from the deterministic run (A grants on odd ticks, B on even).
-      stat("in0_A", "accepted_transactions") == 7 &&
-      stat("in0_A", "completed_transactions") == 6 &&
-      stat("in0_A", "queue_occupancy_peak") == 2 &&
-      stat("in0_B", "accepted_transactions") == 7 &&
-      stat("in0_B", "completed_transactions") == 5 &&
+      // Pinned from the deterministic run (A grants every tick, B starved).
+      stat("in0_A", "accepted_transactions") == 12 &&
+      stat("in0_A", "completed_transactions") == 11 &&
+      stat("in0_A", "queue_occupancy_peak") == 1 &&
+      stat("in0_B", "accepted_transactions") == 2 &&
+      stat("in0_B", "completed_transactions") == 0 &&
       stat("in0_B", "queue_occupancy_peak") == 2 &&
-      stat("in1_A", "accepted_transactions") == 7 &&
-      stat("in1_A", "completed_transactions") == 6 &&
-      stat("in1_A", "queue_occupancy_peak") == 2 &&
-      stat("in1_B", "accepted_transactions") == 7 &&
-      stat("in1_B", "completed_transactions") == 5 &&
+      stat("in1_A", "accepted_transactions") == 12 &&
+      stat("in1_A", "completed_transactions") == 11 &&
+      stat("in1_A", "queue_occupancy_peak") == 1 &&
+      stat("in1_B", "accepted_transactions") == 2 &&
+      stat("in1_B", "completed_transactions") == 0 &&
       stat("in1_B", "queue_occupancy_peak") == 2 &&
-      stat("out0_A", "accepted_transactions") == 6 &&
-      stat("out0_A", "completed_transactions") == 5 &&
+      stat("out0_A", "accepted_transactions") == 11 &&
+      stat("out0_A", "completed_transactions") == 10 &&
       stat("out0_A", "queue_occupancy_peak") == 1 &&
-      stat("out0_B", "accepted_transactions") == 5 &&
-      stat("out0_B", "completed_transactions") == 5 &&
-      stat("out0_B", "queue_occupancy_peak") == 1 &&
-      stat("out1_A", "accepted_transactions") == 6 &&
-      stat("out1_A", "completed_transactions") == 5 &&
+      stat("out0_B", "accepted_transactions") == 0 &&
+      stat("out0_B", "completed_transactions") == 0 &&
+      stat("out0_B", "queue_occupancy_peak") == 0 &&
+      stat("out1_A", "accepted_transactions") == 11 &&
+      stat("out1_A", "completed_transactions") == 10 &&
       stat("out1_A", "queue_occupancy_peak") == 1 &&
-      stat("out1_B", "accepted_transactions") == 5 &&
-      stat("out1_B", "completed_transactions") == 5 &&
-      stat("out1_B", "queue_occupancy_peak") == 1 &&
+      stat("out1_B", "accepted_transactions") == 0 &&
+      stat("out1_B", "completed_transactions") == 0 &&
+      stat("out1_B", "queue_occupancy_peak") == 0 &&
       inCompletions == 22;
   std::cout << "crossbar_passed=" << (passed ? "true" : "false") << '\n';
   return passed ? 0 : 1;

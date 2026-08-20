@@ -119,27 +119,26 @@ soft-rejected and retried the next tick (`SimQueue::proposePush`). Scenarios
 that need a true one-shot burst gate the producer behind a capacity-1 latch
 (`sc09`'s `@gate`).
 
-### 3. A depth-1 output VC is "full" to the scheduler on the tick after a grant
+### 3. Depth-2 output VCs + `ac.space`: A dominates, B starves
 
-A grant fills a depth-1 output at the epoch's Xfer. A sink that pops the same
-tick is proposing a pop against the *committed* (still empty) queue, so it is
-rejected — **pending pushes are invisible to `proposePop` until Xfer**. The
-flit therefore sits in the output for one full tick, and the scheduler's next
-peek sees the VC full. Consequence: a given output VC can be granted at most
-every **other** tick. This is why the primary model's steady state alternates
-— the A-phase grants on odd ticks and the B-phase fills the even ticks — and
-why a "B never moves while A contends" scenario is not realizable with a
-depth-1 destination (B reuses the bandwidth in the cycles A's destination is
-full; that reuse is exactly test 5, not a priority failure).
+A grant pushes into a depth-2 output at the epoch's Xfer; the sink drains it a
+later epoch. Because the sink keeps the output mostly drained, the scheduler's
+`ac.space @outX_Y` (free-slot count on the committed state) reads `free > 0`
+at the start of essentially every epoch, so the A-phase grants both A
+transfers **every tick** and the B-phase never finds a free output VC. B is
+therefore fully starved: `in*_B` fill to depth 2 and never drain, `out*_B`
+stay empty. This is the price of strict `A > B` priority once the depth-1
+throttle is removed — exactly test 10, now the primary observable behavior.
 
-### 4. `ac.peek` reports *non-empty*, not "full"
+### 4. Writability comes from `ac.space`, not from `ac.peek`'s valid flag
 
-`ac.peek` returns `(head, valid)` where `valid = occupancy ≥ 1`. There is **no
-capacity-aware peek**: `writable = !valid` is a correct "writable" test **only
-for depth-1 queues**, where empty ⟺ writable. Making an output VC deeper does
-not give the scheduler a space check — the valid flag still reads `true` at
-occupancy 1. The depth-1 output VCs are therefore a deliberate design choice,
-not a limitation patched around.
+`ac.peek` returns `(head, valid)` where `valid = occupancy ≥ 1` — it tells you
+*non-empty*, not "full". There is no capacity-aware peek: `writable = !valid`
+would only be correct for depth-1 queues, where empty ⟺ writable. The scheduler
+therefore reads the free-slot count directly with `ac.space @outX_Y` and tests
+`free > 0` (`arith.cmpi sgt` against an i32 zero). This is exactly the gap
+`ac.space` (epoch 0.2) was added to close, and it is what lets the output VCs
+be depth 2.
 
 ## The ten tests and where each is proven
 
@@ -154,7 +153,7 @@ not a limitation patched around.
 | 7 | backpressure / no loss / no dup | primary + every scenario `runner.cpp` | `accepted == completed + occupancy` and `occupancy_peak ≤ entries` on all queues |
 | 8 | determinism | `run.sh` | binary executed twice, output byte-identical (`diff -u` empty) |
 | 9 | FIFO within a VC | `scenarios/sc09_fifo_order` | one-shot burst of seq 0..3; the sink's in-model `@prev` register asserts every adjacent pair arrives strictly increasing (`seq == prev + 1`) |
-| 10 | B starvation | **not tested** | strict `A > B` priority permits it by design; no scenario asserts it |
+| 10 | B starvation | primary checked run | with depth-2 outputs the A-phase grants every tick, so B never drains: `in*_B` accepted=2/completed=0, `out*_B` all zero (strict `A > B` priority) |
 
 ## Scenario suite
 
@@ -183,20 +182,21 @@ deterministic run; `occupancy` is implied by conservation):
 
 | object | accepted | completed | occupancy | peak |
 | --- | --- | --- | --- | --- |
-| `in0_A` | 7 | 6 | 1 | 2 |
-| `in0_B` | 7 | 5 | 2 | 2 |
-| `in1_A` | 7 | 6 | 1 | 2 |
-| `in1_B` | 7 | 5 | 2 | 2 |
-| `out0_A` | 6 | 5 | 1 | 1 |
-| `out0_B` | 5 | 5 | 0 | 1 |
-| `out1_A` | 6 | 5 | 1 | 1 |
-| `out1_B` | 5 | 5 | 0 | 1 |
+| `in0_A` | 12 | 11 | 1 | 1 |
+| `in0_B` | 2 | 0 | 2 | 2 |
+| `in1_A` | 12 | 11 | 1 | 1 |
+| `in1_B` | 2 | 0 | 2 | 2 |
+| `out0_A` | 11 | 10 | 1 | 1 |
+| `out0_B` | 0 | 0 | 0 | 0 |
+| `out1_A` | 11 | 10 | 1 | 1 |
+| `out1_B` | 0 | 0 | 0 | 0 |
 
-Expected classification is `Incomplete` at `finalEpoch {12, 0}`, with 182
+Expected classification is `Incomplete` at `finalEpoch {12, 0}`, with 142
 published observations. `inCompletions == 22` (test 1) and `maxCompletedPerEpoch
 >= 4` (two transfers + two sink drains in the same cycle, confirming test 1 from
-the observation stream as well). The A-phase grants on odd ticks and the B-phase
-on even ticks — the §3 alternation.
+the observation stream as well). The A-phase grants every tick: epochs 1..11
+each complete the two input transfers (11 + 11), and epochs 2..11 also complete
+the two sink drains (10 + 10). The B-phase never grants — test 10.
 
 ## Build and run
 
