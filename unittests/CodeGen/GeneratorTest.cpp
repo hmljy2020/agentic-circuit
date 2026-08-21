@@ -88,10 +88,12 @@ TEST(GeneratorTest, EmitsExactOrderedFileSetAndTypedOwnership) {
   for (const GeneratedFile &file : bundle->files)
     paths.push_back(file.relativePath);
   const std::vector<std::string> expected = {
+      "include/generated/c_api.h",
       "include/generated/dispatch.h",
       "include/generated/model.h",
       "include/generated/modules/Top_s2100000000000000.h",
       "include/generated/processes/tick_s2300000000000000.h",
+      "src/generated/c_api.cpp",
       "src/generated/main.cpp",
       "src/generated/model.cpp",
       "src/generated/modules/Top_s2100000000000000.cpp",

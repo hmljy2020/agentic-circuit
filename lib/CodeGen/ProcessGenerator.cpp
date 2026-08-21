@@ -130,6 +130,66 @@ llvm::Error emitScalarStorageHelper(std::ostringstream &output,
   return llvm::Error::success();
 }
 
+llvm::Error emitPacketHelper(std::ostringstream &output,
+                             const TypePlan &implementation) {
+  llvm::StringRef name(implementation.cppType);
+  if (!name.consume_front("acir::generated::") || !isIdentifier(name) ||
+      implementation.helperRole.empty() ||
+      implementation.helperResult.empty())
+    return processError("generated packet helper metadata is invalid");
+  auto endian = implementation.helperBigEndian ? "true" : "false";
+  output << "inline " << implementation.helperResult << ' ' << name.str()
+         << '(';
+  for (size_t index = 0; index < implementation.helperInputs.size(); ++index) {
+    if (index)
+      output << ", ";
+    output << "const " << implementation.helperInputs[index] << " &arg"
+           << index;
+  }
+  output << ") {\n";
+  if (implementation.helperRole == "record_get") {
+    if (implementation.helperInputs.size() != 1 ||
+        implementation.helperOffsets.size() != 1)
+      return processError("record.get helper metadata is invalid");
+    output << "  return gfsim::packetFieldGet<"
+           << implementation.helperResult << ", "
+           << implementation.helperOffsets.front() << ", " << endian
+           << ">(arg0);\n";
+  } else if (implementation.helperRole == "record_with") {
+    if (implementation.helperInputs.size() != 2 ||
+        implementation.helperOffsets.size() != 1)
+      return processError("record.with helper metadata is invalid");
+    output << "  return gfsim::packetFieldWith<"
+           << implementation.helperOffsets.front() << ", " << endian
+           << ">(arg0, arg1);\n";
+  } else if (implementation.helperRole == "record_create") {
+    if (implementation.helperInputs.size() !=
+        implementation.helperOffsets.size())
+      return processError("record.create helper metadata is invalid");
+    output << "  " << implementation.helperResult << " result{};\n";
+    for (size_t index = 0; index < implementation.helperInputs.size(); ++index)
+      output << "  result = gfsim::packetFieldWith<"
+             << implementation.helperOffsets[index] << ", " << endian
+             << ">(result, arg" << index << ");\n";
+    output << "  return result;\n";
+  } else if (implementation.helperRole == "packet_serialize") {
+    if (implementation.helperInputs.size() != 1 ||
+        !implementation.helperOffsets.empty())
+      return processError("packet.serialize helper metadata is invalid");
+    output << "  return gfsim::packetSerializeBytes(arg0);\n";
+  } else if (implementation.helperRole == "packet_deserialize") {
+    if (implementation.helperInputs.size() != 1 ||
+        !implementation.helperOffsets.empty())
+      return processError("packet.deserialize helper metadata is invalid");
+    output << "  return gfsim::packetDeserializeBytes<"
+           << implementation.helperResult << ">(arg0);\n";
+  } else {
+    return processError("generated packet helper has an unknown role");
+  }
+  output << "}\n";
+  return llvm::Error::success();
+}
+
 llvm::Expected<std::string> cppType(const ModelPlan &plan,
                                     llvm::StringRef type) {
   if (type == "i1")
@@ -906,7 +966,8 @@ generateProcessHeader(const ModelPlan &plan, const ProcessPlan &process) {
         collectHelper(operation);
 
   std::ostringstream output;
-  output << "#pragma once\n\n#include \"gfsim/process.h\"\n";
+  output << "#pragma once\n\n#include \"gfsim/process.h\"\n"
+            "#include \"gfsim/packet.h\"\n";
   for (const std::string &header : headers)
     output << "#include \"" << header << "\"\n";
   output << "\n#include <cmath>\n#include <cstdint>\n#include <string>\n"
@@ -924,6 +985,11 @@ generateProcessHeader(const ModelPlan &plan, const ProcessPlan &process) {
     if (implementation.kind == TypeKind::Implementation &&
         llvm::StringRef(implementation.symbol).starts_with("acir_impl_scalar_"))
       if (auto error = emitScalarStorageHelper(output, implementation))
+        return std::move(error);
+  for (const TypePlan &implementation : plan.types)
+    if (implementation.kind == TypeKind::Implementation &&
+        !implementation.helperRole.empty())
+      if (auto error = emitPacketHelper(output, implementation))
         return std::move(error);
   output << "} // namespace acir::generated\n\n"
          << "namespace acsim_generated {\n\nclass " << process.className

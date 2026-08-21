@@ -37,6 +37,11 @@ struct TypePlan {
   TypeKind kind;
   std::string cppType;
   Fingerprint fingerprint;
+  std::string helperRole;
+  std::vector<std::string> helperInputs;
+  std::string helperResult;
+  std::vector<uint64_t> helperOffsets;
+  bool helperBigEndian = false;
 };
 
 struct TimeDomainPlan {
@@ -175,6 +180,7 @@ struct PlacementPlan {
   std::vector<uint64_t> shape;
   std::vector<llvm::json::Value> staticArguments;
   std::string hostInput;
+  std::string hostOutput;
 };
 
 enum class ProjectionKind { Element, Port, Resource };

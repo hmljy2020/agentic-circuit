@@ -105,6 +105,35 @@ std::vector<const PlacementPlan *> rootHostInputs(const ModelPlan &plan) {
   return inputs;
 }
 
+std::vector<const PlacementPlan *> rootHostOutputs(const ModelPlan &plan) {
+  std::vector<const PlacementPlan *> outputs;
+  if (const ModulePlan *root = rootModule(plan))
+    for (const PlacementPlan &placement : root->placements)
+      if (!placement.hostOutput.empty())
+        outputs.push_back(&placement);
+  std::sort(outputs.begin(), outputs.end(), [](const auto *left,
+                                               const auto *right) {
+    return left->hostOutput < right->hostOutput;
+  });
+  return outputs;
+}
+
+llvm::Expected<std::string> hostInputCppType(const ModelPlan &plan,
+                                             const PlacementPlan &input) {
+  const TypePlan *queue = findType(plan, input.target);
+  if (!queue || queue->kind != TypeKind::RuntimeObject)
+    return generatorError("ACLOWER-HOST-INPUT",
+                          "host input does not target a runtime queue");
+  llvm::StringRef spelling(queue->cppType);
+  constexpr llvm::StringLiteral queueTemplatePrefix("gfsim::Queue<");
+  bool envelopeMatches = spelling.consume_front(queueTemplatePrefix) &&
+                         spelling.consume_back(">");
+  if (!envelopeMatches)
+    return generatorError("ACLOWER-HOST-INPUT",
+                          "host input queue has no closed element type");
+  return spelling.str();
+}
+
 llvm::Expected<std::string> cppLiteral(const llvm::json::Value &value) {
   if (value.kind() == llvm::json::Value::Null)
     return std::string("{}");
@@ -809,13 +838,14 @@ llvm::Expected<GeneratedFile> modelHeader(const ModelPlan &plan,
     return generatorError("ACLOWER-OWNERSHIP",
                           "root module has no generated specialization");
   const auto hostInputs = rootHostInputs(plan);
+  const auto hostOutputs = rootHostOutputs(plan);
   std::ostringstream output;
   output
       << "#pragma once\n\n#include \"generated/modules/" << root->className
       << ".h\"\n#include \"gfsim/dispatch.h\"\n#include \"gfsim/harness.h\"\n"
          "#include \"gfsim/host.h\"\n"
          "#include \"gfsim/object.h\"\n\n"
-         "#include <array>\n#include <string_view>\n#include <vector>\n\n"
+         "#include <array>\n#include <cstddef>\n#include <span>\n#include <string_view>\n#include <vector>\n\n"
          "namespace acsim_generated {\n\ninline constexpr std::string_view "
          "kBuildFingerprint = \""
       << fingerprint.str()
@@ -838,7 +868,11 @@ llvm::Expected<GeneratedFile> modelHeader(const ModelPlan &plan,
          "system_.terminationResult(); }\n  "
          "std::size_t hostInputCount() const;\n  std::string_view "
          "hostInputName(std::size_t index) const;\n  bool hostInputReady(std::size_t "
-         "index) const;\n  bool offer(std::size_t index, int32_t value);\n  void reset();\n  "
+         "index) const;\n  bool offer(std::size_t index, int32_t value);\n  "
+         "bool offerBytes(std::size_t index, std::span<const std::byte> bytes);\n  void reset();\n  "
+         "std::size_t hostOutputCount() const;\n  std::string_view hostOutputName(std::size_t index) const;\n  "
+         "std::size_t hostOutputSize(std::size_t index) const;\n  bool hostOutputReady(std::size_t index) const;\n  "
+         "bool takeBytes(std::size_t index, std::span<std::byte> bytes);\n  "
          "std::string_view "
          "buildFingerprint() const { return kBuildFingerprint; }\n  "
          "std::span<const gfsim::TimeDomainRuntime> timeDomains() const { "
@@ -855,9 +889,20 @@ llvm::Expected<GeneratedFile> modelHeader(const ModelPlan &plan,
       << ";\n  "
       << "gfsim::SimSystem system_;\n  gfsim::ObjectId nextObjectId_ = 0;\n  "
       << root->className << " top_;\n";
-  for (const PlacementPlan *input : hostInputs)
-    output << "  gfsim::HostIngress<int32_t> host_" << input->memberName
-           << ";\n";
+  for (const PlacementPlan *input : hostInputs) {
+    auto cpp = hostInputCppType(plan, *input);
+    if (!cpp)
+      return cpp.takeError();
+    output << "  gfsim::HostIngress<" << *cpp << "> host_"
+           << input->memberName << ";\n";
+  }
+  for (const PlacementPlan *outputPlacement : hostOutputs) {
+    auto cpp = hostInputCppType(plan, *outputPlacement);
+    if (!cpp)
+      return cpp.takeError();
+    output << "  gfsim::HostEgress<" << *cpp << "> host_out_"
+           << outputPlacement->memberName << ";\n";
+  }
   output << "  bool steppingStarted_ = false;\n"
       << "  std::array<gfsim::DispatchRow, " << plan.runtimeObjects.size()
       << "> dispatch_;\n};\n\n} // namespace acsim_generated\n";
@@ -866,6 +911,7 @@ llvm::Expected<GeneratedFile> modelHeader(const ModelPlan &plan,
 
 llvm::Expected<GeneratedFile> modelSource(const ModelPlan &plan) {
   const auto hostInputs = rootHostInputs(plan);
+  const auto hostOutputs = rootHostOutputs(plan);
   uint64_t eventCapacity = 1024;
   for (const RuntimeObjectPlan &object : plan.runtimeObjects) {
     auto placement = runtimeObjectPlacement(plan, object);
@@ -891,8 +937,8 @@ llvm::Expected<GeneratedFile> modelSource(const ModelPlan &plan) {
     eventCapacity += addition;
   }
   std::ostringstream output;
-  output << "#include \"generated/dispatch.h\"\n\n#include <stdexcept>\n"
-            "#include <utility>\n\n"
+  output << "#include \"generated/dispatch.h\"\n\n#include <algorithm>\n"
+            "#include <cstring>\n#include <stdexcept>\n#include <utility>\n\n"
             "namespace acsim_generated {\n\nModel::Model()\n"
             "    : system_(\"generated\"),\n"
             "      nextObjectId_(0),\n"
@@ -902,6 +948,10 @@ llvm::Expected<GeneratedFile> modelSource(const ModelPlan &plan) {
     output << "      host_" << input->memberName << "(\"host_"
            << input->symbol << "\", nextObjectId_++, &top_, top_."
            << input->memberName << "),\n";
+  for (const PlacementPlan *outputPlacement : hostOutputs)
+    output << "      host_out_" << outputPlacement->memberName << "(\"host_out_"
+           << outputPlacement->symbol << "\", nextObjectId_++, &top_, top_."
+           << outputPlacement->memberName << "),\n";
   output << "      dispatch_(DispatchAccess::makeRows(*this)) {\n"
             "  if (!system_.root().attachChild(top_))\n"
             "    throw std::logic_error(\"ACLOWER-OWNERSHIP\");\n"
@@ -911,6 +961,11 @@ llvm::Expected<GeneratedFile> modelSource(const ModelPlan &plan) {
            << ") && hostAttached;\n"
            << "  system_.registerObject(&host_" << input->memberName
            << ");\n";
+  for (const PlacementPlan *outputPlacement : hostOutputs)
+    output << "  hostAttached = top_.attachChild(host_out_"
+           << outputPlacement->memberName << ") && hostAttached;\n"
+           << "  system_.registerObject(&host_out_"
+           << outputPlacement->memberName << ");\n";
   output << "  if (!hostAttached)\n"
             "    throw std::logic_error(\"ACLOWER-HOST-INPUT\");\n"
             "  const bool capacityConfigured = "
@@ -981,9 +1036,80 @@ llvm::Expected<GeneratedFile> modelSource(const ModelPlan &plan) {
             "bool Model::offer(std::size_t index, int32_t value) {\n"
             "  if (system_.isTerminated()) return false;\n"
             "  switch (index) {\n";
-  for (auto [index, input] : llvm::enumerate(hostInputs))
-    output << "  case " << index << ": return host_" << input->memberName
-           << ".stage(value);\n";
+  for (auto [index, input] : llvm::enumerate(hostInputs)) {
+    auto cpp = hostInputCppType(plan, *input);
+    if (!cpp)
+      return cpp.takeError();
+    output << "  case " << index << ": ";
+    if (*cpp == "std::int32_t")
+      output << "return host_" << input->memberName << ".stage(value);\n";
+    else
+      output << "return false;\n";
+  }
+  output << "  default: return false;\n  }\n}\n\n"
+            "bool Model::offerBytes(std::size_t index, std::span<const std::byte> bytes) {\n"
+            "  if (system_.isTerminated()) return false;\n"
+            "  switch (index) {\n";
+  for (auto [index, input] : llvm::enumerate(hostInputs)) {
+    auto cpp = hostInputCppType(plan, *input);
+    if (!cpp)
+      return cpp.takeError();
+    output << "  case " << index << ": {\n    " << *cpp << " value{};\n";
+    if (llvm::StringRef(*cpp).starts_with("gfsim::AtomicPacket<"))
+      output << "    if (bytes.size() != value.bytes.size()) return false;\n"
+                "    std::copy(bytes.begin(), bytes.end(), value.bytes.begin());\n";
+    else
+      output << "    if (bytes.size() != sizeof(value)) return false;\n"
+                "    std::memcpy(&value, bytes.data(), sizeof(value));\n";
+    output << "    return host_" << input->memberName
+           << ".stage(value);\n  }\n";
+  }
+  output << "  default: return false;\n  }\n}\n\n"
+            "std::size_t Model::hostOutputCount() const { return "
+         << hostOutputs.size() << "; }\n\n"
+            "std::string_view Model::hostOutputName(std::size_t index) const {\n"
+            "  static constexpr std::array<std::string_view, "
+         << hostOutputs.size() << "> names = {";
+  for (auto [index, outputPlacement] : llvm::enumerate(hostOutputs)) {
+    if (index)
+      output << ", ";
+    auto literal = cppLiteral(llvm::json::Value(outputPlacement->hostOutput));
+    if (!literal)
+      return literal.takeError();
+    output << *literal;
+  }
+  output << "};\n  return index < names.size() ? names[index] : std::string_view{};\n}\n\n"
+            "std::size_t Model::hostOutputSize(std::size_t index) const {\n"
+            "  switch (index) {\n";
+  for (auto [index, outputPlacement] : llvm::enumerate(hostOutputs)) {
+    auto cpp = hostInputCppType(plan, *outputPlacement);
+    if (!cpp)
+      return cpp.takeError();
+    output << "  case " << index << ": return sizeof(" << *cpp << ");\n";
+  }
+  output << "  default: return 0;\n  }\n}\n\n"
+            "bool Model::hostOutputReady(std::size_t index) const {\n"
+            "  switch (index) {\n";
+  for (auto [index, outputPlacement] : llvm::enumerate(hostOutputs))
+    output << "  case " << index << ": return host_out_"
+           << outputPlacement->memberName << ".ready();\n";
+  output << "  default: return false;\n  }\n}\n\n"
+            "bool Model::takeBytes(std::size_t index, std::span<std::byte> bytes) {\n"
+            "  switch (index) {\n";
+  for (auto [index, outputPlacement] : llvm::enumerate(hostOutputs)) {
+    auto cpp = hostInputCppType(plan, *outputPlacement);
+    if (!cpp)
+      return cpp.takeError();
+    output << "  case " << index << ": {\n    auto value = host_out_"
+           << outputPlacement->memberName << ".take();\n"
+           << "    if (!value || bytes.size() != sizeof(" << *cpp
+           << ")) return false;\n";
+    if (llvm::StringRef(*cpp).starts_with("gfsim::AtomicPacket<"))
+      output << "    std::copy(value->bytes.begin(), value->bytes.end(), bytes.begin());\n";
+    else
+      output << "    std::memcpy(bytes.data(), &*value, sizeof(*value));\n";
+    output << "    return true;\n  }\n";
+  }
   output << "  default: return false;\n  }\n}\n\n"
             "bool Model::stepTick() {\n"
             "  if (system_.isTerminated()) return false;\n"
@@ -999,6 +1125,9 @@ llvm::Expected<GeneratedFile> modelSource(const ModelPlan &plan) {
            << ".id(), start) || !system_.scheduleWork(host_"
            << input->memberName
            << ".id(), {start.time + 1, 0})) return false;\n";
+  for (const PlacementPlan *outputPlacement : hostOutputs)
+    output << "  if (!system_.scheduleWork(host_out_"
+           << outputPlacement->memberName << ".id(), start)) return false;\n";
   output << "  do {\n"
             "    if (!system_.step() && system_.currentEpoch().time == start.time)\n"
             "      return false;\n"
@@ -1008,6 +1137,8 @@ llvm::Expected<GeneratedFile> modelSource(const ModelPlan &plan) {
             "void Model::reset() {\n  system_.reset();\n";
   for (const PlacementPlan *input : hostInputs)
     output << "  host_" << input->memberName << ".reset();\n";
+  for (const PlacementPlan *outputPlacement : hostOutputs)
+    output << "  host_out_" << outputPlacement->memberName << ".reset();\n";
   output << "  steppingStarted_ = false;\n}\n\n"
             "} // namespace acsim_generated\n";
   return makeFile("src/generated/model.cpp", output.str());
@@ -1074,6 +1205,12 @@ size_t ac_model_host_input_count(const ac_model *model);
 const char *ac_model_host_input_name(const ac_model *model, size_t index);
 int ac_model_host_input_ready(const ac_model *model, size_t index);
 int ac_model_offer(ac_model *model, size_t index, int32_t value);
+int ac_model_offer_bytes(ac_model *model, size_t index, const uint8_t *bytes, size_t size);
+size_t ac_model_host_output_count(const ac_model *model);
+const char *ac_model_host_output_name(const ac_model *model, size_t index);
+size_t ac_model_host_output_size(const ac_model *model, size_t index);
+int ac_model_host_output_ready(const ac_model *model, size_t index);
+int ac_model_take_bytes(ac_model *model, size_t index, uint8_t *bytes, size_t size);
 size_t ac_model_offer_batch(ac_model *model, const size_t *indices, const int32_t *values, size_t count);
 int ac_model_step_tick(ac_model *model);
 uint64_t ac_model_tick(const ac_model *model);
@@ -1097,13 +1234,19 @@ GeneratedFile cApiSource() {
 #include <vector>
 struct ac_model { acsim_generated::Model model; std::vector<gfsim::StatSnapshot> stats; std::string error; };
 extern "C" {
-uint32_t ac_model_abi_version(void) { return 1; }
+uint32_t ac_model_abi_version(void) { return 2; }
 ac_model *ac_model_create(void) { try { return new ac_model; } catch (...) { return nullptr; } }
 void ac_model_destroy(ac_model *model) { delete model; }
 size_t ac_model_host_input_count(const ac_model *model) { return model ? model->model.hostInputCount() : 0; }
 const char *ac_model_host_input_name(const ac_model *model, size_t index) { if (!model) return nullptr; auto name = model->model.hostInputName(index); return name.empty() ? nullptr : name.data(); }
 int ac_model_host_input_ready(const ac_model *model, size_t index) { return model && model->model.hostInputReady(index) ? 1 : 0; }
 int ac_model_offer(ac_model *model, size_t index, int32_t value) { if (!model || index >= model->model.hostInputCount()) return -1; return model->model.offer(index, value) ? 1 : 0; }
+int ac_model_offer_bytes(ac_model *model, size_t index, const uint8_t *bytes, size_t size) { if (!model || index >= model->model.hostInputCount() || (!bytes && size)) return -1; auto view = std::span<const std::byte>(reinterpret_cast<const std::byte *>(bytes), size); return model->model.offerBytes(index, view) ? 1 : 0; }
+size_t ac_model_host_output_count(const ac_model *model) { return model ? model->model.hostOutputCount() : 0; }
+const char *ac_model_host_output_name(const ac_model *model, size_t index) { if (!model) return nullptr; auto name = model->model.hostOutputName(index); return name.empty() ? nullptr : name.data(); }
+size_t ac_model_host_output_size(const ac_model *model, size_t index) { return model ? model->model.hostOutputSize(index) : 0; }
+int ac_model_host_output_ready(const ac_model *model, size_t index) { return model && model->model.hostOutputReady(index) ? 1 : 0; }
+int ac_model_take_bytes(ac_model *model, size_t index, uint8_t *bytes, size_t size) { if (!model || index >= model->model.hostOutputCount() || (!bytes && size)) return -1; auto view = std::span<std::byte>(reinterpret_cast<std::byte *>(bytes), size); return model->model.takeBytes(index, view) ? 1 : 0; }
 size_t ac_model_offer_batch(ac_model *model, const size_t *indices, const int32_t *values, size_t count) { if (!model || (!indices && count) || (!values && count)) return 0; size_t accepted = 0; for (size_t i = 0; i < count; ++i) if (ac_model_offer(model, indices[i], values[i]) == 1) ++accepted; return accepted; }
 int ac_model_step_tick(ac_model *model) { if (!model) return -1; try { if (model->model.stepTick()) return 1; model->error = model->model.terminationResult().diagnosticCode; return 0; } catch (const std::exception &e) { model->error = e.what(); return -1; } }
 uint64_t ac_model_tick(const ac_model *model) { return model ? model->model.currentEpoch().time : 0; }

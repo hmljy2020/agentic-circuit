@@ -1,6 +1,8 @@
 #ifndef GFSIM_QUEUE_H
 #define GFSIM_QUEUE_H
 
+#include "gfsim/packet.h"
+
 #include "gfsim/core.h"
 #include "gfsim/object.h"
 #include "gfsim/packet.h"

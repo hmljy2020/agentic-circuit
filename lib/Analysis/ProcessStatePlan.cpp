@@ -643,6 +643,161 @@ detail::PlanSetBuilder::buildProduction(mlir::ModuleOp module,
     callees.push_back(std::move(callee));
   }
 
+  // Record-like values and packet serialization are compiler-native pure
+  // helpers.  They deliberately share the same closed callee machinery as
+  // queue helpers instead of leaking ACIR operations into canonical ACSim.
+  std::map<std::string, llvm::SmallVector<ProcessActionPlan>> recordActions;
+  for (const PendingProcess &item : pending)
+    for (const auto &block : item.control->blocks)
+      for (const ProcessActionPlan &action : block->actions) {
+        mlir::Operation *source = action.sourceOperation();
+        if (!mlir::isa_and_nonnull<ac::RecordCreateOp, ac::RecordGetOp,
+                                   ac::RecordWithOp, ac::PacketSerializeOp,
+                                   ac::PacketDeserializeOp>(source))
+          continue;
+        std::string key;
+        llvm::raw_string_ostream stream(key);
+        stream << source->getName() << ':';
+        for (mlir::Type type : source->getOperandTypes())
+          stream << type << ',';
+        stream << "->";
+        for (mlir::Type type : source->getResultTypes())
+          stream << type << ',';
+        if (auto get = mlir::dyn_cast<ac::RecordGetOp>(source))
+          stream << ":field=" << get.getField();
+        else if (auto with = mlir::dyn_cast<ac::RecordWithOp>(source))
+          stream << ":field=" << with.getField();
+        else if (auto create = mlir::dyn_cast<ac::RecordCreateOp>(source))
+          for (mlir::Attribute name : create.getFieldNames())
+            stream << ":field=" << mlir::cast<mlir::StringAttr>(name).getValue();
+        else if (auto serialize = mlir::dyn_cast<ac::PacketSerializeOp>(source))
+          stream << ":packet=" << serialize.getPacket();
+        else if (auto deserialize =
+                     mlir::dyn_cast<ac::PacketDeserializeOp>(source))
+          stream << ":packet=" << deserialize.getPacket();
+        recordActions[key].push_back(action);
+      }
+
+  auto declarationForRecordType = [](mlir::Operation *source,
+                                     mlir::Type type) -> mlir::Operation * {
+    mlir::SymbolRefAttr name;
+    if (auto packet = mlir::dyn_cast<ac::PacketType>(type))
+      name = packet.getName();
+    else if (auto record = mlir::dyn_cast<ac::StructType>(type))
+      name = record.getName();
+    else if (auto transaction = mlir::dyn_cast<ac::TransactionType>(type))
+      name = transaction.getName();
+    return name ? mlir::SymbolTable::lookupNearestSymbolFrom(source, name)
+                : nullptr;
+  };
+
+  for (auto &[key, actions] : recordActions) {
+    mlir::Operation *source = actions.front().sourceOperation();
+    auto payload = std::make_shared<ProcessGeneratedCalleePayload::Impl>();
+    llvm::SmallVector<std::string> inputs;
+    llvm::SmallVector<std::string> results;
+    for (mlir::Type type : source->getOperandTypes())
+      inputs.push_back("mlir:" + typeSpelling(type));
+    for (mlir::Type type : source->getResultTypes())
+      results.push_back("mlir:" + typeSpelling(type));
+
+    ProcessHelperRole role;
+    mlir::Operation *declaration = nullptr;
+    if (auto create = mlir::dyn_cast<ac::RecordCreateOp>(source)) {
+      role = ProcessHelperRole::RecordCreate;
+      auto arm = std::make_shared<ProcessRecordCreatePayload::Impl>();
+      arm->recordType = results.front();
+      for (auto [name, value] :
+           llvm::zip_equal(create.getFieldNames(), create.getValues())) {
+        auto field = std::make_shared<ProcessRecordFieldDescriptor::Impl>();
+        field->name = mlir::cast<mlir::StringAttr>(name).getValue().str();
+        field->typeKey = "mlir:" + typeSpelling(value.getType());
+        arm->fields.push_back(ProcessRecordFieldDescriptor(field));
+      }
+      payload->recordCreate = ProcessRecordCreatePayload(arm);
+      declaration = declarationForRecordType(source, create.getResult().getType());
+    } else if (auto get = mlir::dyn_cast<ac::RecordGetOp>(source)) {
+      role = ProcessHelperRole::RecordGet;
+      auto arm = std::make_shared<ProcessRecordGetPayload::Impl>();
+      arm->field = get.getField().str();
+      arm->record = inputs.front();
+      arm->result = results.front();
+      payload->recordGet = ProcessRecordGetPayload(arm);
+      declaration = declarationForRecordType(source, get.getRecord().getType());
+    } else if (auto with = mlir::dyn_cast<ac::RecordWithOp>(source)) {
+      role = ProcessHelperRole::RecordWith;
+      auto arm = std::make_shared<ProcessRecordWithPayload::Impl>();
+      arm->field = with.getField().str();
+      arm->record = inputs.front();
+      arm->value = inputs.back();
+      payload->recordWith = ProcessRecordWithPayload(arm);
+      declaration = declarationForRecordType(source, with.getRecord().getType());
+    } else if (auto serialize = mlir::dyn_cast<ac::PacketSerializeOp>(source)) {
+      role = ProcessHelperRole::PacketSerialize;
+      auto arm = std::make_shared<ProcessPacketSerializePayload::Impl>();
+      arm->bytes = mlir::cast<ac::VectorType>(serialize.getBytes().getType()).getLength();
+      llvm::raw_string_ostream packetStream(arm->packet);
+      packetStream << serialize.getPacket();
+      arm->packetType = inputs.front();
+      payload->packetSerialize = ProcessPacketSerializePayload(arm);
+      declaration = declarationForRecordType(source,
+                                             serialize.getPacketValue().getType());
+    } else {
+      auto deserialize = mlir::cast<ac::PacketDeserializeOp>(source);
+      role = ProcessHelperRole::PacketDeserialize;
+      auto arm = std::make_shared<ProcessPacketDeserializePayload::Impl>();
+      arm->bytes = mlir::cast<ac::VectorType>(deserialize.getBytes().getType()).getLength();
+      llvm::raw_string_ostream packetStream(arm->packet);
+      packetStream << deserialize.getPacket();
+      arm->packetType = results.front();
+      payload->packetDeserialize = ProcessPacketDeserializePayload(arm);
+      declaration = declarationForRecordType(source,
+                                             deserialize.getPacketValue().getType());
+    }
+    payload->role = role;
+
+    auto callee = std::make_shared<ProcessGeneratedCalleePlan::Impl>();
+    callee->effect = ProcessEffectKind::Pure;
+    callee->role = role;
+    callee->payload = ProcessGeneratedCalleePayload(payload);
+    callee->inputTypeKeyStorage.assign(inputs.begin(), inputs.end());
+    callee->resultTypeKeyStorage.assign(results.begin(), results.end());
+    for (const std::string &value : callee->inputTypeKeyStorage)
+      callee->inputTypeKeys.push_back(value);
+    for (const std::string &value : callee->resultTypeKeyStorage)
+      callee->resultTypeKeys.push_back(value);
+    llvm::StringSet<> paths;
+    llvm::SmallPtrSet<mlir::Operation *, 4> sources;
+    for (const ProcessActionPlan &action : actions) {
+      sources.insert(action.sourceOperation());
+      paths.insert(action.occurrence().original().operationPath());
+    }
+    callee->sourceOperations.assign(sources.begin(), sources.end());
+    if (!declaration)
+      return mlir::failure();
+    callee->declarations.push_back(declaration);
+    for (const auto &path : paths)
+      callee->sourcePathStorage.push_back(path.getKey().str());
+    llvm::sort(callee->sourcePathStorage);
+    for (const std::string &path : callee->sourcePathStorage)
+      callee->sourcePaths.push_back(path);
+    ProcessGeneratedCalleePlan value(callee);
+    auto canonical = canonicalGeneratedCalleeSpecialization(value);
+    if (!canonical) {
+      llvm::consumeError(canonical.takeError());
+      return mlir::failure();
+    }
+    callee->specializationBytes = std::move(*canonical);
+    callee->fingerprint = bindings::sha256Fingerprint(callee->specializationBytes);
+    llvm::StringRef digest = llvm::StringRef(callee->fingerprint).drop_front(7);
+    callee->symbol =
+        ("@acir_impl_" + helperRoleSpelling(role) + "_" + digest).str();
+    callee->cpp =
+        ("acir::generated::impl_" + helperRoleSpelling(role) + "_" + digest)
+            .str();
+    callees.push_back(std::move(callee));
+  }
+
   std::map<std::string, llvm::SmallVector<ProcessActionPlan>> assertActions;
   for (const PendingProcess &item : pending)
     for (const auto &block : item.control->blocks)
@@ -975,6 +1130,31 @@ detail::PlanSetBuilder::buildProduction(mlir::ModuleOp module,
                    callee->inputTypeKeys.size() == 1 &&
                    callee->resultTypeKeys.size() == 2 &&
                    callee->resultTypeKeys[0] == elementKey;
+          });
+          if (found == callees.end())
+            return mlir::failure();
+          std::const_pointer_cast<ProcessActionPlan::Impl>(action.impl_)
+              ->callee = (*found)->id;
+          continue;
+        }
+        if (mlir::isa_and_nonnull<ac::RecordCreateOp, ac::RecordGetOp,
+                                  ac::RecordWithOp, ac::PacketSerializeOp,
+                                  ac::PacketDeserializeOp>(
+                action.sourceOperation())) {
+          ProcessHelperRole role =
+              mlir::isa<ac::RecordCreateOp>(action.sourceOperation())
+                  ? ProcessHelperRole::RecordCreate
+              : mlir::isa<ac::RecordGetOp>(action.sourceOperation())
+                  ? ProcessHelperRole::RecordGet
+              : mlir::isa<ac::RecordWithOp>(action.sourceOperation())
+                  ? ProcessHelperRole::RecordWith
+              : mlir::isa<ac::PacketSerializeOp>(action.sourceOperation())
+                  ? ProcessHelperRole::PacketSerialize
+                  : ProcessHelperRole::PacketDeserialize;
+          auto found = llvm::find_if(callees, [&](const auto &callee) {
+            return callee->role == role &&
+                   llvm::is_contained(callee->sourceOperations,
+                                      action.sourceOperation());
           });
           if (found == callees.end())
             return mlir::failure();
@@ -4241,18 +4421,27 @@ mlir::LogicalResult verifyProcessStatePlan(const ProcessStatePlanSet &plans,
     if (callee.effect() != expectedEffect)
       return reject(plans,
                     "process-state plan invariant violated: effect mismatch");
-    if (callee.kind() != "implementation" || !validCalleeSemantics(callee) ||
-        llvm::any_of(callee.inputTypeKeys(),
+    if (!validCalleeSemantics(callee))
+      return reject(plans, "process-state plan invariant violated: invalid "
+                           "callee helper semantics");
+    if (callee.kind() != "implementation")
+      return reject(plans, "process-state plan invariant violated: callee "
+                           "kind mismatch");
+    if (llvm::any_of(callee.inputTypeKeys(),
                      [](llvm::StringRef key) { return !validTypeKey(key); }) ||
         llvm::any_of(callee.resultTypeKeys(),
-                     [](llvm::StringRef key) { return !validTypeKey(key); }) ||
-        !llvm::is_sorted(callee.sourcePaths()) ||
+                     [](llvm::StringRef key) { return !validTypeKey(key); }))
+      return reject(plans, "process-state plan invariant violated: callee "
+                           "type key mismatch");
+    if (!llvm::is_sorted(callee.sourcePaths()) ||
         std::adjacent_find(callee.sourcePaths().begin(),
                            callee.sourcePaths().end()) !=
-            callee.sourcePaths().end() ||
-        callee.sourceOperations().size() != callee.sourcePaths().size())
+            callee.sourcePaths().end())
       return reject(plans, "process-state plan invariant violated: callee "
-                           "specialization mismatch");
+                           "source path mismatch");
+    if (callee.sourceOperations().size() != callee.sourcePaths().size())
+      return reject(plans, "process-state plan invariant violated: callee "
+                           "source operation mismatch");
     bool ownsDeclaration =
         callee.role() <= ProcessHelperRole::PacketDeserialize ||
         callee.role() == ProcessHelperRole::QueueTrySend ||

@@ -441,6 +441,8 @@ extractModule(acsim::ModuleOp module,
           std::move(*staticArgs)};
       if (auto hostInput = instance.getHostInputAttr())
         placement.hostInput = hostInput.getValue().str();
+      if (auto hostOutput = instance.getHostOutputAttr())
+        placement.hostOutput = hostOutput.getValue().str();
       result.placements.push_back(std::move(placement));
     } else if (auto array = mlir::dyn_cast<acsim::ArrayOp>(operation)) {
       auto staticArgs = staticValues(array.getStaticArgs());
@@ -551,6 +553,7 @@ llvm::Error populateModelDetails(acsim::ModelOp model, ModelPlan &plan) {
 
 llvm::Error validateModelDetails(const ModelPlan &plan) {
   std::set<std::string> hostInputNames;
+  std::set<std::string> hostOutputNames;
   llvm::StringRef prior;
   for (const BindingPlan &binding : plan.bindings) {
     if (binding.symbol.empty() || (!prior.empty() && prior >= binding.symbol) ||
@@ -570,14 +573,20 @@ llvm::Error validateModelDetails(const ModelPlan &plan) {
                          "module plan is incomplete or non-canonical");
     prior = module.symbol;
     for (const PlacementPlan &placement : module.placements) {
-      if (placement.hostInput.empty())
-        continue;
-      if (module.symbol != plan.rootSymbol ||
-          placement.kind != PlacementKind::CompilerNative ||
-          !hostInputNames.insert(placement.hostInput).second)
-        return detailError(
-            "ACLOWER-HOST-INPUT",
-            "host inputs must be unique root compiler-native queues");
+      if (!placement.hostInput.empty() &&
+          (module.symbol != plan.rootSymbol ||
+           placement.kind != PlacementKind::CompilerNative ||
+           !hostInputNames.insert(placement.hostInput).second))
+        return detailError("ACLOWER-HOST-INPUT",
+                           "host inputs must be unique root compiler-native "
+                           "queues");
+      if (!placement.hostOutput.empty() &&
+          (module.symbol != plan.rootSymbol ||
+           placement.kind != PlacementKind::CompilerNative ||
+           !hostOutputNames.insert(placement.hostOutput).second))
+        return detailError("ACLOWER-HOST-OUTPUT",
+                           "host outputs must be unique root compiler-native "
+                           "queues");
     }
     const size_t nativeFlowCount = std::count_if(
         module.placements.begin(), module.placements.end(),

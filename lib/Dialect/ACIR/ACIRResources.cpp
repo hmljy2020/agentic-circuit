@@ -331,10 +331,23 @@ LogicalResult QueueOp::verify() {
     auto name = dyn_cast<StringAttr>(hostInput);
     if (!name || name.getValue().empty())
       return emitOpError("ac.host_input must be a non-empty string");
-    if (!getPayload().isSignlessInteger(32) ||
+    if ((!getPayload().isSignlessInteger(32) &&
+         !isa<PacketType>(getPayload())) ||
         getProtocolAttr().getValue() != "ready_valid")
       return emitOpError(
-          "host input queues require i32 payload and @ready_valid protocol");
+          "host input queues require i32 or Packet payload and "
+          "@ready_valid protocol");
+  }
+  if (Attribute hostOutput = (*this)->getAttr("ac.host_output")) {
+    auto name = dyn_cast<StringAttr>(hostOutput);
+    if (!name || name.getValue().empty())
+      return emitOpError("ac.host_output must be a non-empty string");
+    if ((!getPayload().isSignlessInteger(32) &&
+         !isa<PacketType>(getPayload())) ||
+        getProtocolAttr().getValue() != "ready_valid")
+      return emitOpError(
+          "host output queues require i32 or Packet payload and "
+          "@ready_valid protocol");
   }
   if (DictionaryAttr marks = getWatermarksAttr()) {
     auto low = marks.getAs<IntegerAttr>("low");

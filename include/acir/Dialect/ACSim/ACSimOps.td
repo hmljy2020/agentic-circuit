@@ -33,7 +33,8 @@ def ACSim_TypeOp : ACSim_Op<"type", [Symbol, Pure]> {
                        OptionalAttr<I64Attr>:$phase,
                        OptionalAttr<I64Attr>:$tick_scale,
                        OptionalAttr<FlatSymbolRefAttr>:$parent,
-                       OptionalAttr<DictionaryAttr>:$bridge);
+                       OptionalAttr<DictionaryAttr>:$bridge,
+                       OptionalAttr<DictionaryAttr>:$helper);
   let assemblyFormat = [{
     $sym_name `cpp` $cpp_name `kind` $kind `fingerprint` $fingerprint attr-dict
   }];
@@ -100,7 +101,8 @@ def ACSim_InstanceOp : ACSim_Op<"instance"> {
   let arguments = (ins SymbolNameAttr:$sym_name, SymbolRefAttr:$target,
                        ArrayAttr:$static_args,
                        StrAttr:$specialization_fingerprint,
-                       OptionalAttr<StrAttr>:$host_input);
+                       OptionalAttr<StrAttr>:$host_input,
+                       OptionalAttr<StrAttr>:$host_output);
   let results = (outs AnyType:$result);
   let assemblyFormat = [{
     $sym_name `target` $target `args` $static_args

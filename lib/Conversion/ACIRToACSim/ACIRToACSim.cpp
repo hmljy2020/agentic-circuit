@@ -177,6 +177,112 @@ std::string fingerprintJson(const llvm::json::Value &value) {
   return bindings::sha256Fingerprint(*canonical);
 }
 
+Operation *lookupNamedType(Operation *from, SymbolRefAttr name) {
+  if (name.getNestedReferences().size() == 1) {
+    auto root = FlatSymbolRefAttr::get(name.getRootReference());
+    Operation *scope = SymbolTable::lookupNearestSymbolFrom(from, root);
+    if (!scope)
+      if (auto module = from->getParentOfType<mlir::ModuleOp>())
+        scope = SymbolTable::lookupSymbolIn(module, root);
+    if (isa_and_nonnull<ac::TypeScopeOp>(scope))
+      return SymbolTable::lookupSymbolIn(scope, name.getLeafReference());
+  }
+  return SymbolTable::lookupNearestSymbolFrom(from, name);
+}
+
+FailureOr<DictionaryAttr> nativeLayout(Type type, Operation *from) {
+  SymbolRefAttr name;
+  if (auto packet = dyn_cast<ac::PacketType>(type))
+    name = packet.getName();
+  else if (auto record = dyn_cast<ac::StructType>(type))
+    name = record.getName();
+  else if (auto transaction = dyn_cast<ac::TransactionType>(type))
+    name = transaction.getName();
+  if (!name)
+    return failure();
+  Operation *declaration = lookupNamedType(from, name);
+  auto scope = declaration
+                   ? dyn_cast<ac::TypeScopeOp>(declaration->getParentOp())
+                   : ac::TypeScopeOp();
+  if (!scope)
+    return failure();
+  DataLayoutSpecInterface spec = scope.getDataLayoutSpec();
+  if (!spec)
+    return failure();
+  FailureOr<Attribute> value = spec.query(DataLayoutEntryKey(type));
+  if (failed(value))
+    return failure();
+  auto layout = dyn_cast<DictionaryAttr>(*value);
+  if (!layout)
+    return failure();
+  return layout;
+}
+
+FailureOr<std::pair<uint64_t, uint64_t>> nativeSizeAlignment(Type type,
+                                                             Operation *from) {
+  if (auto integer = dyn_cast<IntegerType>(type)) {
+    if (!integer.isSignless() || integer.getWidth() % 8 != 0)
+      return failure();
+    uint64_t bytes = integer.getWidth() / 8;
+    if (bytes == 0 || bytes > 8 || (bytes & (bytes - 1)) != 0)
+      return failure();
+    return std::pair<uint64_t, uint64_t>{bytes, bytes};
+  }
+  if (type.isF32())
+    return std::pair<uint64_t, uint64_t>{4, 4};
+  if (type.isF64())
+    return std::pair<uint64_t, uint64_t>{8, 8};
+  if (auto vector = dyn_cast<ac::VectorType>(type)) {
+    auto element = nativeSizeAlignment(vector.getElementType(), from);
+    if (failed(element) ||
+        element->first > UINT64_MAX /
+                             static_cast<uint64_t>(vector.getLength()))
+      return failure();
+    return std::pair<uint64_t, uint64_t>{
+        element->first * static_cast<uint64_t>(vector.getLength()),
+        element->second};
+  }
+  auto layout = nativeLayout(type, from);
+  if (failed(layout))
+    return failure();
+  auto size = layout->getAs<IntegerAttr>("size");
+  auto alignment = layout->getAs<IntegerAttr>("abi_alignment");
+  if (!size || !alignment || size.getInt() <= 0 || alignment.getInt() <= 0)
+    return failure();
+  return std::pair<uint64_t, uint64_t>{
+      static_cast<uint64_t>(size.getInt()),
+      static_cast<uint64_t>(alignment.getInt())};
+}
+
+FailureOr<llvm::SmallVector<uint64_t>> recordFieldOffsets(Operation *declaration,
+                                                          Operation *from) {
+  auto fields = declaration
+                    ? declaration->getAttrOfType<ArrayAttr>("fields")
+                    : ArrayAttr();
+  if (!fields)
+    return failure();
+  llvm::SmallVector<uint64_t> offsets;
+  uint64_t cursor = 0;
+  for (Attribute attribute : fields) {
+    auto field = dyn_cast<DictionaryAttr>(attribute);
+    auto type = field ? field.getAs<TypeAttr>("type") : TypeAttr();
+    if (!type)
+      return failure();
+    auto sizeAlignment = nativeSizeAlignment(type.getValue(), from);
+    if (failed(sizeAlignment))
+      return failure();
+    uint64_t alignment = sizeAlignment->second;
+    uint64_t remainder = cursor % alignment;
+    if (remainder)
+      cursor += alignment - remainder;
+    offsets.push_back(cursor);
+    if (sizeAlignment->first > UINT64_MAX - cursor)
+      return failure();
+    cursor += sizeAlignment->first;
+  }
+  return offsets;
+}
+
 std::optional<std::string> nativeQueueCppType(Type payload, Operation *from) {
   if (auto integer = dyn_cast<IntegerType>(payload)) {
     if (!integer.isSignless())
@@ -196,21 +302,15 @@ std::optional<std::string> nativeQueueCppType(Type payload, Operation *from) {
     return std::string("float");
   if (payload.isF64())
     return std::string("double");
+  if (auto vector = dyn_cast<ac::VectorType>(payload)) {
+    auto element = nativeQueueCppType(vector.getElementType(), from);
+    if (!element)
+      return std::nullopt;
+    return "std::array<" + *element + ", " +
+           std::to_string(vector.getLength()) + ">";
+  }
   if (auto packet = dyn_cast<ac::PacketType>(payload)) {
-    Operation *packetDeclaration = nullptr;
-    SymbolRefAttr name = packet.getName();
-    if (name.getNestedReferences().size() == 1) {
-      auto root = FlatSymbolRefAttr::get(name.getRootReference());
-      Operation *scope = SymbolTable::lookupNearestSymbolFrom(from, root);
-      if (!scope)
-        if (auto module = from->getParentOfType<mlir::ModuleOp>())
-          scope = SymbolTable::lookupSymbolIn(module, root);
-      if (isa_and_nonnull<ac::TypeScopeOp>(scope))
-        packetDeclaration =
-            SymbolTable::lookupSymbolIn(scope, name.getLeafReference());
-    } else {
-      packetDeclaration = SymbolTable::lookupNearestSymbolFrom(from, name);
-    }
+    Operation *packetDeclaration = lookupNamedType(from, packet.getName());
     auto declaration = dyn_cast_or_null<ac::PacketOp>(packetDeclaration);
     if (!declaration)
       return std::nullopt;
@@ -228,7 +328,43 @@ std::optional<std::string> nativeQueueCppType(Type payload, Operation *from) {
                         : IntegerAttr();
     if (!width || width.getInt() <= 0)
       return std::nullopt;
-    return "std::array<std::byte, " + std::to_string(width.getInt()) + ">";
+    auto declaredSize = layout.getAs<IntegerAttr>("size");
+    auto declaredAlignment = layout.getAs<IntegerAttr>("abi_alignment");
+    auto endian = layout.getAs<StringAttr>("endianness");
+    auto offsets = recordFieldOffsets(packetDeclaration, from);
+    auto fields = packetDeclaration->getAttrOfType<ArrayAttr>("fields");
+    if (!declaredSize || !declaredAlignment || !endian || failed(offsets) ||
+        !fields || width.getInt() != declaredSize.getInt())
+      return std::nullopt;
+    uint64_t derivedSize = 0;
+    uint64_t derivedAlignment = 1;
+    for (auto [index, attribute] : llvm::enumerate(fields)) {
+      auto field = cast<DictionaryAttr>(attribute);
+      auto fieldType = field.getAs<TypeAttr>("type");
+      if (!fieldType)
+        return std::nullopt;
+      auto sizeAlignment = nativeSizeAlignment(fieldType.getValue(), from);
+      if (failed(sizeAlignment))
+        return std::nullopt;
+      derivedSize = (*offsets)[index] + sizeAlignment->first;
+      derivedAlignment = std::max(derivedAlignment, sizeAlignment->second);
+    }
+    if (uint64_t remainder = derivedSize % derivedAlignment)
+      derivedSize += derivedAlignment - remainder;
+    if (derivedSize != static_cast<uint64_t>(declaredSize.getInt()) ||
+        derivedAlignment !=
+            static_cast<uint64_t>(declaredAlignment.getInt()))
+      return std::nullopt;
+    std::string spelling;
+    llvm::raw_string_ostream(spelling) << payload;
+    std::string packetFingerprint = bindings::sha256Fingerprint(spelling);
+    llvm::StringRef digest(packetFingerprint);
+    digest.consume_front("sha256:");
+    std::string cpp = "gfsim::AtomicPacket<" +
+                      std::to_string(width.getInt());
+    for (unsigned index = 0; index < 4; ++index)
+      cpp += ", 0x" + digest.substr(index * 16, 16).str() + "ULL";
+    return cpp + ">";
   }
   return std::nullopt;
 }
@@ -249,6 +385,7 @@ struct TypeDeclaration {
   std::optional<std::string> parent;
   std::optional<std::string> bridgeKind;
   std::optional<std::string> bridgeOwner;
+  DictionaryAttr helper;
 };
 
 /// Assigns deterministic canonical symbols and fingerprints to every C++
@@ -323,6 +460,10 @@ public:
           bridge.getAs<FlatSymbolRefAttr>("owner").getValue().str();
     }
     return mlir::success();
+  }
+
+  void setHelper(llvm::StringRef identity, DictionaryAttr helper) {
+    entries.at(identity.str()).helper = helper;
   }
 
   /// Resolve symbols after all identities are interned.
@@ -539,6 +680,7 @@ struct PlacementPlan {
   ac::EventQueueOp eventQueue;
   bool flowLink = false;
   std::string hostInput;
+  std::string hostOutput;
 };
 
 struct BindingEdgePlan {
@@ -669,6 +811,7 @@ private:
   std::vector<std::string> generatedCalleeIdentities;
   std::vector<std::string> valueTypeIdentities;
   llvm::DenseMap<mlir::Type, std::string> nativePacketValueIdentities;
+  llvm::DenseMap<mlir::Type, std::string> nativeVectorValueIdentities;
   llvm::StringMap<std::string> wakeTypeIdentities;
 
   struct RuntimeRow {
@@ -1434,6 +1577,8 @@ mlir::LogicalResult ACIRToACSimPass::planModule(ac::ModuleOp module,
       placement.queue = queue;
       if (auto hostInput = queue->getAttrOfType<StringAttr>("ac.host_input"))
         placement.hostInput = hostInput.getValue().str();
+      if (auto hostOutput = queue->getAttrOfType<StringAttr>("ac.host_output"))
+        placement.hostOutput = hostOutput.getValue().str();
       llvm::SmallVector<Attribute> args{
           builder.getI64IntegerAttr(queue.getEntryCapacity())};
       if (queue.getByteCapacityAttr())
@@ -1816,6 +1961,7 @@ mlir::LogicalResult ACIRToACSimPass::planModule(ac::ModuleOp module,
 }
 
 mlir::LogicalResult ACIRToACSimPass::planProcesses(mlir::ModuleOp input) {
+  OpBuilder builder(input.getContext());
   bool hasProcess = false;
   input.walk([&](ac::ProcessOp) { hasProcess = true; });
   if (!hasProcess)
@@ -1844,6 +1990,90 @@ mlir::LogicalResult ACIRToACSimPass::planProcesses(mlir::ModuleOp input) {
     if (failed(typeSymbols.intern(input, symbol, "implementation", callee.cpp(),
                                   callee.fingerprint())))
       return mlir::failure();
+    if (callee.role() == ProcessHelperRole::RecordCreate ||
+        callee.role() == ProcessHelperRole::RecordGet ||
+        callee.role() == ProcessHelperRole::RecordWith ||
+        callee.role() == ProcessHelperRole::PacketSerialize ||
+        callee.role() == ProcessHelperRole::PacketDeserialize) {
+      Operation *source = callee.sourceOperations().front();
+      Operation *declaration = callee.declarations().front();
+      llvm::SmallVector<Attribute> inputs;
+      for (Type type : source->getOperandTypes()) {
+        auto cpp = nativeQueueCppType(type, source);
+        if (!cpp)
+          return lowerError(source, "ACLOWER-TYPE-MISMATCH",
+                            "generated packet helper input has no closed C++ "
+                            "realization");
+        inputs.push_back(StringAttr::get(input.getContext(), *cpp));
+      }
+      if (source->getNumResults() != 1)
+        return lowerError(source, "ACLOWER-TYPE-MISMATCH",
+                          "generated packet helper must have one result");
+      auto resultCpp =
+          nativeQueueCppType(source->getResult(0).getType(), source);
+      if (!resultCpp)
+        return lowerError(source, "ACLOWER-TYPE-MISMATCH",
+                          "generated packet helper result has no closed C++ "
+                          "realization");
+      llvm::SmallVector<Attribute> offsets;
+      auto allOffsets = recordFieldOffsets(declaration, source);
+      bool needsRecordLayout =
+          callee.role() == ProcessHelperRole::RecordCreate ||
+          callee.role() == ProcessHelperRole::RecordGet ||
+          callee.role() == ProcessHelperRole::RecordWith;
+      if (needsRecordLayout && failed(allOffsets))
+        return lowerError(source, "ACLOWER-TYPE-MISMATCH",
+                          "record fields have no closed natural layout");
+      auto fields = declaration->getAttrOfType<ArrayAttr>("fields");
+      auto appendFieldOffset = [&](llvm::StringRef fieldName) -> LogicalResult {
+        for (auto [index, attribute] : llvm::enumerate(fields)) {
+          auto field = cast<DictionaryAttr>(attribute);
+          if (field.getAs<StringAttr>("name").getValue() == fieldName) {
+            offsets.push_back(builder.getI64IntegerAttr((*allOffsets)[index]));
+            return success();
+          }
+        }
+        return failure();
+      };
+      llvm::StringRef role;
+      if (callee.role() == ProcessHelperRole::RecordCreate) {
+        role = "record_create";
+        for (const ProcessRecordFieldDescriptor &field :
+             callee.payload().recordCreate().fields())
+          if (failed(appendFieldOffset(field.name())))
+            return lowerError(source, "ACLOWER-TYPE-MISMATCH",
+                              "record.create references an unknown field");
+      } else if (callee.role() == ProcessHelperRole::RecordGet) {
+        role = "record_get";
+        if (failed(appendFieldOffset(callee.payload().recordGet().field())))
+          return lowerError(source, "ACLOWER-TYPE-MISMATCH",
+                            "record.get references an unknown field");
+      } else if (callee.role() == ProcessHelperRole::RecordWith) {
+        role = "record_with";
+        if (failed(appendFieldOffset(callee.payload().recordWith().field())))
+          return lowerError(source, "ACLOWER-TYPE-MISMATCH",
+                            "record.with references an unknown field");
+      } else if (callee.role() == ProcessHelperRole::PacketSerialize) {
+        role = "packet_serialize";
+      } else {
+        role = "packet_deserialize";
+      }
+      bool bigEndian = false;
+      Type recordType = callee.role() == ProcessHelperRole::PacketDeserialize
+                            ? source->getResult(0).getType()
+                            : source->getOperand(0).getType();
+      if (auto layout = nativeLayout(recordType, source); succeeded(layout))
+        if (auto endian = layout->getAs<StringAttr>("endianness"))
+          bigEndian = endian.getValue() == "big";
+      DictionaryAttr helper = builder.getDictionaryAttr(
+          {builder.getNamedAttr("role", builder.getStringAttr(role)),
+           builder.getNamedAttr("inputs", builder.getArrayAttr(inputs)),
+           builder.getNamedAttr("result", builder.getStringAttr(*resultCpp)),
+           builder.getNamedAttr("offsets", builder.getArrayAttr(offsets)),
+           builder.getNamedAttr("big_endian",
+                                builder.getBoolAttr(bigEndian))});
+      typeSymbols.setHelper(symbol, helper);
+    }
   }
   for (const ProcessStatePlan &process : processPlans->processes()) {
     for (const ProcessWakePlan &wake : process.wakes()) {
@@ -1870,6 +2100,39 @@ mlir::LogicalResult ACIRToACSimPass::planProcesses(mlir::ModuleOp input) {
                                   valueType.fingerprint())))
       return mlir::failure();
   }
+  for (const ProcessStatePlan &process : processPlans->processes())
+    for (const ProcessPcPlan &pc : process.pcs())
+      for (ProcessBlockId blockId : pc.blocks())
+        for (const ProcessActionPlan &action :
+             process.blocks()[blockId.value()].actions()) {
+        Operation *source = action.sourceOperation();
+        if (!source)
+          continue;
+        for (Type type : source->getResultTypes()) {
+          if (!isa<ac::VectorType>(type) ||
+              nativeVectorValueIdentities.contains(type))
+            continue;
+          auto cpp = nativeQueueCppType(type, source);
+          if (!cpp)
+            return lowerError(source, "ACLOWER-TYPE-MISMATCH",
+                              "process vector value has no closed C++ "
+                              "realization");
+          std::string spelling;
+          llvm::raw_string_ostream(spelling) << type;
+          llvm::json::Object descriptor;
+          descriptor["contract_epoch"] = kEpoch;
+          descriptor["kind"] = "value";
+          descriptor["type"] = spelling;
+          std::string fingerprint =
+              fingerprintJson(llvm::json::Value(std::move(descriptor)));
+          std::string identity =
+              "acir_value_" + llvm::StringRef(fingerprint).drop_front(7).str();
+          if (failed(typeSymbols.intern(source, identity, "value", *cpp,
+                                        fingerprint)))
+            return mlir::failure();
+          nativeVectorValueIdentities.try_emplace(type, identity);
+        }
+        }
 
   // Attach plan-derived fairness caps to the module placements.
   for (ModulePlan &module : modules)
@@ -2650,6 +2913,19 @@ void ACIRToACSimPass::emitProcessBody(
         llvm::StringRef identity =
             generatedCalleeIdentities[action.callee()->value()];
         Type resultType = action.resultTypes().front();
+        if (auto packetIdentity = nativePacketValueIdentities.find(resultType);
+            packetIdentity != nativePacketValueIdentities.end())
+          resultType = acsim::ValueType::get(
+              context,
+              FlatSymbolRefAttr::get(
+                  context, typeSymbols.symbolFor(packetIdentity->second)));
+        else if (auto vectorIdentity =
+                     nativeVectorValueIdentities.find(resultType);
+                 vectorIdentity != nativeVectorValueIdentities.end())
+          resultType = acsim::ValueType::get(
+              context,
+              FlatSymbolRefAttr::get(
+                  context, typeSymbols.symbolFor(vectorIdentity->second)));
         if (action.emission() == ProcessEmissionClass::Wrap) {
           ProcessLiveSlotId slot =
               action.occurrence().syntheticWrapper().slot();
@@ -2902,7 +3178,8 @@ void ACIRToACSimPass::emitModuleBody(OpBuilder &builder,
               builder, planned.source->getLoc(), ownerType,
               builder.getStringAttr(placement.name), target,
               placement.staticArgs,
-              builder.getStringAttr(placement.specialization), StringAttr{})
+              builder.getStringAttr(placement.specialization), StringAttr{},
+              StringAttr{})
               .getResult();
       break;
     }
@@ -2930,7 +3207,10 @@ void ACIRToACSimPass::emitModuleBody(OpBuilder &builder,
           builder.getStringAttr(placement.specialization),
           placement.hostInput.empty()
               ? StringAttr{}
-              : builder.getStringAttr(placement.hostInput));
+              : builder.getStringAttr(placement.hostInput),
+          placement.hostOutput.empty()
+              ? StringAttr{}
+              : builder.getStringAttr(placement.hostOutput));
       owners[placementIndex] = instance.getResult();
       queueOwners[placement.name] = owners[placementIndex];
       break;
@@ -3118,7 +3398,8 @@ ACIRToACSimPass::emit(mlir::ModuleOp input) {
                           builder.getStringAttr(declaration->cpp),
                           builder.getStringAttr(declaration->kind),
                           builder.getStringAttr(declaration->fingerprint),
-                          period, phase, tickScale, parent, bridge);
+                          period, phase, tickScale, parent, bridge,
+                          declaration->helper);
   }
 
   // Rank 1: acsim.binding records, strictly symbol-sorted.

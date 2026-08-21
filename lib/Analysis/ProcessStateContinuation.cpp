@@ -109,6 +109,12 @@ PlanSetBuilder::makePlannedAction(const ExpandedAction &expanded, uint32_t id) {
       action->emission = ProcessEmissionClass::Invoke;
       action->cost = 1;
     }
+    if (isa<ac::RecordCreateOp, ac::RecordGetOp, ac::RecordWithOp,
+            ac::PacketSerializeOp, ac::PacketDeserializeOp>(
+            action->sourceOperation)) {
+      action->emission = ProcessEmissionClass::Inline;
+      action->cost = 1;
+    }
     llvm::StringRef dialect =
         action->sourceOperation->getName().getDialectNamespace();
     if ((dialect == "arith" || dialect == "index" || dialect == "builtin") &&
@@ -504,6 +510,12 @@ PlanSetBuilder::planProcessContinuation(const ExpandedProcess &expanded,
                 ac::SpaceOp, ac::ScheduleOp, ac::TryEventOp, ac::AssertOp>(
                 act->sourceOperation)) {
           act->emission = ProcessEmissionClass::Invoke;
+          act->cost = 1;
+        }
+        if (isa<ac::RecordCreateOp, ac::RecordGetOp, ac::RecordWithOp,
+                ac::PacketSerializeOp, ac::PacketDeserializeOp>(
+                act->sourceOperation)) {
+          act->emission = ProcessEmissionClass::Inline;
           act->cost = 1;
         }
         llvm::StringRef dialect =

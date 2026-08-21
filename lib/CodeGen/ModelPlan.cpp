@@ -304,9 +304,37 @@ llvm::Expected<ModelPlan> buildModelPlan(mlir::ModuleOp canonicalACSim) {
       if (!kind)
         return planError("ACLOWER-TYPE-MISMATCH",
                          "unknown closed ACSim type kind");
-      plan.types.push_back({type.getSymName().str(), *kind,
-                            type.getCppName().str(),
-                            type.getFingerprint().str()});
+      TypePlan typePlan{type.getSymName().str(), *kind,
+                        type.getCppName().str(), type.getFingerprint().str()};
+      if (mlir::DictionaryAttr helper = type.getHelperAttr()) {
+        auto role = helper.getAs<mlir::StringAttr>("role");
+        auto inputs = helper.getAs<mlir::ArrayAttr>("inputs");
+        auto result = helper.getAs<mlir::StringAttr>("result");
+        auto offsets = helper.getAs<mlir::ArrayAttr>("offsets");
+        auto bigEndian = helper.getAs<mlir::BoolAttr>("big_endian");
+        if (!role || !inputs || !result || !offsets || !bigEndian)
+          return planError("ACLOWER-TYPE-MISMATCH",
+                           "generated helper metadata is incomplete");
+        typePlan.helperRole = role.getValue().str();
+        typePlan.helperResult = result.getValue().str();
+        typePlan.helperBigEndian = bigEndian.getValue();
+        for (mlir::Attribute input : inputs) {
+          auto value = mlir::dyn_cast<mlir::StringAttr>(input);
+          if (!value)
+            return planError("ACLOWER-TYPE-MISMATCH",
+                             "generated helper input type is not a string");
+          typePlan.helperInputs.push_back(value.getValue().str());
+        }
+        for (mlir::Attribute offset : offsets) {
+          auto value = mlir::dyn_cast<mlir::IntegerAttr>(offset);
+          if (!value || value.getInt() < 0)
+            return planError("ACLOWER-TYPE-MISMATCH",
+                             "generated helper offset is invalid");
+          typePlan.helperOffsets.push_back(
+              static_cast<uint64_t>(value.getInt()));
+        }
+      }
+      plan.types.push_back(std::move(typePlan));
       if (*kind == TypeKind::TimeDomain) {
         mlir::IntegerAttr period = type.getPeriodAttr();
         mlir::IntegerAttr phase = type.getPhaseAttr();

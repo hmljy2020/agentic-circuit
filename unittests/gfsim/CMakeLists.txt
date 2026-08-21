@@ -1,6 +1,7 @@
 find_package(GTest CONFIG REQUIRED)
 add_executable(GfsimTests
   NpuTest.cpp
+  PacketTest.cpp
   ShowcaseTest.cpp
   core_test.cpp
 )

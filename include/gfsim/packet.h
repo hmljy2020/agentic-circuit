@@ -2,12 +2,17 @@
 #define GFSIM_PACKET_H
 
 #include <array>
+#include <algorithm>
+#include <bit>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <cstring>
 #include <span>
 #include <string_view>
+#include <type_traits>
+#include <tuple>
 
 namespace gfsim {
 
@@ -19,6 +24,12 @@ struct PacketField {
   size_t size = 0;
 
   auto operator<=>(const PacketField &) const = default;
+};
+
+template <size_t Size, uint64_t H0, uint64_t H1, uint64_t H2, uint64_t H3>
+struct AtomicPacket {
+  std::array<std::byte, Size> bytes{};
+  auto operator<=>(const AtomicPacket &) const = default;
 };
 
 /// Static layout information for runtime containers. Public packets specialize
@@ -117,6 +128,54 @@ std::optional<T> deserializePacket(std::span<const std::byte> bytes) {
   if (bytes.size() != PacketTraits<T>::serializedSize)
     return std::nullopt;
   return PacketTraits<T>::deserialize(bytes);
+}
+
+template <typename Field, size_t Offset, bool BigEndian, typename PacketValue>
+Field packetFieldGet(const PacketValue &packet) {
+  static_assert(std::is_trivially_copyable_v<Field>);
+  static_assert(Offset + sizeof(Field) <=
+                std::tuple_size_v<std::remove_cvref_t<decltype(packet.bytes)>>);
+  std::array<std::byte, sizeof(Field)> bytes{};
+  std::copy_n(packet.bytes.begin() + Offset, sizeof(Field), bytes.begin());
+  if constexpr ((BigEndian && std::endian::native == std::endian::little) ||
+                (!BigEndian && std::endian::native == std::endian::big))
+    std::reverse(bytes.begin(), bytes.end());
+  Field value{};
+  std::memcpy(&value, bytes.data(), sizeof(Field));
+  return value;
+}
+
+template <size_t Offset, bool BigEndian, typename PacketValue, typename Field>
+PacketValue packetFieldWith(PacketValue packet, const Field &value) {
+  static_assert(std::is_trivially_copyable_v<Field>);
+  static_assert(Offset + sizeof(Field) <=
+                std::tuple_size_v<std::remove_cvref_t<decltype(packet.bytes)>>);
+  std::array<std::byte, sizeof(Field)> bytes{};
+  std::memcpy(bytes.data(), &value, sizeof(Field));
+  if constexpr ((BigEndian && std::endian::native == std::endian::little) ||
+                (!BigEndian && std::endian::native == std::endian::big))
+    std::reverse(bytes.begin(), bytes.end());
+  std::copy(bytes.begin(), bytes.end(), packet.bytes.begin() + Offset);
+  return packet;
+}
+
+template <typename PacketValue>
+auto packetSerializeBytes(const PacketValue &packet) {
+  std::array<std::int8_t,
+             std::tuple_size_v<std::remove_cvref_t<decltype(packet.bytes)>>>
+      result{};
+  for (size_t index = 0; index < packet.bytes.size(); ++index)
+    result[index] = std::to_integer<std::int8_t>(packet.bytes[index]);
+  return result;
+}
+
+template <typename PacketValue, size_t Size>
+PacketValue packetDeserializeBytes(const std::array<std::int8_t, Size> &bytes) {
+  PacketValue result{};
+  static_assert(Size == std::tuple_size_v<decltype(result.bytes)>);
+  for (size_t index = 0; index < Size; ++index)
+    result.bytes[index] = static_cast<std::byte>(bytes[index]);
+  return result;
 }
 
 } // namespace gfsim

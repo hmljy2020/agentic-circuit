@@ -91,6 +91,63 @@ private:
   Epoch lastUpdate_{};
 };
 
+/// A statically owned bridge that removes committed Queue entries through the
+/// normal Work/Xfer barriers and retains one value until the host takes it.
+template <typename T> class HostEgress final : public SimObject {
+public:
+  HostEgress(std::string name, ObjectId id, SimObject *parent, Queue<T> &source)
+      : SimObject(ObjectKind::Compute, std::move(name), id, parent),
+        source_(source) {}
+
+  bool ready() const { return mailbox_.has_value(); }
+  std::optional<T> take() {
+    if (!mailbox_)
+      return std::nullopt;
+    std::optional<T> result = std::move(mailbox_);
+    mailbox_.reset();
+    ++hostCompleted_;
+    return result;
+  }
+
+  void doWork(Epoch) override {
+    if (!mailbox_ && !proposed_) {
+      if (auto value = source_.proposePop()) {
+        proposedValue_ = std::move(*value);
+        proposed_ = true;
+      }
+    }
+  }
+  bool hasPendingCommit() const override { return proposed_; }
+  void doXfer(Epoch epoch) override {
+    if (!proposed_)
+      return;
+    mailbox_ = std::move(proposedValue_);
+    proposedValue_.reset();
+    proposed_ = false;
+    proposedValue_.reset();
+    ++queueCommitted_;
+    lastUpdate_ = epoch;
+  }
+  bool isRunnable(Epoch) const override { return !mailbox_.has_value(); }
+  void reset() override {
+    mailbox_.reset();
+    proposed_ = false;
+    queueCommitted_ = 0;
+    hostCompleted_ = 0;
+    lastUpdate_ = {};
+    clearRuntimeFailureCode();
+  }
+
+private:
+  Queue<T> &source_;
+  std::optional<T> mailbox_;
+  std::optional<T> proposedValue_;
+  bool proposed_ = false;
+  uint64_t queueCommitted_ = 0;
+  uint64_t hostCompleted_ = 0;
+  Epoch lastUpdate_{};
+};
+
 } // namespace gfsim
 
 #endif // GFSIM_HOST_H
