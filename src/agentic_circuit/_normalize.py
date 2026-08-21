@@ -51,6 +51,7 @@ class NormalizedProgram:
     scopes: tuple[NormalizedScopeRegion, ...] = ()
     captures: tuple[ValueVersion, ...] = ()
     flow_boundaries: tuple[FlowBoundary, ...] = ()
+    host_inputs: tuple[tuple[str, str], ...] = ()
 
     def value_names(self) -> tuple[str, ...]:
         return tuple(value.name for value in self.values)
@@ -139,15 +140,24 @@ class _Normalizer:
         self._bundle_outputs: dict[str, tuple[str, int, SourceSpan]] = {}
         self._captures: list[ValueVersion] = []
         self._flow_boundaries: list[FlowBoundary] = []
+        self._host_inputs: list[tuple[str, str]] = []
         symbols = dict(captured.symbols)
         from ._resources import QueueSpec
         from ._types import FlowBundle
         queues_by_name: dict[str, QueueSpec] = {}
+        host_inputs_by_queue: dict[str, str] = {}
         for symbolic in symbols.values():
             candidates = symbolic if isinstance(symbolic, (tuple, list)) else (symbolic,)
             for candidate in candidates:
                 if isinstance(candidate, QueueSpec):
                     queues_by_name[candidate.name] = candidate
+                    if candidate.host_input is not None:
+                        host_inputs_by_queue[candidate.name] = candidate.host_input
+        self._host_inputs = sorted(host_inputs_by_queue.items())
+        if len({host_name for _queue, host_name in self._host_inputs}) != len(
+            self._host_inputs
+        ):
+            raise ResolutionError("ACPY-HOST-001: host input names must be unique")
         for symbol_name, symbolic in captured.symbols:
             if not isinstance(symbolic, FlowBundle) or len(symbolic.shape) != 1:
                 continue
@@ -808,6 +818,7 @@ class _Normalizer:
             scopes=tuple(scope for scope in self._scopes if scope is not None),
             captures=tuple(self._captures),
             flow_boundaries=tuple(self._flow_boundaries),
+            host_inputs=tuple(self._host_inputs),
         )
 
 

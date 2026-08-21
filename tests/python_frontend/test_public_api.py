@@ -21,6 +21,7 @@ PUBLIC = {
     "instances",
     "view",
     "queue",
+    "host_input_queue",
     "ResourceRef",
     "address_space",
     "address_map",

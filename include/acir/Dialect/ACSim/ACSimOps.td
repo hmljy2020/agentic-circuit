@@ -99,7 +99,8 @@ def ACSim_ModuleOp : ACSim_Op<"module", [
 def ACSim_InstanceOp : ACSim_Op<"instance"> {
   let arguments = (ins SymbolNameAttr:$sym_name, SymbolRefAttr:$target,
                        ArrayAttr:$static_args,
-                       StrAttr:$specialization_fingerprint);
+                       StrAttr:$specialization_fingerprint,
+                       OptionalAttr<StrAttr>:$host_input);
   let results = (outs AnyType:$result);
   let assemblyFormat = [{
     $sym_name `target` $target `args` $static_args

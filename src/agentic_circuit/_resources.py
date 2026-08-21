@@ -66,6 +66,7 @@ class QueueSpec:
     protocol: str
     depth: int
     time_domain: str
+    host_input: str | None = None
     _flow_exported: bool = field(default=False, init=False, compare=False, repr=False)
     _flow_imported: bool = field(default=False, init=False, compare=False, repr=False)
 
@@ -87,6 +88,34 @@ def queue(
             "ACPY-RESOURCE-002", "queue depth must be a positive static integer"
         )
     return QueueSpec(name, payload_type, protocol, depth, time_domain)
+
+
+def host_input_queue(
+    name: str,
+    *,
+    payload_type: str = "i32",
+    protocol: str = "ready_valid",
+    depth: int = 1,
+    time_domain: str = "default",
+    host_name: str | None = None,
+) -> QueueSpec:
+    """Declare a root Queue offered by the host between simulation ticks."""
+    queue_spec = queue(
+        name,
+        payload_type=payload_type,
+        protocol=protocol,
+        depth=depth,
+        time_domain=time_domain,
+    )
+    if payload_type != "i32" or protocol != "ready_valid":
+        raise FrontendRuleError(
+            "ACPY-HOST-001",
+            "host input queues require i32 payload and ready_valid protocol",
+        )
+    external_name = name if host_name is None else _nonempty(
+        host_name, "host input name", "ACPY-HOST-001"
+    )
+    return QueueSpec(name, payload_type, protocol, depth, time_domain, external_name)
 
 
 @dataclass(frozen=True, slots=True)

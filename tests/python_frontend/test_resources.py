@@ -75,6 +75,17 @@ class ResourceFrontendTest(unittest.TestCase):
                 depth=0,
             )
 
+    def test_host_input_queue_is_a_closed_i32_ready_valid_declaration(self) -> None:
+        from agentic_circuit import host_input_queue
+        from agentic_circuit._resources import FrontendRuleError
+
+        ingress = host_input_queue("tx0", depth=2, host_name="node0")
+        self.assertEqual("node0", ingress.host_input)
+        self.assertEqual("i32", ingress.payload_type)
+        self.assertEqual("ready_valid", ingress.protocol)
+        with self.assertRaisesRegex(FrontendRuleError, "ACPY-HOST-001"):
+            host_input_queue("bad", payload_type="i64")
+
 
 if __name__ == "__main__":
     unittest.main()

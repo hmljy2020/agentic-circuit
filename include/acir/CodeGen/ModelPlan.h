@@ -174,6 +174,7 @@ struct PlacementPlan {
   Fingerprint specializationFingerprint;
   std::vector<uint64_t> shape;
   std::vector<llvm::json::Value> staticArguments;
+  std::string hostInput;
 };
 
 enum class ProjectionKind { Element, Port, Resource };

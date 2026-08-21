@@ -430,15 +430,18 @@ extractModule(acsim::ModuleOp module,
       } else if (runtimeTypeSymbols.contains(targetName))
         kind = staticArgs->empty() ? PlacementKind::CompilerNativeFlowLink
                                    : PlacementKind::CompilerNative;
-      result.placements.push_back(
-          {kind,
-           instance.getSymName().str(),
-           (instance.getSymName() + "_").str(),
-           symbolRefString(instance.getTargetAttr()),
-           valueName(values, instance.getResult(), nextValue),
-           instance.getSpecializationFingerprint().str(),
-           {},
-           std::move(*staticArgs)});
+      PlacementPlan placement{
+          kind,
+          instance.getSymName().str(),
+          (instance.getSymName() + "_").str(),
+          symbolRefString(instance.getTargetAttr()),
+          valueName(values, instance.getResult(), nextValue),
+          instance.getSpecializationFingerprint().str(),
+          {},
+          std::move(*staticArgs)};
+      if (auto hostInput = instance.getHostInputAttr())
+        placement.hostInput = hostInput.getValue().str();
+      result.placements.push_back(std::move(placement));
     } else if (auto array = mlir::dyn_cast<acsim::ArrayOp>(operation)) {
       auto staticArgs = staticValues(array.getStaticArgs());
       if (!staticArgs)
@@ -547,6 +550,7 @@ llvm::Error populateModelDetails(acsim::ModelOp model, ModelPlan &plan) {
 }
 
 llvm::Error validateModelDetails(const ModelPlan &plan) {
+  std::set<std::string> hostInputNames;
   llvm::StringRef prior;
   for (const BindingPlan &binding : plan.bindings) {
     if (binding.symbol.empty() || (!prior.empty() && prior >= binding.symbol) ||
@@ -565,6 +569,16 @@ llvm::Error validateModelDetails(const ModelPlan &plan) {
       return detailError("ACLOWER-OWNERSHIP",
                          "module plan is incomplete or non-canonical");
     prior = module.symbol;
+    for (const PlacementPlan &placement : module.placements) {
+      if (placement.hostInput.empty())
+        continue;
+      if (module.symbol != plan.rootSymbol ||
+          placement.kind != PlacementKind::CompilerNative ||
+          !hostInputNames.insert(placement.hostInput).second)
+        return detailError(
+            "ACLOWER-HOST-INPUT",
+            "host inputs must be unique root compiler-native queues");
+    }
     const size_t nativeFlowCount = std::count_if(
         module.placements.begin(), module.placements.end(),
         [](const PlacementPlan &placement) {

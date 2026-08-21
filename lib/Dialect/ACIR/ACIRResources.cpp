@@ -327,6 +327,15 @@ LogicalResult QueueOp::verify() {
     return emitOpError("queue ownership must be exactly 'exclusive'");
   if (!isNormativePayload(getPayload()))
     return emitOpError("queue payload must be a normative ACIR value type");
+  if (Attribute hostInput = (*this)->getAttr("ac.host_input")) {
+    auto name = dyn_cast<StringAttr>(hostInput);
+    if (!name || name.getValue().empty())
+      return emitOpError("ac.host_input must be a non-empty string");
+    if (!getPayload().isSignlessInteger(32) ||
+        getProtocolAttr().getValue() != "ready_valid")
+      return emitOpError(
+          "host input queues require i32 payload and @ready_valid protocol");
+  }
   if (DictionaryAttr marks = getWatermarksAttr()) {
     auto low = marks.getAs<IntegerAttr>("low");
     auto high = marks.getAs<IntegerAttr>("high");

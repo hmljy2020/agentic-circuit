@@ -93,6 +93,18 @@ const ModulePlan *rootModule(const ModelPlan &plan) {
   return findModule(plan, plan.rootSymbol);
 }
 
+std::vector<const PlacementPlan *> rootHostInputs(const ModelPlan &plan) {
+  std::vector<const PlacementPlan *> inputs;
+  if (const ModulePlan *root = rootModule(plan))
+    for (const PlacementPlan &placement : root->placements)
+      if (!placement.hostInput.empty())
+        inputs.push_back(&placement);
+  std::sort(inputs.begin(), inputs.end(), [](const auto *left, const auto *right) {
+    return left->hostInput < right->hostInput;
+  });
+  return inputs;
+}
+
 llvm::Expected<std::string> cppLiteral(const llvm::json::Value &value) {
   if (value.kind() == llvm::json::Value::Null)
     return std::string("{}");
@@ -796,10 +808,12 @@ llvm::Expected<GeneratedFile> modelHeader(const ModelPlan &plan,
   if (!root)
     return generatorError("ACLOWER-OWNERSHIP",
                           "root module has no generated specialization");
+  const auto hostInputs = rootHostInputs(plan);
   std::ostringstream output;
   output
       << "#pragma once\n\n#include \"generated/modules/" << root->className
       << ".h\"\n#include \"gfsim/dispatch.h\"\n#include \"gfsim/harness.h\"\n"
+         "#include \"gfsim/host.h\"\n"
          "#include \"gfsim/object.h\"\n\n"
          "#include <array>\n#include <string_view>\n#include <vector>\n\n"
          "namespace acsim_generated {\n\ninline constexpr std::string_view "
@@ -818,7 +832,14 @@ llvm::Expected<GeneratedFile> modelHeader(const ModelPlan &plan,
       << "}};\n\nstruct DispatchAccess;\n\nclass Model final {\n"
          "public:\n  Model();\n  void configure(const gfsim::RuntimeLimits "
          "&limits);\n  bool loadTrace(gfsim::PtoTraceDocument document);\n  "
-         "gfsim::TerminationResult run();\n  std::string_view "
+         "gfsim::TerminationResult run();\n  bool stepTick();\n  "
+         "gfsim::Epoch currentEpoch() const { return system_.currentEpoch(); }\n  "
+         "gfsim::TerminationResult terminationResult() const { return "
+         "system_.terminationResult(); }\n  "
+         "std::size_t hostInputCount() const;\n  std::string_view "
+         "hostInputName(std::size_t index) const;\n  bool hostInputReady(std::size_t "
+         "index) const;\n  bool offer(std::size_t index, int32_t value);\n  void reset();\n  "
+         "std::string_view "
          "buildFingerprint() const { return kBuildFingerprint; }\n  "
          "std::span<const gfsim::TimeDomainRuntime> timeDomains() const { "
          "return kTimeDomains; }\n  std::vector<gfsim::StatSnapshot> "
@@ -833,13 +854,18 @@ llvm::Expected<GeneratedFile> modelHeader(const ModelPlan &plan,
              [](const RuntimeObjectPlan &object) { return object.traceOwner; })
       << ";\n  "
       << "gfsim::SimSystem system_;\n  gfsim::ObjectId nextObjectId_ = 0;\n  "
-      << root->className << " top_;\n"
+      << root->className << " top_;\n";
+  for (const PlacementPlan *input : hostInputs)
+    output << "  gfsim::HostIngress<int32_t> host_" << input->memberName
+           << ";\n";
+  output << "  bool steppingStarted_ = false;\n"
       << "  std::array<gfsim::DispatchRow, " << plan.runtimeObjects.size()
       << "> dispatch_;\n};\n\n} // namespace acsim_generated\n";
   return makeFile("include/generated/model.h", output.str());
 }
 
 llvm::Expected<GeneratedFile> modelSource(const ModelPlan &plan) {
+  const auto hostInputs = rootHostInputs(plan);
   uint64_t eventCapacity = 1024;
   for (const RuntimeObjectPlan &object : plan.runtimeObjects) {
     auto placement = runtimeObjectPlacement(plan, object);
@@ -871,10 +897,22 @@ llvm::Expected<GeneratedFile> modelSource(const ModelPlan &plan) {
             "    : system_(\"generated\"),\n"
             "      nextObjectId_(0),\n"
             "      top_(\"root-model\", gfsim::kRootObjectId - 1, "
-            "&system_.root(), nextObjectId_),\n      "
-            "dispatch_(DispatchAccess::makeRows(*this)) {\n"
+            "&system_.root(), nextObjectId_),\n";
+  for (const PlacementPlan *input : hostInputs)
+    output << "      host_" << input->memberName << "(\"host_"
+           << input->symbol << "\", nextObjectId_++, &top_, top_."
+           << input->memberName << "),\n";
+  output << "      dispatch_(DispatchAccess::makeRows(*this)) {\n"
             "  if (!system_.root().attachChild(top_))\n"
             "    throw std::logic_error(\"ACLOWER-OWNERSHIP\");\n"
+            "  bool hostAttached = true;\n";
+  for (const PlacementPlan *input : hostInputs)
+    output << "  hostAttached = top_.attachChild(host_" << input->memberName
+           << ") && hostAttached;\n"
+           << "  system_.registerObject(&host_" << input->memberName
+           << ");\n";
+  output << "  if (!hostAttached)\n"
+            "    throw std::logic_error(\"ACLOWER-HOST-INPUT\");\n"
             "  const bool capacityConfigured = "
             "system_.setEventQueueCapacity("
          << eventCapacity
@@ -918,7 +956,60 @@ llvm::Expected<GeneratedFile> modelSource(const ModelPlan &plan) {
     output << "  return false;\n";
   }
   output << "}\n\ngfsim::TerminationResult Model::run() {\n"
-            "  return system_.run();\n}\n\n} // namespace acsim_generated\n";
+            "  return system_.run();\n}\n\n"
+            "std::size_t Model::hostInputCount() const { return "
+         << hostInputs.size() << "; }\n\n"
+            "std::string_view Model::hostInputName(std::size_t index) const {\n"
+            "  static constexpr std::array<std::string_view, "
+         << hostInputs.size() << "> names = {";
+  for (auto [index, input] : llvm::enumerate(hostInputs)) {
+    if (index != 0)
+      output << ", ";
+    auto literal = cppLiteral(llvm::json::Value(input->hostInput));
+    if (!literal)
+      return literal.takeError();
+    output << *literal;
+  }
+  output << "};\n  return index < names.size() ? names[index] : "
+            "std::string_view{};\n}\n\n"
+            "bool Model::hostInputReady(std::size_t index) const {\n"
+            "  switch (index) {\n";
+  for (auto [index, input] : llvm::enumerate(hostInputs))
+    output << "  case " << index << ": return !host_" << input->memberName
+           << ".mailboxOccupied();\n";
+  output << "  default: return false;\n  }\n}\n\n"
+            "bool Model::offer(std::size_t index, int32_t value) {\n"
+            "  if (system_.isTerminated()) return false;\n"
+            "  switch (index) {\n";
+  for (auto [index, input] : llvm::enumerate(hostInputs))
+    output << "  case " << index << ": return host_" << input->memberName
+           << ".stage(value);\n";
+  output << "  default: return false;\n  }\n}\n\n"
+            "bool Model::stepTick() {\n"
+            "  if (system_.isTerminated()) return false;\n"
+            "  const gfsim::Epoch start = system_.currentEpoch();\n"
+            "  if (!steppingStarted_) {\n";
+  for (const RuntimeObjectPlan &object : plan.runtimeObjects)
+    if (object.objectKind == RuntimeObjectKind::Process)
+      output << "    if (!system_.scheduleWork(" << object.objectId
+             << ", start)) return false;\n";
+  output << "    steppingStarted_ = true;\n  }\n";
+  for (const PlacementPlan *input : hostInputs)
+    output << "  if (!system_.scheduleWork(host_" << input->memberName
+           << ".id(), start) || !system_.scheduleWork(host_"
+           << input->memberName
+           << ".id(), {start.time + 1, 0})) return false;\n";
+  output << "  do {\n"
+            "    if (!system_.step() && system_.currentEpoch().time == start.time)\n"
+            "      return false;\n"
+            "  } while (!system_.isTerminated() &&\n"
+            "           system_.currentEpoch().time == start.time);\n"
+            "  return !system_.isTerminated();\n}\n\n"
+            "void Model::reset() {\n  system_.reset();\n";
+  for (const PlacementPlan *input : hostInputs)
+    output << "  host_" << input->memberName << ".reset();\n";
+  output << "  steppingStarted_ = false;\n}\n\n"
+            "} // namespace acsim_generated\n";
   return makeFile("src/generated/model.cpp", output.str());
 }
 
@@ -968,9 +1059,68 @@ GeneratedFile mainSource() {
       "exitCode(result->status);\n}\n");
 }
 
+GeneratedFile cApiHeader() {
+  return makeFile("include/generated/c_api.h", R"cpp(#pragma once
+#include <stddef.h>
+#include <stdint.h>
+#ifdef __cplusplus
+extern "C" {
+#endif
+typedef struct ac_model ac_model;
+uint32_t ac_model_abi_version(void);
+ac_model *ac_model_create(void);
+void ac_model_destroy(ac_model *model);
+size_t ac_model_host_input_count(const ac_model *model);
+const char *ac_model_host_input_name(const ac_model *model, size_t index);
+int ac_model_host_input_ready(const ac_model *model, size_t index);
+int ac_model_offer(ac_model *model, size_t index, int32_t value);
+size_t ac_model_offer_batch(ac_model *model, const size_t *indices, const int32_t *values, size_t count);
+int ac_model_step_tick(ac_model *model);
+uint64_t ac_model_tick(const ac_model *model);
+void ac_model_reset(ac_model *model);
+size_t ac_model_stat_count(ac_model *model);
+const char *ac_model_stat_name(const ac_model *model, size_t index);
+const char *ac_model_stat_path(const ac_model *model, size_t index);
+uint64_t ac_model_stat_value(const ac_model *model, size_t index);
+const char *ac_model_last_error(const ac_model *model);
+#ifdef __cplusplus
+}
+#endif
+)cpp");
+}
+
+GeneratedFile cApiSource() {
+  return makeFile("src/generated/c_api.cpp", R"cpp(#include "generated/c_api.h"
+#include "generated/model.h"
+#include <exception>
+#include <string>
+#include <vector>
+struct ac_model { acsim_generated::Model model; std::vector<gfsim::StatSnapshot> stats; std::string error; };
+extern "C" {
+uint32_t ac_model_abi_version(void) { return 1; }
+ac_model *ac_model_create(void) { try { return new ac_model; } catch (...) { return nullptr; } }
+void ac_model_destroy(ac_model *model) { delete model; }
+size_t ac_model_host_input_count(const ac_model *model) { return model ? model->model.hostInputCount() : 0; }
+const char *ac_model_host_input_name(const ac_model *model, size_t index) { if (!model) return nullptr; auto name = model->model.hostInputName(index); return name.empty() ? nullptr : name.data(); }
+int ac_model_host_input_ready(const ac_model *model, size_t index) { return model && model->model.hostInputReady(index) ? 1 : 0; }
+int ac_model_offer(ac_model *model, size_t index, int32_t value) { if (!model || index >= model->model.hostInputCount()) return -1; return model->model.offer(index, value) ? 1 : 0; }
+size_t ac_model_offer_batch(ac_model *model, const size_t *indices, const int32_t *values, size_t count) { if (!model || (!indices && count) || (!values && count)) return 0; size_t accepted = 0; for (size_t i = 0; i < count; ++i) if (ac_model_offer(model, indices[i], values[i]) == 1) ++accepted; return accepted; }
+int ac_model_step_tick(ac_model *model) { if (!model) return -1; try { if (model->model.stepTick()) return 1; model->error = model->model.terminationResult().diagnosticCode; return 0; } catch (const std::exception &e) { model->error = e.what(); return -1; } }
+uint64_t ac_model_tick(const ac_model *model) { return model ? model->model.currentEpoch().time : 0; }
+void ac_model_reset(ac_model *model) { if (model) { model->model.reset(); model->stats.clear(); model->error.clear(); } }
+size_t ac_model_stat_count(ac_model *model) { if (!model) return 0; model->stats = model->model.statistics(); return model->stats.size(); }
+const char *ac_model_stat_name(const ac_model *model, size_t index) { return model && index < model->stats.size() ? model->stats[index].name.c_str() : nullptr; }
+const char *ac_model_stat_path(const ac_model *model, size_t index) { return model && index < model->stats.size() ? model->stats[index].objectPath.c_str() : nullptr; }
+uint64_t ac_model_stat_value(const ac_model *model, size_t index) { return model && index < model->stats.size() ? model->stats[index].value : 0; }
+const char *ac_model_last_error(const ac_model *model) { return model ? model->error.c_str() : "null model"; }
+}
+)cpp");
+}
+
 std::vector<std::string> expectedPaths(const ModelPlan &plan) {
   std::vector<std::string> paths = {
-      "include/generated/dispatch.h", "include/generated/model.h",
+      "include/generated/c_api.h", "include/generated/dispatch.h",
+      "include/generated/model.h", "src/generated/c_api.cpp",
       "src/generated/main.cpp", "src/generated/model.cpp"};
   for (const ModulePlan &module : plan.modules) {
     paths.push_back("include/generated/modules/" + module.className + ".h");
@@ -1019,6 +1169,8 @@ llvm::Expected<SourceBundle> generateModelSources(const ModelPlan &plan) {
     return generatedModel.takeError();
   bundle.files.push_back(std::move(*generatedDispatch));
   bundle.files.push_back(std::move(*generatedModel));
+  bundle.files.push_back(cApiHeader());
+  bundle.files.push_back(cApiSource());
   bundle.files.push_back(mainSource());
   auto generatedModelSource = modelSource(plan);
   if (!generatedModelSource)

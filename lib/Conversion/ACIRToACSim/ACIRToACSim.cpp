@@ -538,6 +538,7 @@ struct PlacementPlan {
   ac::QueueOp queue;
   ac::EventQueueOp eventQueue;
   bool flowLink = false;
+  std::string hostInput;
 };
 
 struct BindingEdgePlan {
@@ -1431,6 +1432,8 @@ mlir::LogicalResult ACIRToACSimPass::planModule(ac::ModuleOp module,
       placement.targetSymbol = identity;
       placement.targetIsRuntimeObject = true;
       placement.queue = queue;
+      if (auto hostInput = queue->getAttrOfType<StringAttr>("ac.host_input"))
+        placement.hostInput = hostInput.getValue().str();
       llvm::SmallVector<Attribute> args{
           builder.getI64IntegerAttr(queue.getEntryCapacity())};
       if (queue.getByteCapacityAttr())
@@ -2899,7 +2902,7 @@ void ACIRToACSimPass::emitModuleBody(OpBuilder &builder,
               builder, planned.source->getLoc(), ownerType,
               builder.getStringAttr(placement.name), target,
               placement.staticArgs,
-              builder.getStringAttr(placement.specialization))
+              builder.getStringAttr(placement.specialization), StringAttr{})
               .getResult();
       break;
     }
@@ -2921,13 +2924,14 @@ void ACIRToACSimPass::emitModuleBody(OpBuilder &builder,
       auto target = SymbolRefAttr::get(
           context, typeSymbols.symbolFor(placement.targetSymbol));
       auto ownerType = acsim::OwnerType::get(context, target);
-      owners[placementIndex] =
-          acsim::InstanceOp::create(
-              builder, planned.source->getLoc(), ownerType,
-              builder.getStringAttr(placement.name), target,
-              placement.staticArgs,
-              builder.getStringAttr(placement.specialization))
-              .getResult();
+      auto instance = acsim::InstanceOp::create(
+          builder, planned.source->getLoc(), ownerType,
+          builder.getStringAttr(placement.name), target, placement.staticArgs,
+          builder.getStringAttr(placement.specialization),
+          placement.hostInput.empty()
+              ? StringAttr{}
+              : builder.getStringAttr(placement.hostInput));
+      owners[placementIndex] = instance.getResult();
       queueOwners[placement.name] = owners[placementIndex];
       break;
     }

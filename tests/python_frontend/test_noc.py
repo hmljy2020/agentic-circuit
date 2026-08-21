@@ -118,6 +118,27 @@ class NoCFrontendTest(unittest.TestCase):
         )
         self._verify(result.acir)
 
+    def test_host_input_is_root_owned_and_tagged_in_acir(self) -> None:
+        source = _source("RingNoC", 2).replace(
+            "from agentic_circuit import ",
+            "from agentic_circuit import host_input_queue, ",
+        ).replace(
+            'q0=queue("q0", payload_type="i32", protocol="ready_valid", depth=2)',
+            'q0=host_input_queue("q0", depth=2, host_name="node0")',
+        )
+        result = _elaborate(source)
+        self.assertEqual((), result.diagnostics)
+        assert result.acir is not None
+        declaration = next(
+            line
+            for line in result.acir.splitlines()
+            if "ac.queue @q0 " in line and "ac.host_input" in line
+        )
+        self.assertIn('ac.host_input = "node0"', declaration)
+        self.assertEqual(1, result.acir.count('ac.host_input = "node0"'))
+        self.assertIn("%i0_vc0 = ac.flow.export @q0", result.acir)
+        self._verify(result.acir)
+
     def test_ring_supported_scales_and_specialization(self) -> None:
         fingerprints = []
         for nodes in (2, 4, 16):

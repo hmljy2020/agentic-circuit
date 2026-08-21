@@ -20,7 +20,7 @@ from ._definitions import (
     system,
     transaction,
 )
-from ._resources import address_map, address_space, queue
+from ._resources import address_map, address_space, host_input_queue, queue
 from ._types import Endpoint, Flow, FlowBundle, ResourceRef, Static, export_flow, import_flow
 
 
@@ -40,6 +40,7 @@ __all__ = (
     "instances",
     "view",
     "queue",
+    "host_input_queue",
     "ResourceRef",
     "address_space",
     "address_map",

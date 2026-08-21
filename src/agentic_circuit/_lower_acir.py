@@ -1103,6 +1103,23 @@ def lower_to_acir(
         else:
             names[argument.name] = f"%{argument.source_name}"
     declared_queues: set[str] = set()
+    queue_specs = {
+        queue_name: (payload, protocol, depth)
+        for boundary in program.flow_boundaries
+        for queue_name, payload, protocol, depth in boundary.queues
+    }
+    for queue_name, host_name in program.host_inputs:
+        if queue_name not in queue_specs:
+            raise ValueError(
+                f"ACPY-HOST-001: host input queue {queue_name!r} must be exported as a Flow"
+            )
+        payload, protocol, depth = queue_specs[queue_name]
+        declared_queues.add(queue_name)
+        lines.append(
+            f"    ac.queue @{queue_name} payload {payload} entries {depth} ordering \"fifo\" "
+            f"protocol @{protocol} ownership \"exclusive\" id \"{queue_name}\" path \"{queue_name}\" "
+            f"{{ac.host_input = {json.dumps(host_name)}}}"
+        )
     for process, _kind in processes:
         for capture in process.captures:
             match = re.fullmatch(
