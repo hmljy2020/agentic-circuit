@@ -35,21 +35,27 @@ int main() {
     return std::uint64_t{0};
   };
   bool conserved = true;
+  bool recoveredBackpressure = false;
   for (const auto &[path, values] : stats) {
     const auto accepted = values.find("accepted_transactions");
     const auto completed = values.find("completed_transactions");
     const auto occupancy = values.find("queue_occupancy");
     const auto peak = values.find("queue_occupancy_peak");
     if (accepted == values.end())
-      continue;
-    conserved = conserved && completed != values.end() &&
-                occupancy != values.end() && peak != values.end() &&
-                accepted->second == completed->second + occupancy->second &&
-                peak->second <= 2;
+      recoveredBackpressure =
+          recoveredBackpressure ||
+          (values.contains("stalled_full") && values.contains("transferred") &&
+           values.at("stalled_full") > 0 && values.at("transferred") > 0);
+    else
+      conserved = conserved && completed != values.end() &&
+                  occupancy != values.end() && peak != values.end() &&
+                  accepted->second == completed->second + occupancy->second &&
+                  peak->second <= 2;
   }
 
   const bool passed =
       result.classification == gfsim::TerminationClass::Incomplete && conserved &&
+      recoveredBackpressure &&
       count("/rx00", "completed_transactions") > 0 &&
       count("/rx01", "completed_transactions") > 0 &&
       count("/rx11", "completed_transactions") > 0 &&
@@ -59,7 +65,12 @@ int main() {
       count("/mesh/link_n3_to_n2_west", "accepted_transactions") > 0 &&
       count("/mesh/link_n2_to_n0_south", "accepted_transactions") > 0 &&
       count("/mesh/node2_local_in", "completed_transactions") ==
-          count("/mesh/node2_local_out", "accepted_transactions");
+          count("/mesh/node2_local_out", "accepted_transactions") &&
+      count("/invalid_mesh/node0_local_in", "completed_transactions") == 0 &&
+      count("/invalid_mesh/node0_local_in", "queue_occupancy") == 2 &&
+      count("/invalid_rx0", "completed_transactions") > 0 &&
+      count("/invalid_rx1", "accepted_transactions") == 0 &&
+      count("/invalid_rx2", "accepted_transactions") == 0;
   std::cout << "classification="
             << (result.classification == gfsim::TerminationClass::Incomplete
                     ? "incomplete"

@@ -48,6 +48,68 @@ Canonical machine-readable schemas:
 - [ACSim binding](schemas/acsim-binding.schema.json)
 - [ACIR process-state plan](schemas/acir-process-state-plan.schema.json)
 
+## NoC MVP
+
+ACPy provides compiler-native, ready-valid single-flit Ring and Mesh networks.
+Every input and result is ordered by node ID, every node has one Local injection
+and ejection, and the entire `i32` payload is delivered unchanged.
+
+```python
+(rx0, rx1, rx2, rx3) = RingNoC(
+    inputs=(tx0, tx1, tx2, tx3),
+    queue_depth=2,
+    route_offset=0,
+    routing="clockwise",
+    arbitration="greedy_fixed_priority",
+    name="ring",
+)
+```
+
+Ring supports 2--16 nodes and routes clockwise. Its destination occupies
+`max(1, ceil(log2(nodes)))` bits starting at `route_offset`. Transit traffic has
+priority over Local injection, and every clockwise link is a stateful Queue, so
+the wrap-around edge cannot form a zero-delay combinational cycle.
+
+```python
+(rx00, rx10, rx01, rx11) = MeshNoC(
+    inputs=(tx00, tx10, tx01, tx11),
+    width=2,
+    height=2,
+    queue_depth=2,
+    route_offset=0,
+    routing="xy",
+    arbitration="greedy_fixed_priority",
+    name="mesh",
+)
+```
+
+Mesh dimensions are 1--4 in each direction. Node ID is `y * width + x`, with
+`(0, 0)` at the southwest and Y increasing northward. Destination X bits begin
+at `route_offset`, followed by Y bits; their widths are inferred from the Mesh
+dimensions. Routing is deterministic X-then-Y. An out-of-range Ring or Mesh
+destination stalls in its ingress Queue and is not popped.
+
+Connect ejection explicitly with `import_flow(rxN, (sink_queue,))`; a process
+then captures a complete message with
+`value, arrived = try_recv(sink_queue)`. The runnable examples exercise Local,
+multi-hop, Ring wrap-around, XY routing, contention, and FIFO backpressure:
+
+```sh
+./examples/chao/acpy_ring_noc/build-run.sh
+./examples/chao/acpy_mesh_noc/build-run.sh
+```
+
+Both scripts keep generated files under ignored `build-noc` directories and run
+the complete ACPy -> ACIR -> frozen ACIR -> ACSim -> C++ executable pipeline.
+Their runners require every Queue to satisfy
+`accepted_transactions == completed_transactions + queue_occupancy` and
+`queue_occupancy_peak <= queue_depth`, and reject traffic at wrong ejections.
+
+This MVP fixes virtual channels to one and supports only one `i32` per complete
+message, clockwise Ring routing, XY Mesh routing, and greedy fixed-priority
+arbitration. It intentionally excludes multi-flit packets, adaptive routing,
+Torus links, bidirectional shortest-path Ring routing, and escape VCs.
+
 ## Project policies
 
 Contributions are accepted under the [Apache License 2.0](LICENSE). See

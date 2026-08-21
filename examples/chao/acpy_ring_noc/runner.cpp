@@ -41,27 +41,38 @@ int main() {
   };
 
   bool conserved = true;
+  bool recoveredBackpressure = false;
   for (const auto &[path, values] : stats) {
     const auto accepted = values.find("accepted_transactions");
     const auto completed = values.find("completed_transactions");
     const auto occupancy = values.find("queue_occupancy");
     const auto peak = values.find("queue_occupancy_peak");
     if (accepted == values.end())
-      continue;
-    conserved = conserved && completed != values.end() &&
-                occupancy != values.end() && peak != values.end() &&
-                accepted->second == completed->second + occupancy->second &&
-                peak->second <= 2;
+      recoveredBackpressure =
+          recoveredBackpressure ||
+          (values.contains("stalled_full") && values.contains("transferred") &&
+           values.at("stalled_full") > 0 && values.at("transferred") > 0);
+    else
+      conserved = conserved && completed != values.end() &&
+                  occupancy != values.end() && peak != values.end() &&
+                  accepted->second == completed->second + occupancy->second &&
+                  peak->second <= 2;
   }
 
   const bool passed =
       result.classification == gfsim::TerminationClass::Incomplete && conserved &&
+      recoveredBackpressure &&
       count("/rx1", "completed_transactions") > 0 &&
       count("/rx2", "completed_transactions") > 0 &&
       count("/rx0", "accepted_transactions") == 0 &&
       count("/rx3", "accepted_transactions") == 0 &&
       count("/ring/link_n3_to_n0_cw", "accepted_transactions") > 0 &&
-      count("/ring/link_n2_to_n3_cw", "accepted_transactions") > 0;
+      count("/ring/link_n2_to_n3_cw", "accepted_transactions") > 0 &&
+      count("/invalid_ring/node0_local_in", "completed_transactions") == 0 &&
+      count("/invalid_ring/node0_local_in", "queue_occupancy") == 2 &&
+      count("/invalid_rx0", "accepted_transactions") == 0 &&
+      count("/invalid_rx1", "completed_transactions") > 0 &&
+      count("/invalid_rx2", "accepted_transactions") == 0;
   std::cout << "classification="
             << (result.classification == gfsim::TerminationClass::Incomplete
                     ? "incomplete"
