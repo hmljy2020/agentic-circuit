@@ -20,7 +20,8 @@ def _registry():
 
 
 def _source(kind: str, nodes: int, *, width: int = 1, height: int = 1,
-            depth: int = 2, name: str = "noc") -> str:
+            depth: int = 2, name: str = "noc",
+            arbitration: str = "greedy_fixed_priority") -> str:
     declarations = []
     for node in range(nodes):
         declarations.extend(
@@ -46,7 +47,10 @@ def _source(kind: str, nodes: int, *, width: int = 1, height: int = 1,
     else:
         arguments = (
             f'width={width}, height={height}, queue_depth={depth}, route_offset=0, '
-            f'routing="xy", arbitration="greedy_fixed_priority", name="{name}"'
+            'virtual_channels=1, flow_control="ready_valid", link_latency=1, '
+            'router_pipeline="single_stage_elastic", input_speedup=1, '
+            f'output_speedup=1, routing="xy", arbitration="{arbitration}", '
+            f'name="{name}"'
         )
     return f'''from agentic_circuit import export_flow, import_flow, module, process, queue, system, yield_sim
 {kind} = None
@@ -153,6 +157,64 @@ class NoCFrontendTest(unittest.TestCase):
         self.assertEqual(8, mesh.acir.count("ac.queue @link_"))
         self._verify(mesh.acir)
 
+    def test_mesh_round_robin_is_explicit_stateful_and_verified(self) -> None:
+        source = _source(
+            "MeshNoC", 4, width=2, height=2, arbitration="round_robin"
+        )
+        result = _elaborate(source)
+        repeated = _elaborate(source)
+        fixed = _elaborate(_source("MeshNoC", 4, width=2, height=2))
+        self.assertEqual((), result.diagnostics)
+        self.assertEqual(result.acir, repeated.acir)
+        assert result.acir is not None and result.document is not None
+        assert fixed.acir is not None and fixed.document is not None
+        self.assertEqual(20, result.acir.count("ac.queue @node"))
+        self.assertEqual(12, result.acir.count(" = ac.try_recv @node"))
+        self.assertEqual(12, result.acir.count(" = ac.try_send @node"))
+        self.assertIn("%rr_pointer_east", result.acir)
+        self.assertIn("arith.select %grant_", result.acir)
+        call = next(
+            entity for entity in result.document.entities if entity.kind == "call"
+        )
+        fixed_call = next(
+            entity for entity in fixed.document.entities if entity.kind == "call"
+        )
+        properties = dict((p.name, p.value) for p in call.properties)
+        fixed_properties = dict((p.name, p.value) for p in fixed_call.properties)
+        self.assertEqual("round_robin", properties["arbitration"])
+        self.assertEqual(1, properties["virtual_channels"])
+        self.assertEqual("ready_valid", properties["flow_control"])
+        self.assertEqual(1, properties["link_latency"])
+        self.assertEqual("single_stage_elastic", properties["router_pipeline"])
+        self.assertEqual(1, properties["input_speedup"])
+        self.assertEqual(1, properties["output_speedup"])
+        self.assertNotIn("_rr_", fixed.acir)
+        self.assertNotEqual(
+            fixed_properties["specialization"], properties["specialization"]
+        )
+        self._verify(result.acir)
+
+        scale = _elaborate(
+            _source(
+                "MeshNoC", 16, width=4, height=4,
+                arbitration="round_robin",
+            )
+        )
+        self.assertEqual((), scale.diagnostics)
+        assert scale.acir is not None
+        # Sixteen Local egresses plus 48 directed cardinal egresses each own
+        # exactly one independent arbitration pointer.
+        self.assertEqual(64, scale.acir.count(" = ac.try_recv @node"))
+        self.assertEqual(64, scale.acir.count(" = ac.try_send @node"))
+        processes = scale.acir.split("ac.process @node")[1:]
+        self.assertTrue(
+            all(
+                part.split("ac.yield_sim", 1)[0].count(" uses [@node") <= 25
+                for part in processes
+            )
+        )
+        self._verify(scale.acir)
+
     def test_invalid_noc_declarations_have_noc_diagnostic(self) -> None:
         invalid = (
             _source("RingNoC", 2).replace("(r0, r1)", "(r0,)"),
@@ -160,6 +222,13 @@ class NoCFrontendTest(unittest.TestCase):
             _source("RingNoC", 2).replace('routing="clockwise"', 'routing="shortest"'),
             _source("MeshNoC", 4, width=2, height=2).replace("width=2", "width=3"),
             _source("MeshNoC", 4, width=2, height=2).replace('routing="xy"', 'routing="adaptive"'),
+            _source("MeshNoC", 4, width=2, height=2).replace("virtual_channels=1", "virtual_channels=2"),
+            _source("MeshNoC", 4, width=2, height=2).replace("link_latency=1", "link_latency=2"),
+            _source("MeshNoC", 4, width=2, height=2).replace("input_speedup=1", "input_speedup=2"),
+            _source("MeshNoC", 4, width=2, height=2).replace("output_speedup=1", "output_speedup=2"),
+            _source("MeshNoC", 4, width=2, height=2).replace('flow_control="ready_valid"', 'flow_control="credit"'),
+            _source("MeshNoC", 4, width=2, height=2).replace('router_pipeline="single_stage_elastic"', 'router_pipeline="iq"'),
+            _source("MeshNoC", 4, width=2, height=2).replace('arbitration="greedy_fixed_priority"', 'arbitration="age_based"'),
         )
         for source in invalid:
             with self.subTest(source=source.splitlines()[1]):

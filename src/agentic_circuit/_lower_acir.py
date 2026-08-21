@@ -479,8 +479,9 @@ def _noc_scheduler(
     egresses: list[tuple[str, str]],
     route_requests: dict[tuple[str, str], str],
     decode: list[str],
+    arbitration: str = "greedy_fixed_priority",
 ) -> list[str]:
-    """Emit one deterministic output-major, ingress-minor fixed-priority scheduler."""
+    """Emit one deterministic output-major, ingress-minor NoC scheduler."""
 
     lines = [f"    ac.process @node{node}_scheduler kind \"control\" {{"]
     for ingress_name, queue in ingresses:
@@ -492,6 +493,7 @@ def _noc_scheduler(
         lines.append(f"      %space_{egress_name} = ac.space @{queue}")
         lines.append(f"      %writable_{egress_name} = arith.cmpi sgt, %space_{egress_name}, %zero : i32")
     candidates: list[tuple[str, str, str, str, str]] = []
+    candidates_by_egress: dict[str, list[int]] = {}
     for egress_name, egress_queue in egresses:
         for ingress_name, ingress_queue in ingresses:
             route = route_requests[(egress_name, ingress_name)]
@@ -502,17 +504,106 @@ def _noc_scheduler(
             candidates.append(
                 (request, ingress_name, ingress_queue, egress_name, egress_queue)
             )
+            candidates_by_egress.setdefault(egress_name, []).append(len(candidates) - 1)
+    arbiter_requests = [candidate[0] for candidate in candidates]
+    rr_pointers: dict[str, tuple[str, list[int]]] = {}
+    if arbitration == "round_robin":
+        lines.append("      %rr_true = arith.constant true")
+        for egress_name, indices in candidates_by_egress.items():
+            state_queue = f"node{node}_rr_{egress_name}"
+            pointer = f"%rr_pointer_{egress_name}"
+            valid = f"%rr_pointer_valid_{egress_name}"
+            lines.append(
+                f"      {pointer}, {valid} = ac.try_recv @{state_queue} : i32"
+            )
+            positions: list[str] = []
+            at_positions: list[str] = []
+            for position in range(len(indices)):
+                position_value = f"%rr_position_{egress_name}_{position}"
+                at_position = f"%rr_at_{egress_name}_{position}"
+                lines.append(
+                    f"      {position_value} = arith.constant {position} : i32"
+                )
+                lines.append(
+                    f"      {at_position} = arith.cmpi eq, {pointer}, {position_value} : i32"
+                )
+                positions.append(position_value)
+                at_positions.append(at_position)
+            selected: list[str] = []
+            for target_position, candidate_index in enumerate(indices):
+                request = candidates[candidate_index][0]
+                terms: list[str] = []
+                for start_position in range(len(indices)):
+                    earlier_positions: list[int] = []
+                    cursor = start_position
+                    while cursor != target_position:
+                        earlier_positions.append(cursor)
+                        cursor = (cursor + 1) % len(indices)
+                    eligible = at_positions[start_position]
+                    if earlier_positions:
+                        blocked = candidates[indices[earlier_positions[0]]][0]
+                        for ordinal, earlier in enumerate(earlier_positions[1:], start=1):
+                            combined = (
+                                f"%rr_blocked_{egress_name}_{target_position}_"
+                                f"{start_position}_{ordinal}"
+                            )
+                            lines.append(
+                                f"      {combined} = arith.ori {blocked}, "
+                                f"{candidates[indices[earlier]][0]} : i1"
+                            )
+                            blocked = combined
+                        available = (
+                            f"%rr_available_{egress_name}_{target_position}_{start_position}"
+                        )
+                        lines.append(
+                            f"      {available} = arith.xori {blocked}, %rr_true : i1"
+                        )
+                        start_eligible = (
+                            f"%rr_start_{egress_name}_{target_position}_{start_position}"
+                        )
+                        lines.append(
+                            f"      {start_eligible} = arith.andi {eligible}, {available} : i1"
+                        )
+                        eligible = start_eligible
+                    term = f"%rr_term_{egress_name}_{target_position}_{start_position}"
+                    lines.append(f"      {term} = arith.andi {eligible}, {request} : i1")
+                    terms.append(term)
+                chosen = terms[0]
+                for ordinal, term in enumerate(terms[1:], start=1):
+                    combined = f"%rr_selected_{egress_name}_{target_position}_{ordinal}"
+                    lines.append(f"      {combined} = arith.ori {chosen}, {term} : i1")
+                    chosen = combined
+                selected.append(chosen)
+                arbiter_requests[candidate_index] = chosen
+            rr_pointers[egress_name] = (pointer, indices)
     grants = [f"%grant_{index}" for index in range(len(candidates))]
     lines.append(f"      {', '.join(grants)} = ac.arbitrate greedy_fixed_priority candidates [")
-    for index, (request, ingress_name, _iq, egress_name, _eq) in enumerate(candidates):
+    for index, (_request, ingress_name, _iq, egress_name, _eq) in enumerate(candidates):
         comma = "," if index + 1 != len(candidates) else ""
         lines.append(
-            f"        {request} uses [@node{node}_pin_{ingress_name}, @node{node}_pout_{egress_name}]{comma}"
+            f"        {arbiter_requests[index]} uses [@node{node}_pin_{ingress_name}, @node{node}_pout_{egress_name}]{comma}"
         )
     lines.append("      ] : (" + ", ".join("i1" for _ in candidates) + ")")
     for index, (_request, _ingress_name, ingress_queue, _egress_name, egress_queue) in enumerate(candidates):
         lines.append(
             f"      %fire_{index} = ac.try_transfer @{ingress_queue} to @{egress_queue} when %grant_{index} : i32"
+        )
+    for egress_name, (pointer, indices) in rr_pointers.items():
+        next_pointer = pointer
+        for position, candidate_index in enumerate(indices):
+            next_value = f"%rr_next_value_{egress_name}_{position}"
+            updated = f"%rr_next_pointer_{egress_name}_{position}"
+            lines.append(
+                f"      {next_value} = arith.constant {(position + 1) % len(indices)} : i32"
+            )
+            lines.append(
+                f"      {updated} = arith.select {grants[candidate_index]}, "
+                f"{next_value}, {next_pointer} : i32"
+            )
+            next_pointer = updated
+        lines.append(
+            f"      %rr_state_written_{egress_name} = ac.try_send "
+            f"@node{node}_rr_{egress_name} {next_pointer} : i32"
         )
     lines.extend(("      ac.yield_sim", "    }"))
     return lines
@@ -586,6 +677,7 @@ def _mesh_declaration(call: object) -> list[str]:
     offset = int(parameters["route_offset"])
     x_width = int(parameters["route_x_width"])
     y_width = int(parameters["route_y_width"])
+    arbitration = str(parameters["arbitration"])
     for node in range(nodes):
         lines.append(_queue_line(f"node{node}_local_in", depth))
         lines.append(_queue_line(f"node{node}_local_out", depth))
@@ -597,6 +689,14 @@ def _mesh_declaration(call: object) -> list[str]:
             if 0 <= nx < width and 0 <= ny < height:
                 neighbor = ny * width + nx
                 lines.append(_queue_line(f"link_n{node}_to_n{neighbor}_{direction}", depth))
+    if arbitration == "round_robin":
+        for node in range(nodes):
+            x, y = node % width, node // width
+            lines.append(_queue_line(f"node{node}_rr_local", 2))
+            for direction in ("north", "east", "south", "west"):
+                dx, dy = _MESH_DIRECTIONS[direction]
+                if 0 <= x + dx < width and 0 <= y + dy < height:
+                    lines.append(_queue_line(f"node{node}_rr_{direction}", 2))
     for node in range(nodes):
         lines.append(f"    ac.flow.import %input{node} to @node{node}_local_in : {flow_type}")
         lines.append(f"    %output{node} = ac.flow.export @node{node}_local_out : {flow_type}")
@@ -663,7 +763,16 @@ def _mesh_declaration(call: object) -> list[str]:
             )
             for egress_name, _ in egresses:
                 requests[(egress_name, ingress_name)] = f"%route_{egress_name}_{ingress_name}"
-        lines.extend(_noc_scheduler(node, ingresses, egresses, requests, decode))
+        lines.extend(
+            _noc_scheduler(
+                node,
+                ingresses,
+                egresses,
+                requests,
+                decode,
+                arbitration=arbitration,
+            )
+        )
     result_types = ", ".join(flow_type for _ in range(nodes))
     lines.append(f"    ac.return {', '.join(f'%output{node}' for node in range(nodes))} : {result_types}")
     lines.append("  }")

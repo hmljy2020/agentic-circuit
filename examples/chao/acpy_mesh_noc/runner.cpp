@@ -53,6 +53,14 @@ int main() {
                   peak->second <= 2;
   }
 
+  const std::uint64_t westTransit =
+      count("/mesh/link_n0_to_n1_east", "completed_transactions");
+  const std::uint64_t localInjection =
+      count("/mesh/node1_local_in", "completed_transactions");
+  const std::uint64_t fairnessGap = westTransit > localInjection
+                                        ? westTransit - localInjection
+                                        : localInjection - westTransit;
+
   const bool passed =
       result.classification == gfsim::TerminationClass::Incomplete && conserved &&
       recoveredBackpressure &&
@@ -64,6 +72,7 @@ int main() {
       count("/mesh/link_n1_to_n3_north", "accepted_transactions") > 0 &&
       count("/mesh/link_n3_to_n2_west", "accepted_transactions") > 0 &&
       count("/mesh/link_n2_to_n0_south", "accepted_transactions") > 0 &&
+      westTransit >= 4 && localInjection >= 4 && fairnessGap <= 2 &&
       count("/mesh/node2_local_in", "completed_transactions") ==
           count("/mesh/node2_local_out", "accepted_transactions") &&
       count("/invalid_mesh/node0_local_in", "completed_transactions") == 0 &&
@@ -76,6 +85,9 @@ int main() {
                     ? "incomplete"
                     : "unexpected")
             << '\n';
+  std::cout << "round_robin_west_transit=" << westTransit << '\n';
+  std::cout << "round_robin_local_injection=" << localInjection << '\n';
+  std::cout << "round_robin_fairness_gap=" << fairnessGap << '\n';
   std::cout << "mesh_noc_passed=" << (passed ? "true" : "false") << '\n';
   return passed ? 0 : 1;
 }

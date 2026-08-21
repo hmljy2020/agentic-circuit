@@ -53,8 +53,14 @@ def fabric() -> None:
         height=2,
         queue_depth=2,
         route_offset=0,
+        virtual_channels=1,
+        flow_control="ready_valid",
+        link_latency=1,
+        router_pipeline="single_stage_elastic",
+        input_speedup=1,
+        output_speedup=1,
         routing="xy",
-        arbitration="greedy_fixed_priority",
+        arbitration="round_robin",
         name="mesh",
     )
     import_flow(rx00, (rx00_queue,))
