@@ -41,6 +41,31 @@ commit. Ring, Mesh, and final-regression milestones are pushed to `chao/main`.
 | 23 | 3 | DONE | Final related regression | CTest 6/6; frontend 69/69; contracts 21/21; catalog 36; both runners pass twice with byte-identical stdout; `git diff --check` clean | final commit |
 | 24 | 3 | DONE | Final commit, ledger, and push | ignored build products excluded; final tree and remote verified after push | final commit |
 
+## BookSim saturation extension
+
+This post-MVP extension applies only to `MeshNoC`.  It defines a common,
+single-stage elastic microarchitecture profile suitable for comparison with a
+matching BookSim model; it does not claim equivalence with BookSim's default IQ
+router or delayed-credit pipeline.
+
+| ID | Day | Status | Work item | Acceptance evidence | Commit |
+|---:|:---:|:---:|---|---|---|
+| 25 | Ext | DONE | Public fixed Mesh microarchitecture profile | Catalog 36 check passes; frontend rejects non-unit VC/latency/speedup and unsupported flow-control/pipeline values | `11d5529` |
+| 26 | Ext | DONE | Stateful round-robin arbitration | Pointer next-state is grant-selected; 2x2 sustained runtime contention completes West/Local 11/11 with gap 0 | `72704d5` |
+| 27 | Ext | DONE | Mesh round-robin lowering | 2x2 and 4x4 ACIR verify; 4x4 owns 64 independent egress pointers and <=25 candidates/router; fixed mode emits no RR state | `72704d5` |
+| 28 | Ext | DONE | Fixed profile timing contract | README fixes next-tick link visibility and explicitly excludes hidden RC/VA/SA/ST and credit-return delay | documentation commit |
+| 29 | Ext | DONE | Contention, fairness, scale, and determinism acceptance | 2x2 sustained runtime fairness plus conservation/capacity pass; 4x4 structure verifies; repeated runtime stdout SHA-256 is identical | `72704d5` |
+| 30 | Ext | IN_PROGRESS | BookSim mapping, regression, milestone push | Catalog 36, contracts 21/21, frontend 70/70, CTest 12/12, Ring and Mesh executable pipelines pass; push pending | documentation commit |
+
+Deferred difficulty assessment:
+
+- A deterministic Bernoulli `NoCTrafficSource` is medium-high effort: the
+  catalog entry is currently only a declarative placeholder and there is no
+  runtime injection-rate/seed channel or implemented uniform/transpose source.
+- A measurement-window `NoCThroughputExperiment` is medium effort: Queue
+  counters are cumulative and the generated Model lacks a warmup checkpoint,
+  counter snapshot/reset, or measurement-gated ejection counter.
+
 ## Target acceptance commands
 
 Exact paths/targets are refined as the implementation discovers repository-native

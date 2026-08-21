@@ -77,8 +77,14 @@ the wrap-around edge cannot form a zero-delay combinational cycle.
     height=2,
     queue_depth=2,
     route_offset=0,
+    virtual_channels=1,
+    flow_control="ready_valid",
+    link_latency=1,
+    router_pipeline="single_stage_elastic",
+    input_speedup=1,
+    output_speedup=1,
     routing="xy",
-    arbitration="greedy_fixed_priority",
+    arbitration="round_robin",
     name="mesh",
 )
 ```
@@ -88,6 +94,20 @@ Mesh dimensions are 1--4 in each direction. Node ID is `y * width + x`, with
 at `route_offset`, followed by Y bits; their widths are inferred from the Mesh
 dimensions. Routing is deterministic X-then-Y. An out-of-range Ring or Mesh
 destination stalls in its ingress Queue and is not popped.
+
+Mesh also exposes a deliberately narrow BookSim-comparison profile: one VC,
+ready-valid flow control, one stateful Queue per directed link, a single-stage
+elastic router, and input/output speedup one. Only those exact values are
+accepted. Arbitration may be `greedy_fixed_priority` or stateful per-egress
+`round_robin`; the latter advances its pointer only when a transfer is granted.
+A transfer committed by one router is visible to its neighbour on the next
+simulation tick.
+
+This profile can be matched by a custom BookSim configuration/model, but it is
+not equivalent to BookSim's default input-queued router: AC currently has no
+credit-return delay, separate RC/VA/SA/ST stages, multi-flit packets, or multiple
+VCs. Consequently, comparison claims must use this fixed elastic profile rather
+than merely giving both simulators similarly named parameters.
 
 Connect ejection explicitly with `import_flow(rxN, (sink_queue,))`; a process
 then captures a complete message with
@@ -106,8 +126,9 @@ Their runners require every Queue to satisfy
 `queue_occupancy_peak <= queue_depth`, and reject traffic at wrong ejections.
 
 This MVP fixes virtual channels to one and supports only one `i32` per complete
-message, clockwise Ring routing, XY Mesh routing, and greedy fixed-priority
-arbitration. It intentionally excludes multi-flit packets, adaptive routing,
+message, clockwise Ring routing, and XY Mesh routing. Ring uses greedy
+fixed-priority arbitration; Mesh also supports per-egress round-robin. It
+intentionally excludes multi-flit packets, adaptive routing,
 Torus links, bidirectional shortest-path Ring routing, and escape VCs.
 
 ## Project policies
