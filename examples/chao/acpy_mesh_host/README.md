@@ -27,6 +27,10 @@ python booksim_sweep.py --booksim=/home/lc/NoC/booksim2/src/booksim \
   --output=build-host/booksim-saturation.csv
 ```
 
+The checked local BookSim2 throughput executable emits a complete `results:0`
+record and then returns 255. `booksim_sweep.py` accepts only exit 0, or exactly
+that 255 result-with-record combination; every other failure is rejected.
+
 Both sides use a 2x2 mesh, DOR/XY, one single-flit packet, one VC, depth 2,
 unit speedups, round-robin arbitration, Bernoulli injection, and uniform or
 transpose traffic. The comparison is intentionally a throughput-curve

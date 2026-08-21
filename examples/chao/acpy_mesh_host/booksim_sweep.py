@@ -28,7 +28,10 @@ def main() -> None:
                 (line for line in result.stdout.splitlines() if line.startswith("results:0,")),
                 None,
             )
-            if record is None:
+            # This local BookSim2 throughput driver returns -1 (reported by
+            # subprocess as 255) even after printing its complete CSV record.
+            # Accept only that observed quirk, never an arbitrary failure.
+            if record is None or result.returncode not in (0, 255):
                 raise RuntimeError(f"BookSim produced no result (exit {result.returncode})")
             fields = record.split(",")
             rows.append((rate, seed, float(fields[20])))
