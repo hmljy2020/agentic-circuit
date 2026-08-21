@@ -17,15 +17,32 @@ result, and commit.
 
 | ID | Status | Work item | Acceptance evidence | Commit |
 |---:|:---:|---|---|---|
-| 0 | IN_PROGRESS | Ledger and clean baseline | `git status --short --branch`: clean `main...chao/main` at `7bb2c6a` | pending |
-| 1 | TODO | Real failing ACIR Packet executable test | pending | pending |
-| 2 | TODO | Canonical Packet/record layout and metadata | pending | pending |
-| 3 | TODO | Packet descriptor propagation to ACSim/ModelPlan | pending | pending |
-| 4 | TODO | Unique generated C++ Packet values and traits | pending | pending |
-| 5 | TODO | Record/serialize/process/Queue code generation | pending | pending |
-| 6 | TODO | Generic byte Host ingress/egress ABI | pending | pending |
-| 7 | TODO | Packet executable and negative/runtime tests | pending | pending |
-| 8 | TODO | Serial related regression, documentation, push | pending | pending |
+| 0 | DONE | Ledger and clean baseline | `git status --short --branch`: clean `main...chao/main` at `7bb2c6a` | `b710a45` |
+| 1 | DONE | Real failing ACIR Packet executable test | Initial focused lit failed because `ac.record.get` was illegal in canonical ACSim; final `--filter=native-packet` passed 3/3 | `f41f5e4` |
+| 2 | DONE | Canonical Packet/record layout and metadata | Natural-layout positive test and mismatched size/alignment/serialization-width negative test passed | `f41f5e4` |
+| 3 | DONE | Packet descriptor propagation to ACSim/ModelPlan | Focused Conversion test emits typed `acsim.value` and structured helper metadata | `f41f5e4` |
+| 4 | DONE | Unique generated C++ Packet values and traits | `PacketTest` static assertion proves equal-size schemas are distinct `AtomicPacket` types | `f41f5e4` |
+| 5 | DONE | Record/serialize/process/Queue code generation | Packet CodeGen lit completed freeze, ACSim lowering, C++ compile, link, and executable fingerprint run | `f41f5e4` |
+| 6 | DONE | Generic byte Host ingress/egress ABI | ABI v2 generates exact-size `offer_bytes`/`take_bytes`; HostEgress runtime test passed | `f41f5e4` |
+| 7 | DONE | Packet executable and negative/runtime tests | `native-packet-queue`, `native-packet-layout-invalid`, and both `PacketTest` cases passed | `f41f5e4` |
+| 8 | DONE | Serial related regression, documentation, push | Build passed; lit 116/116; CTest 12/12 in 333.27 s; `git diff --check` passed; pushed with the ledger finalization | `f41f5e4` |
+
+## Final acceptance evidence
+
+```text
+ulimit -v 1900000; cmake --build --preset dev-llvm22 --parallel 1
+  PASS
+ulimit -v 1900000; python3 /usr/lib/llvm-22/bin/lit -j1 build/dev-llvm22/test
+  PASS: 116/116
+ulimit -v 1900000; ctest --test-dir build/dev-llvm22 -j1 --output-on-failure
+  PASS: 12/12 (333.27 s)
+git diff --check
+  PASS
+```
+
+The implemented Packet remains one atomic Queue entry.  Multi-flit transport,
+Packetizer/Reassembler components, router VC ownership, and credits remain
+explicitly out of scope.
 
 ## Fixed semantics
 
