@@ -23,3 +23,7 @@ The script writes `build-packet/packet-saturation.csv` and
 `build-packet/packet-saturation.png`. Throughput is delivered whole Packets per
 node per model tick. Every ejected Packet is decoded and checked against the
 host output name; a wrong-node delivery fails the benchmark.
+
+Run `./run-booksim-comparison.sh` for the checked-in one-VC comparison with
+BookSim 2.0. Unlike disposable build output, its CSV data, exact BookSim
+configuration, and plot are stored under `benchmark-results/vc1/`.
