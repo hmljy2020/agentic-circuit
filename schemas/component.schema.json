@@ -128,7 +128,7 @@
         "kind": {"const": "context_shaped"},
         "input_shape": {"const": ["$input_arity", "virtual_channels"]},
         "result_shape": {"const": ["$assignment_arity", "virtual_channels"]},
-        "payload": {"const": "i32"},
+        "payload": {"enum": ["i32", "$input_payload"]},
         "protocol": {"const": "ready_valid"}
       }
     },

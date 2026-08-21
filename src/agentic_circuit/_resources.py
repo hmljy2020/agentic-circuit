@@ -67,6 +67,7 @@ class QueueSpec:
     depth: int
     time_domain: str
     host_input: str | None = None
+    host_output: str | None = None
     _flow_exported: bool = field(default=False, init=False, compare=False, repr=False)
     _flow_imported: bool = field(default=False, init=False, compare=False, repr=False)
 
@@ -74,26 +75,35 @@ class QueueSpec:
 def queue(
     name: str,
     *,
-    payload_type: str,
+    payload_type: object,
     protocol: str,
     depth: int,
     time_domain: str = "default",
 ) -> QueueSpec:
     _nonempty(name, "queue name", "ACPY-RESOURCE-002")
-    _nonempty(payload_type, "payload type", "ACPY-RESOURCE-002")
+    from ._definitions import Definition
+
+    if isinstance(payload_type, Definition):
+        if payload_type.kind != "packet":
+            raise FrontendRuleError(
+                "ACPY-RESOURCE-002", "named Queue payload must be an @packet definition"
+            )
+        payload_name = payload_type.__name__
+    else:
+        payload_name = _nonempty(payload_type, "payload type", "ACPY-RESOURCE-002")
     _nonempty(protocol, "protocol", "ACPY-RESOURCE-002")
     _nonempty(time_domain, "time domain", "ACPY-RESOURCE-002")
     if type(depth) is not int or depth <= 0:
         raise FrontendRuleError(
             "ACPY-RESOURCE-002", "queue depth must be a positive static integer"
         )
-    return QueueSpec(name, payload_type, protocol, depth, time_domain)
+    return QueueSpec(name, payload_name, protocol, depth, time_domain)
 
 
 def host_input_queue(
     name: str,
     *,
-    payload_type: str = "i32",
+    payload_type: object = "i32",
     protocol: str = "ready_valid",
     depth: int = 1,
     time_domain: str = "default",
@@ -107,15 +117,68 @@ def host_input_queue(
         depth=depth,
         time_domain=time_domain,
     )
-    if payload_type != "i32" or protocol != "ready_valid":
+    from ._definitions import Definition
+
+    if not (
+        payload_type == "i32"
+        or isinstance(payload_type, Definition) and payload_type.kind == "packet"
+    ) or protocol != "ready_valid":
         raise FrontendRuleError(
             "ACPY-HOST-001",
-            "host input queues require i32 payload and ready_valid protocol",
+            "host input queues require i32 or Packet payload and ready_valid protocol",
         )
     external_name = name if host_name is None else _nonempty(
         host_name, "host input name", "ACPY-HOST-001"
     )
-    return QueueSpec(name, payload_type, protocol, depth, time_domain, external_name)
+    return QueueSpec(
+        queue_spec.name,
+        queue_spec.payload_type,
+        queue_spec.protocol,
+        queue_spec.depth,
+        queue_spec.time_domain,
+        external_name,
+    )
+
+
+def host_output_queue(
+    name: str,
+    *,
+    payload_type: object = "i32",
+    protocol: str = "ready_valid",
+    depth: int = 1,
+    time_domain: str = "default",
+    host_name: str | None = None,
+) -> QueueSpec:
+    """Declare a root Queue drained by the host between simulation ticks."""
+    queue_spec = queue(
+        name,
+        payload_type=payload_type,
+        protocol=protocol,
+        depth=depth,
+        time_domain=time_domain,
+    )
+    from ._definitions import Definition
+
+    if not (
+        payload_type == "i32"
+        or isinstance(payload_type, Definition) and payload_type.kind == "packet"
+    ) or protocol != "ready_valid":
+        raise FrontendRuleError(
+            "ACPY-HOST-001",
+            "host output queues require i32 or Packet payload and ready_valid protocol",
+        )
+    external_name = name if host_name is None else _nonempty(
+        host_name, "host output name", "ACPY-HOST-001"
+    )
+    return QueueSpec(
+        queue_spec.name,
+        queue_spec.payload_type,
+        queue_spec.protocol,
+        queue_spec.depth,
+        queue_spec.time_domain,
+        None,
+        external_name,
+    )
 
 
 @dataclass(frozen=True, slots=True)

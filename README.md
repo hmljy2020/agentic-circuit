@@ -50,9 +50,10 @@ Canonical machine-readable schemas:
 
 ## NoC MVP
 
-ACPy provides compiler-native, ready-valid single-flit Ring and Mesh networks.
-Every input and result is ordered by node ID, every node has one Local injection
-and ejection, and the entire `i32` payload is delivered unchanged.
+ACPy provides compiler-native, ready-valid atomic-message Ring and Mesh
+networks. Every input and result is ordered by node ID, every node has one Local
+injection and ejection, and the complete `i32` or Packet payload is delivered
+unchanged.
 
 ```python
 (rx0, rx1, rx2, rx3) = RingNoC(
@@ -126,7 +127,20 @@ Their runners require every Queue to satisfy
 `queue_occupancy_peak <= queue_depth`, and reject traffic at wrong ejections.
 
 This MVP fixes virtual channels to one and supports only one `i32` per complete
-message, clockwise Ring routing, and XY Mesh routing. Ring uses greedy
+message, or one whole Packet as one atomic Queue entry. A Packet NoC call sets
+`route_field` to a top-level `i32` field; destination bits are decoded from that
+field and the Packet is not rewritten. See the executable byte-host example:
+
+```sh
+./examples/chao/acpy_mesh_packet_noc/build-run.sh
+```
+
+Packet declarations support natural-layout scalar, fixed-vector, and nested
+record fields with explicit little/big endianness. Host ABI 3 queries exact
+entry sizes and exchanges raw Packet bytes. Packet size does not imply multiple
+flits or link cycles.
+
+The MVP otherwise supports clockwise Ring routing and XY Mesh routing. Ring uses greedy
 fixed-priority arbitration; Mesh also supports per-egress round-robin. It
 intentionally excludes multi-flit packets, adaptive routing,
 Torus links, bidirectional shortest-path Ring routing, and escape VCs.

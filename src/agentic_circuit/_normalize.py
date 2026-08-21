@@ -21,6 +21,7 @@ from ._resolve import (
 )
 from ._schemas import ComponentSchema, signature_for
 from ._static_eval import StaticEnvironment, StaticValue, evaluate_static
+from ._records import collect_record_definitions, record_by_name
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +53,7 @@ class NormalizedProgram:
     captures: tuple[ValueVersion, ...] = ()
     flow_boundaries: tuple[FlowBoundary, ...] = ()
     host_inputs: tuple[tuple[str, str], ...] = ()
+    host_outputs: tuple[tuple[str, str], ...] = ()
 
     def value_names(self) -> tuple[str, ...]:
         return tuple(value.name for value in self.values)
@@ -141,11 +143,13 @@ class _Normalizer:
         self._captures: list[ValueVersion] = []
         self._flow_boundaries: list[FlowBoundary] = []
         self._host_inputs: list[tuple[str, str]] = []
+        self._host_outputs: list[tuple[str, str]] = []
         symbols = dict(captured.symbols)
         from ._resources import QueueSpec
         from ._types import FlowBundle
         queues_by_name: dict[str, QueueSpec] = {}
         host_inputs_by_queue: dict[str, str] = {}
+        host_outputs_by_queue: dict[str, str] = {}
         for symbolic in symbols.values():
             candidates = symbolic if isinstance(symbolic, (tuple, list)) else (symbolic,)
             for candidate in candidates:
@@ -153,23 +157,22 @@ class _Normalizer:
                     queues_by_name[candidate.name] = candidate
                     if candidate.host_input is not None:
                         host_inputs_by_queue[candidate.name] = candidate.host_input
+                    if candidate.host_output is not None:
+                        host_outputs_by_queue[candidate.name] = candidate.host_output
         self._host_inputs = sorted(host_inputs_by_queue.items())
         if len({host_name for _queue, host_name in self._host_inputs}) != len(
             self._host_inputs
         ):
             raise ResolutionError("ACPY-HOST-001: host input names must be unique")
+        self._host_outputs = sorted(host_outputs_by_queue.items())
+        if len({host_name for _queue, host_name in self._host_outputs}) != len(
+            self._host_outputs
+        ):
+            raise ResolutionError("ACPY-HOST-001: host output names must be unique")
         for symbol_name, symbolic in captured.symbols:
             if not isinstance(symbolic, FlowBundle) or len(symbolic.shape) != 1:
                 continue
             protocol_name = getattr(symbolic.protocol, "__name__", "ReadyValid")
-            value = ValueVersion(
-                symbol_name,
-                0,
-                "flow_bundle",
-                f"FlowBundle[int, {protocol_name}, {symbolic.shape[0]}]",
-                "boundary:export",
-                "borrowed",
-            )
             queue_specs = []
             for leaf in symbolic.leaves:
                 queue_name = leaf.stable_name.removesuffix(".flow")
@@ -177,6 +180,19 @@ class _Normalizer:
                 if queue is None:
                     raise ResolutionError(f"exported Flow queue {queue_name!r} is not captured")
                 queue_specs.append((queue.name, queue.payload_type, queue.protocol, queue.depth))
+            payloads = {item[1] for item in queue_specs}
+            if len(payloads) != 1:
+                raise ResolutionError("exported Flow queues must share one payload")
+            payload = next(iter(payloads))
+            payload_key = "int" if payload == "i32" else payload
+            value = ValueVersion(
+                symbol_name,
+                0,
+                "flow_bundle",
+                f"FlowBundle[{payload_key}, {protocol_name}, {symbolic.shape[0]}]",
+                "boundary:export",
+                "borrowed",
+            )
             self._current[symbol_name] = value
             self._captures.append(value)
             self._flow_boundaries.append(FlowBoundary(value, "export", tuple(queue_specs)))
@@ -357,6 +373,17 @@ class _Normalizer:
                 raise ResolutionError("instance name must be a non-empty static string")
             input_ports = len(input_values)
             output_ports = len(target_names)
+            bundle_specs = tuple(_bundle_spec_from_key(value.type_key) for value in input_values)
+            if any(spec is None for spec in bundle_specs):
+                raise ResolutionError(f"{display_name} inputs must be typed FlowBundles")
+            exact_bundle_specs = tuple(spec for spec in bundle_specs if spec is not None)
+            payload_fields: dict[str, StaticValue] = {}
+            payload_keys = {spec[0] for spec in exact_bundle_specs}
+            protocols = {spec[1] for spec in exact_bundle_specs}
+            shapes = {spec[2] for spec in exact_bundle_specs}
+            if len(payload_keys) != 1 or protocols != {"ReadyValid"}:
+                raise ResolutionError(f"{display_name} inputs must share one ready-valid payload")
+            payload_key = next(iter(payload_keys))
             if schema.identity == "ac.std.Crossbar":
                 integers = (
                     "virtual_channels", "ingress_depth", "egress_depth", "route_offset", "route_width"
@@ -383,6 +410,10 @@ class _Normalizer:
                 if input_ports * output_ports * vc > 4096:
                     raise ResolutionError("Crossbar input_ports * output_ports * virtual_channels exceeds 4096")
                 topology_fields: dict[str, StaticValue] = {}
+                if payload_key != "int" or shapes != {vc}:
+                    raise ResolutionError(
+                        "Crossbar inputs must have FlowBundle[int, ReadyValid] leaves"
+                    )
             elif schema.identity in {"ac.std.RingNoC", "ac.std.MeshNoC"}:
                 vc = 1
                 numeric = ("queue_depth", "route_offset")
@@ -406,6 +437,11 @@ class _Normalizer:
                     raise ResolutionError(f"{display_name} queue_depth must be in [1, 64]")
                 if offset < 0:
                     raise ResolutionError(f"{display_name} route_offset must be >= 0")
+                if shapes != {1}:
+                    raise ResolutionError(f"{display_name} inputs must have shape (1,)")
+                route_field = static_values["route_field"]
+                if type(route_field) is not str:
+                    raise ResolutionError(f"{display_name} route_field must be a static string")
                 if schema.identity == "ac.std.RingNoC":
                     if static_values["arbitration"] != "greedy_fixed_priority":
                         raise ResolutionError(
@@ -470,17 +506,30 @@ class _Normalizer:
                     }
                 if offset + route_width > 32:
                     raise ResolutionError(f"{display_name} destination bits exceed i32 payload")
+                if payload_key == "int":
+                    if route_field:
+                        raise ResolutionError(f"{display_name} i32 payload must omit route_field")
+                else:
+                    packet = record_by_name(
+                        payload_key, collect_record_definitions(self._captured)
+                    )
+                    field = (
+                        next((field for field in packet.fields if field.name == route_field), None)
+                        if packet is not None and packet.kind == "packet"
+                        else None
+                    )
+                    if field is None or field.acir_type != "i32":
+                        raise ResolutionError(
+                            f"{display_name} route_field must name a top-level i32 Packet field"
+                        )
+                    assert packet is not None
+                    payload_fields["payload_size"] = packet.size
             else:
                 raise ResolutionError(
                     f"unsupported compiler-native generator {schema.identity!r}; "
                     "supported generators: ac.std.Crossbar, ac.std.MeshNoC, ac.std.RingNoC"
                 )
             for expression, value in zip(inputs_expression.elts, input_values, strict=True):
-                bundle_spec = _bundle_spec_from_key(value.type_key)
-                if bundle_spec is not None and bundle_spec != ("int", "ReadyValid", vc):
-                    raise ResolutionError(
-                        f"{display_name} input {value.source_name!r} must have shape ({vc},) and Flow[int, ReadyValid] leaves"
-                    )
                 self._consume_bundle(value, expression)
         except (ResolutionError, ValueError, TypeError) as error:
             count = (
@@ -507,7 +556,7 @@ class _Normalizer:
             self._new_value(
                 name,
                 "flow_bundle",
-                f"FlowBundle[int, ReadyValid, {vc}]",
+                f"FlowBundle[{payload_key}, ReadyValid, {vc}]",
                 entity_key,
                 "owned",
             )
@@ -520,8 +569,9 @@ class _Normalizer:
             "input_ports": input_ports,
             "output_ports": output_ports,
             "virtual_channels": vc,
-            "payload": "i32",
+            "payload": "i32" if payload_key == "int" else payload_key,
             "protocol": "ready_valid",
+            **payload_fields,
             **topology_fields,
         }
         fingerprint = sha256_bytes(
@@ -718,8 +768,9 @@ class _Normalizer:
         if bundle is None or bundle[2] != len(queues):
             self._error("ACPY-FLOW-007", "Queue tuple and FlowBundle shape must match", node)
             return
-        if any(payload != "i32" or protocol != "ready_valid" for _, payload, protocol, _ in queues):
-            self._error("ACPY-FLOW-005", "Crossbar boundaries require i32/ready_valid queues", node)
+        expected_payload = "i32" if bundle[0] == "int" else bundle[0]
+        if any(payload != expected_payload or protocol != "ready_valid" for _, payload, protocol, _ in queues):
+            self._error("ACPY-FLOW-005", "Flow payload or protocol does not match destination Queue", node)
             return
         self._flow_boundaries.append(FlowBoundary(value, "import", tuple(queues)))
 
@@ -819,6 +870,7 @@ class _Normalizer:
             captures=tuple(self._captures),
             flow_boundaries=tuple(self._flow_boundaries),
             host_inputs=tuple(self._host_inputs),
+            host_outputs=tuple(self._host_outputs),
         )
 
 

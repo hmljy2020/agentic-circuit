@@ -18,6 +18,7 @@ from ._canonical_json import sha256_bytes, utf16_sort_key
 from ._diagnostics import SourceSpan
 from ._frontend import CapturedProgram
 from ._normalize import NormalizedProgram
+from ._records import RecordDefinition, collect_record_definitions, named_acir_type
 from ._process import ProcessProgram
 from ._resolve import ValueVersion
 from ._static_eval import StaticValue
@@ -95,6 +96,35 @@ def annotation_type_to_acir(type_key: str) -> str:
     )
 
 
+def _payload_acir(type_key: str, records: tuple[RecordDefinition, ...]) -> str:
+    primitive = {
+        "bool": "i1",
+        "int": "i32",
+        "i1": "i1",
+        "i8": "i8",
+        "i16": "i16",
+        "i32": "i32",
+        "i64": "i64",
+        "f32": "f32",
+        "f64": "f64",
+    }.get(type_key)
+    if primitive is not None:
+        return primitive
+    named = named_acir_type(type_key, records)
+    if named is not None:
+        return named
+    if type_key.startswith("!ac."):
+        return type_key
+    raise ValueError(f"ACPY-TYPE-PACKET: unresolved payload type {type_key!r}")
+
+
+def _packet_size(type_key: str, records: tuple[RecordDefinition, ...]) -> int | None:
+    return next(
+        (record.size for record in records if record.kind == "packet" and record.name == type_key),
+        None,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class AcirArtifact:
     text: str
@@ -132,6 +162,29 @@ def build_verified_acpy(
         source=system_site.span,
         properties=_properties(root=program.definition),
     )
+    records = collect_record_definitions(captured)
+    for record in records:
+        allocator.allocate(
+            kind=record.kind,  # type: ignore[arg-type]
+            scope="types",
+            source=record.site.span,
+            parent=system.id,
+            type=record.acir_type,
+            properties=_properties(
+                alignment=record.alignment,
+                endianness=record.endianness,
+                fields=tuple(
+                    (
+                        field.name,
+                        field.type_key,
+                        field.offset,
+                    )
+                    for field in record.fields
+                ),
+                name=record.name,
+                size=record.size,
+            ),
+        )
     module = allocator.allocate(
         kind="module",
         scope=program.definition,
@@ -290,6 +343,33 @@ def _argument_types(program: NormalizedProgram) -> dict[str, str]:
     return inferred
 
 
+def _emit_type_scope(records: tuple[RecordDefinition, ...]) -> list[str]:
+    if not records:
+        return []
+    lines = ["  ac.type_scope @types {"]
+    for record in records:
+        fields = ", ".join(
+            f'{{name = {json.dumps(field.name)}, type = {field.acir_type}}}'
+            for field in record.fields
+        )
+        lines.append(f"    ac.{record.kind} @{record.name} fields [{fields}]")
+    layouts = []
+    for record in records:
+        members = (
+            f'abi_alignment = {record.alignment} : i64, '
+            f'endianness = {json.dumps(record.endianness)}, '
+            f'preferred_alignment = {record.alignment} : i64, '
+        )
+        if record.kind == "packet":
+            members += f'serialization_width = {record.size} : i64, '
+        members += f'size = {record.size} : i64'
+        layouts.append(f"{record.acir_type} = {{{members}}}")
+    lines.append("  } {dlti.dl_spec = #dlti.dl_spec<")
+    lines.append("    " + ",\n    ".join(layouts))
+    lines.append("  >}")
+    return lines
+
+
 def _crossbar_parameters(call: object) -> dict[str, StaticValue]:
     return dict(call.static_arguments)  # type: ignore[attr-defined]
 
@@ -444,9 +524,15 @@ def _generator_symbol(call: object) -> str:
     )
 
 
-def _queue_line(name: str, depth: int) -> str:
+def _generator_payload_type(call: object) -> str:
+    payload = str(_generator_parameters(call)["payload"])
+    return "i32" if payload == "i32" else f"!ac.packet<@types::@{payload}>"
+
+
+def _queue_line(name: str, depth: int, payload_type: str = "i32", payload_size: int | None = None) -> str:
+    bytes_text = f" bytes {depth * payload_size}" if payload_size is not None else ""
     return (
-        f"    ac.queue @{name} payload i32 entries {depth} ordering \"fifo\" "
+        f"    ac.queue @{name} payload {payload_type} entries {depth}{bytes_text} ordering \"fifo\" "
         f"protocol @ready_valid ownership \"exclusive\" id \"{name}\" path \"{name}\""
     )
 
@@ -460,17 +546,19 @@ def _resource_line(name: str) -> str:
     )
 
 
-def _noc_header(call: object) -> tuple[list[str], int, int, str]:
+def _noc_header(call: object) -> tuple[list[str], int, int, str, str, int | None]:
     parameters = _generator_parameters(call)
     nodes = int(parameters["nodes"])
     depth = int(parameters["queue_depth"])
     symbol = _generator_symbol(call)
-    flow_type = "!ac.flow<i32, @ready_valid>"
+    payload_type = _generator_payload_type(call)
+    payload_size = int(parameters["payload_size"]) if "payload_size" in parameters else None
+    flow_type = f"!ac.flow<{payload_type}, @ready_valid>"
     arguments = ", ".join(f"%input{node} : {flow_type}" for node in range(nodes))
     results = ", ".join(flow_type for _ in range(nodes))
     signature = flow_type if nodes == 1 else f"({results})"
     static_text = _static_arguments(call.static_arguments)  # type: ignore[attr-defined]
-    return ([f"  ac.module @{symbol}({arguments}) -> {signature} parameters {{{static_text}}} graph {{"], nodes, depth, flow_type)
+    return ([f"  ac.module @{symbol}({arguments}) -> {signature} parameters {{{static_text}}} graph {{"], nodes, depth, flow_type, payload_type, payload_size)
 
 
 def _noc_scheduler(
@@ -479,6 +567,7 @@ def _noc_scheduler(
     egresses: list[tuple[str, str]],
     route_requests: dict[tuple[str, str], str],
     decode: list[str],
+    payload_type: str,
     arbitration: str = "greedy_fixed_priority",
 ) -> list[str]:
     """Emit one deterministic output-major, ingress-minor NoC scheduler."""
@@ -486,7 +575,7 @@ def _noc_scheduler(
     lines = [f"    ac.process @node{node}_scheduler kind \"control\" {{"]
     for ingress_name, queue in ingresses:
         lines.append(
-            f"      %head_{ingress_name}, %valid_{ingress_name} = ac.peek @{queue} : i32"
+            f"      %head_{ingress_name}, %valid_{ingress_name} = ac.peek @{queue} : {payload_type}"
         )
     lines.extend(decode)
     for egress_name, queue in egresses:
@@ -586,7 +675,7 @@ def _noc_scheduler(
     lines.append("      ] : (" + ", ".join("i1" for _ in candidates) + ")")
     for index, (_request, _ingress_name, ingress_queue, _egress_name, egress_queue) in enumerate(candidates):
         lines.append(
-            f"      %fire_{index} = ac.try_transfer @{ingress_queue} to @{egress_queue} when %grant_{index} : i32"
+            f"      %fire_{index} = ac.try_transfer @{ingress_queue} to @{egress_queue} when %grant_{index} : {payload_type}"
         )
     for egress_name, (pointer, indices) in rr_pointers.items():
         next_pointer = pointer
@@ -610,14 +699,15 @@ def _noc_scheduler(
 
 
 def _ring_declaration(call: object) -> list[str]:
-    lines, nodes, depth, flow_type = _noc_header(call)
+    lines, nodes, depth, flow_type, payload_type, payload_size = _noc_header(call)
     parameters = _generator_parameters(call)
     offset = int(parameters["route_offset"])
     route_width = int(parameters["route_width"])
+    route_field = str(parameters["route_field"])
     for node in range(nodes):
-        lines.append(_queue_line(f"node{node}_local_in", depth))
-        lines.append(_queue_line(f"node{node}_local_out", depth))
-        lines.append(_queue_line(f"link_n{node}_to_n{(node + 1) % nodes}_cw", depth))
+        lines.append(_queue_line(f"node{node}_local_in", depth, payload_type, payload_size))
+        lines.append(_queue_line(f"node{node}_local_out", depth, payload_type, payload_size))
+        lines.append(_queue_line(f"link_n{node}_to_n{(node + 1) % nodes}_cw", depth, payload_type, payload_size))
     for node in range(nodes):
         lines.append(f"    ac.flow.import %input{node} to @node{node}_local_in : {flow_type}")
         lines.append(f"    %output{node} = ac.flow.export @node{node}_local_out : {flow_type}")
@@ -641,6 +731,12 @@ def _ring_declaration(call: object) -> list[str]:
         requests: dict[tuple[str, str], str] = {}
         for ingress_name, _queue in ingresses:
             source = f"%head_{ingress_name}"
+            if route_field:
+                source = f"%route_value_{ingress_name}"
+                decode.append(
+                    f"      {source} = ac.record.get %head_{ingress_name} "
+                    f"{{field = {json.dumps(route_field)}}} : ({payload_type}) -> i32"
+                )
             if offset:
                 decode.append(f"      %shifted_{ingress_name} = arith.shrui {source}, %route_shift : i32")
                 source = f"%shifted_{ingress_name}"
@@ -654,7 +750,7 @@ def _ring_declaration(call: object) -> list[str]:
             requests[("local", ingress_name)] = f"%route_local_{ingress_name}"
             requests[("cw", ingress_name)] = f"%route_cw_{ingress_name}"
         decode.insert(1, f"      %this_node = arith.constant {node} : i32")
-        lines.extend(_noc_scheduler(node, ingresses, egresses, requests, decode))
+        lines.extend(_noc_scheduler(node, ingresses, egresses, requests, decode, payload_type))
     result_types = ", ".join(flow_type for _ in range(nodes))
     lines.append(f"    ac.return {', '.join(f'%output{node}' for node in range(nodes))} : {result_types}")
     lines.append("  }")
@@ -670,7 +766,7 @@ _MESH_DIRECTIONS = {
 
 
 def _mesh_declaration(call: object) -> list[str]:
-    lines, nodes, depth, flow_type = _noc_header(call)
+    lines, nodes, depth, flow_type, payload_type, payload_size = _noc_header(call)
     parameters = _generator_parameters(call)
     width = int(parameters["width"])
     height = int(parameters["height"])
@@ -678,9 +774,10 @@ def _mesh_declaration(call: object) -> list[str]:
     x_width = int(parameters["route_x_width"])
     y_width = int(parameters["route_y_width"])
     arbitration = str(parameters["arbitration"])
+    route_field = str(parameters["route_field"])
     for node in range(nodes):
-        lines.append(_queue_line(f"node{node}_local_in", depth))
-        lines.append(_queue_line(f"node{node}_local_out", depth))
+        lines.append(_queue_line(f"node{node}_local_in", depth, payload_type, payload_size))
+        lines.append(_queue_line(f"node{node}_local_out", depth, payload_type, payload_size))
     for node in range(nodes):
         x, y = node % width, node // width
         for direction in ("north", "east", "south", "west"):
@@ -688,7 +785,7 @@ def _mesh_declaration(call: object) -> list[str]:
             nx, ny = x + dx, y + dy
             if 0 <= nx < width and 0 <= ny < height:
                 neighbor = ny * width + nx
-                lines.append(_queue_line(f"link_n{node}_to_n{neighbor}_{direction}", depth))
+                lines.append(_queue_line(f"link_n{node}_to_n{neighbor}_{direction}", depth, payload_type, payload_size))
     if arbitration == "round_robin":
         for node in range(nodes):
             x, y = node % width, node // width
@@ -733,6 +830,12 @@ def _mesh_declaration(call: object) -> list[str]:
         requests: dict[tuple[str, str], str] = {}
         for ingress_name, _queue in ingresses:
             source = f"%head_{ingress_name}"
+            if route_field:
+                source = f"%route_value_{ingress_name}"
+                decode.append(
+                    f"      {source} = ac.record.get %head_{ingress_name} "
+                    f"{{field = {json.dumps(route_field)}}} : ({payload_type}) -> i32"
+                )
             if offset:
                 decode.append(f"      %shifted_{ingress_name} = arith.shrui {source}, %route_shift : i32")
                 source = f"%shifted_{ingress_name}"
@@ -770,6 +873,7 @@ def _mesh_declaration(call: object) -> list[str]:
                 egresses,
                 requests,
                 decode,
+                payload_type,
                 arbitration=arbitration,
             )
         )
@@ -802,12 +906,12 @@ def _boundary_symbol(direction: str, value: ValueVersion) -> str:
     return f"{prefix}__{_ssa(value)}"
 
 
-def _flow_boundary_declarations(program: NormalizedProgram) -> list[str]:
+def _flow_boundary_declarations(program: NormalizedProgram, records: tuple[RecordDefinition, ...]) -> list[str]:
     lines: list[str] = []
     for boundary in program.flow_boundaries:
         symbol = _boundary_symbol(boundary.direction, boundary.value)
         flow_types = tuple(
-            f"!ac.flow<{payload}, @{protocol}>"
+            f"!ac.flow<{_payload_acir(payload, records)}, @{protocol}>"
             for _name, payload, protocol, _depth in boundary.queues
         )
         if boundary.direction == "export":
@@ -825,11 +929,11 @@ def _flow_boundary_declarations(program: NormalizedProgram) -> list[str]:
         returned: list[str] = []
         for vc, (queue_name, payload, protocol, depth) in enumerate(boundary.queues):
             lines.append(
-                f"    ac.queue @{queue_name} payload {payload} entries {depth} ordering \"fifo\" "
+                f"    ac.queue @{queue_name} payload {_payload_acir(payload, records)} entries {depth} ordering \"fifo\" "
                 f"protocol @{protocol} ownership \"exclusive\" id \"{queue_name}\" path \"{queue_name}\""
             )
         for vc, (queue_name, payload, protocol, _depth) in enumerate(boundary.queues):
-            flow_type = f"!ac.flow<{payload}, @{protocol}>"
+            flow_type = f"!ac.flow<{_payload_acir(payload, records)}, @{protocol}>"
             if boundary.direction == "export":
                 value = f"%vc{vc}"
                 lines.append(f"    {value} = ac.flow.export @{queue_name} : {flow_type}")
@@ -844,7 +948,7 @@ def _flow_boundary_declarations(program: NormalizedProgram) -> list[str]:
     return lines
 
 
-def _component_declarations(program: NormalizedProgram) -> list[str]:
+def _component_declarations(program: NormalizedProgram, records: tuple[RecordDefinition, ...]) -> list[str]:
     schemas = {
         call.schema.identity: call.schema
         for call in program.calls
@@ -908,11 +1012,35 @@ def _component_declarations(program: NormalizedProgram) -> list[str]:
             specializations.setdefault(call.specialization, call)
     for fingerprint in sorted(specializations, key=utf16_sort_key):
         lines.extend(_generator_declaration(specializations[fingerprint]))
-    lines.extend(_flow_boundary_declarations(program))
+    lines.extend(_flow_boundary_declarations(program, records))
     return lines
 
 
-def _emit_process(process: ProcessProgram, kind: str) -> list[str]:
+def _process_arguments(arguments: tuple[str, ...]) -> tuple[list[str], dict[str, str]]:
+    positional: list[str] = []
+    keywords: dict[str, str] = {}
+    for argument in arguments:
+        if "=" in argument:
+            name, value = argument.split("=", 1)
+            keywords[name] = value
+        else:
+            positional.append(argument)
+    return positional, keywords
+
+
+def _static_string(value: str, context: str) -> str:
+    try:
+        parsed = ast.literal_eval(value)
+    except (ValueError, SyntaxError) as error:
+        raise ValueError(f"ACPY-PROCESS-003: {context} must be a static string") from error
+    if type(parsed) is not str or not parsed:
+        raise ValueError(f"ACPY-PROCESS-003: {context} must be a non-empty static string")
+    return parsed
+
+
+def _emit_process(
+    process: ProcessProgram, kind: str, records: tuple[RecordDefinition, ...]
+) -> list[str]:
     queue_names: dict[str, tuple[str, str]] = {}
     for capture in process.captures:
         match = re.fullmatch(r"QueueSpec\[([^,]+),([^,]+),(\d+),([^]]+)\]", capture.type_key)
@@ -925,30 +1053,153 @@ def _emit_process(process: ProcessProgram, kind: str) -> list[str]:
     if block.edge.kind != "suspend" or block.edge.operation != "yield_sim":
         raise ValueError("ACPY-VERIFY-001: unsupported process operation shape")
     lines = [f"    ac.process @{_symbol(process.name)} kind {json.dumps(kind)} {{"]
+    value_types: dict[str, str] = {}
+
+    def emit_value(expression: str, expected: str, index: int, label: str) -> str:
+        if _SYMBOL.fullmatch(expression):
+            actual = value_types.get(expression)
+            if actual is not None and actual != expected:
+                raise ValueError(
+                    f"ACPY-PROCESS-003: {expression!r} has type {actual}, expected {expected}"
+                )
+            return f"%{expression}"
+        try:
+            literal = ast.literal_eval(expression)
+        except (ValueError, SyntaxError) as error:
+            raise ValueError("ACPY-PROCESS-003: Packet fields require SSA names or scalar literals") from error
+        name = f"%{label}_{index}_{len(lines)}"
+        if expected.startswith("i") and expected[1:].isdigit() and type(literal) is int:
+            lines.append(f"      {name} = arith.constant {literal} : {expected}")
+            return name
+        if expected in {"f32", "f64"} and type(literal) in {int, float}:
+            lines.append(f"      {name} = arith.constant {float(literal)} : {expected}")
+            return name
+        raise ValueError(f"ACPY-PROCESS-003: literal is incompatible with {expected}")
+
     for index, action in enumerate(block.actions):
+        if action.operation.startswith("record_create:"):
+            if not isinstance(action.result, str):
+                raise ValueError("ACPY-PROCESS-003: record construction requires one result")
+            name = action.operation.partition(":")[2]
+            record = next((item for item in records if item.name == name), None)
+            if record is None:
+                raise ValueError(f"ACPY-TYPE-PACKET: unknown record {name!r}")
+            positional, keywords = _process_arguments(action.arguments)
+            if positional or set(keywords) != {field.name for field in record.fields}:
+                raise ValueError(
+                    f"ACPY-PROCESS-003: {name} constructor requires every field by name"
+                )
+            operands = [
+                emit_value(keywords[field.name], field.acir_type, index, field.name)
+                for field in record.fields
+            ]
+            fields = ", ".join(json.dumps(field.name) for field in record.fields)
+            types = ", ".join(field.acir_type for field in record.fields)
+            lines.append(
+                f"      %{action.result} = ac.record.create {', '.join(operands)} "
+                f"{{field_names = [{fields}]}} : ({types}) -> {record.acir_type}"
+            )
+            value_types[action.result] = record.acir_type
+            continue
+        if action.operation == "record_get":
+            positional, keywords = _process_arguments(action.arguments)
+            if len(positional) != 1 or set(keywords) != {"field"} or not isinstance(action.result, str):
+                raise ValueError("ACPY-PROCESS-003: record_get requires record and field")
+            record_type = value_types.get(positional[0])
+            record = next((item for item in records if item.acir_type == record_type), None)
+            field_name = _static_string(keywords["field"], "record field")
+            field = next((item for item in record.fields if item.name == field_name), None) if record else None
+            if field is None:
+                raise ValueError(f"ACPY-PROCESS-003: unknown record field {field_name!r}")
+            lines.append(
+                f"      %{action.result} = ac.record.get %{positional[0]} "
+                f"{{field = {json.dumps(field_name)}}} : ({record.acir_type}) -> {field.acir_type}"
+            )
+            value_types[action.result] = field.acir_type
+            continue
+        if action.operation == "record_with":
+            positional, keywords = _process_arguments(action.arguments)
+            if len(positional) != 1 or set(keywords) != {"field", "value"} or not isinstance(action.result, str):
+                raise ValueError("ACPY-PROCESS-003: record_with requires record, field, and value")
+            record_type = value_types.get(positional[0])
+            record = next((item for item in records if item.acir_type == record_type), None)
+            field_name = _static_string(keywords["field"], "record field")
+            field = next((item for item in record.fields if item.name == field_name), None) if record else None
+            if field is None or record is None:
+                raise ValueError(f"ACPY-PROCESS-003: unknown record field {field_name!r}")
+            replacement = emit_value(keywords["value"], field.acir_type, index, "with")
+            lines.append(
+                f"      %{action.result} = ac.record.with %{positional[0]}, {replacement} "
+                f"{{field = {json.dumps(field_name)}}} : ({record.acir_type}, {field.acir_type}) -> {record.acir_type}"
+            )
+            value_types[action.result] = record.acir_type
+            continue
+        if action.operation == "packet_serialize":
+            positional, keywords = _process_arguments(action.arguments)
+            if len(positional) != 1 or keywords or not isinstance(action.result, str):
+                raise ValueError("ACPY-PROCESS-003: packet_serialize requires one Packet")
+            record_type = value_types.get(positional[0])
+            record = next(
+                (item for item in records if item.kind == "packet" and item.acir_type == record_type),
+                None,
+            )
+            if record is None:
+                raise ValueError("ACPY-PROCESS-003: packet_serialize operand is not a Packet")
+            result_type = f"!ac.vector<{record.size} x i8>"
+            lines.append(
+                f"      %{action.result} = ac.packet.serialize %{positional[0]} "
+                f"{{packet = @types::@{record.name}}} : ({record.acir_type}) -> {result_type}"
+            )
+            value_types[action.result] = result_type
+            continue
+        if action.operation == "packet_deserialize":
+            positional, keywords = _process_arguments(action.arguments)
+            if len(positional) != 2 or keywords or not isinstance(action.result, str):
+                raise ValueError("ACPY-PROCESS-003: packet_deserialize requires Packet type and bytes")
+            record = next(
+                (item for item in records if item.kind == "packet" and item.name == positional[0]),
+                None,
+            )
+            bytes_type = value_types.get(positional[1])
+            if record is None or bytes_type != f"!ac.vector<{record.size} x i8>":
+                raise ValueError("ACPY-PROCESS-003: packet_deserialize type or byte width mismatch")
+            lines.append(
+                f"      %{action.result} = ac.packet.deserialize %{positional[1]} "
+                f"{{packet = @types::@{record.name}}} : ({bytes_type}) -> {record.acir_type}"
+            )
+            value_types[action.result] = record.acir_type
+            continue
         if action.operation not in {"try_send", "try_recv"} or not action.arguments:
-            raise ValueError("ACPY-VERIFY-001: only single-block Queue actions are supported")
+            raise ValueError("ACPY-VERIFY-001: only typed single-block Queue actions are supported")
         queue = queue_names.get(action.arguments[0])
         if queue is None:
             raise ValueError("ACPY-VERIFY-001: Queue action target is not root-owned")
         queue_name, payload_type = queue
         if action.operation == "try_send":
             if len(action.arguments) != 2:
-                raise ValueError("ACPY-PROCESS-003: try_send requires queue and i32 payload")
+                raise ValueError("ACPY-PROCESS-003: try_send requires queue and payload")
             payload = action.arguments[1]
             if re.fullmatch(r"-?[0-9]+", payload):
+                if payload_type != "i32":
+                    raise ValueError("ACPY-PROCESS-003: only i32 Queue accepts an integer literal")
                 value = f"%send_value_{index}"
                 lines.append(f"      {value} = arith.constant {payload} : i32")
             elif _SYMBOL.fullmatch(payload):
                 value = f"%{payload}"
+                expected = _payload_acir(payload_type, records)
+                if value_types.get(payload) not in {None, expected}:
+                    raise ValueError("ACPY-PROCESS-003: try_send payload type mismatch")
             else:
-                raise ValueError("ACPY-PROCESS-003: try_send payload must be one i32 value")
+                raise ValueError("ACPY-PROCESS-003: try_send payload must be one SSA value")
             result = (
                 f"%{action.result}"
                 if isinstance(action.result, str)
                 else f"%send_accepted_{index}"
             )
-            lines.append(f"      {result} = ac.try_send @{queue_name} {value} : {payload_type}")
+            queue_type = _payload_acir(payload_type, records)
+            lines.append(f"      {result} = ac.try_send @{queue_name} {value} : {queue_type}")
+            if isinstance(action.result, str):
+                value_types[action.result] = "i1"
         else:
             if len(action.arguments) != 1:
                 raise ValueError("ACPY-PROCESS-003: try_recv requires one queue")
@@ -958,7 +1209,10 @@ def _emit_process(process: ProcessProgram, kind: str) -> list[str]:
                 value, received = f"%recv_value_{index}", f"%{action.result}"
             else:
                 value, received = f"%recv_value_{index}", f"%recv_received_{index}"
-            lines.append(f"      {value}, {received} = ac.try_recv @{queue_name} : {payload_type}")
+            queue_type = _payload_acir(payload_type, records)
+            lines.append(f"      {value}, {received} = ac.try_recv @{queue_name} : {queue_type}")
+            value_types[value.removeprefix("%")] = queue_type
+            value_types[received.removeprefix("%")] = "i1"
     lines.extend(("      ac.yield_sim", "    }"))
     return lines
 
@@ -969,6 +1223,7 @@ def lower_to_acir(
     *,
     system_name: str,
     processes: tuple[tuple[ProcessProgram, str], ...] = (),
+    records: tuple[RecordDefinition, ...] = (),
 ) -> AcirArtifact:
     errors = document.verify()
     if errors:
@@ -987,6 +1242,7 @@ def lower_to_acir(
         "results {id = \"default\", format = \"json\"} selected true"
     )
     lines.append(system)
+    lines.extend(_emit_type_scope(records))
     flow_specs: set[tuple[str, str]] = set()
     for argument in program.arguments:
         if (spec := _flow_spec(argument.type_key)) is not None:
@@ -995,7 +1251,7 @@ def lower_to_acir(
             flow_specs.add(bundle[:2])
     for call in program.calls:
         if call.schema.generator is not None:
-            flow_specs.add(("i32", "ready_valid"))
+            flow_specs.add((str(dict(call.static_arguments)["payload"]), "ready_valid"))
             continue
         for port in call.schema.ports:
             if (spec := _flow_spec(port.acir_type)) is not None:
@@ -1023,8 +1279,9 @@ def lower_to_acir(
             )
         )
         for index, payload in enumerate(sorted(protocols[protocol], key=utf16_sort_key)):
+            payload_type = _payload_acir(payload, records)
             lines.append(
-                f"    ac.event @transfer_{index} from @sender to @receiver payload {payload} action \"offer\""
+                f"    ac.event @transfer_{index} from @sender to @receiver payload {payload_type} action \"offer\""
             )
         lines.extend(
             (
@@ -1033,7 +1290,7 @@ def lower_to_acir(
                 "  }",
             )
         )
-    declarations = _component_declarations(program)
+    declarations = _component_declarations(program, records)
     if declarations:
         lines.extend(declarations)
 
@@ -1065,7 +1322,7 @@ def lower_to_acir(
             )
         if declared_width is not None and declared_width != width:
             raise ValueError("ACPY-CROSSBAR-001: FlowBundle VC shape mismatch")
-        flow_type = f"!ac.flow<{payload}, @{protocol}>"
+        flow_type = f"!ac.flow<{_payload_acir(payload, records)}, @{protocol}>"
         argument_parts.extend(
             f"%{argument.source_name}_vc{vc} : {flow_type}" for vc in range(width)
         )
@@ -1081,7 +1338,9 @@ def lower_to_acir(
         width = bundle_widths.get(value.name, declared_width)
         if width is None:
             raise ValueError("ACPY-TYPE-FLOW: cannot infer returned FlowBundle shape")
-        return_types_list.extend(f"!ac.flow<{payload}, @{protocol}>" for _ in range(width))
+        return_types_list.extend(
+            f"!ac.flow<{_payload_acir(payload, records)}, @{protocol}>" for _ in range(width)
+        )
     return_types = tuple(return_types_list)
     result_signature = (
         ""
@@ -1108,17 +1367,27 @@ def lower_to_acir(
         for boundary in program.flow_boundaries
         for queue_name, payload, protocol, depth in boundary.queues
     }
-    for queue_name, host_name in program.host_inputs:
+    host_inputs = dict(program.host_inputs)
+    host_outputs = dict(program.host_outputs)
+    for queue_name in sorted(set(host_inputs) | set(host_outputs), key=utf16_sort_key):
         if queue_name not in queue_specs:
             raise ValueError(
-                f"ACPY-HOST-001: host input queue {queue_name!r} must be exported as a Flow"
+                f"ACPY-HOST-001: host queue {queue_name!r} must participate in a Flow boundary"
             )
         payload, protocol, depth = queue_specs[queue_name]
         declared_queues.add(queue_name)
+        payload_type = _payload_acir(payload, records)
+        byte_capacity = _packet_size(payload, records)
+        bytes_text = f" bytes {depth * byte_capacity}" if byte_capacity is not None else ""
+        attributes = []
+        if queue_name in host_inputs:
+            attributes.append(f"ac.host_input = {json.dumps(host_inputs[queue_name])}")
+        if queue_name in host_outputs:
+            attributes.append(f"ac.host_output = {json.dumps(host_outputs[queue_name])}")
         lines.append(
-            f"    ac.queue @{queue_name} payload {payload} entries {depth} ordering \"fifo\" "
+            f"    ac.queue @{queue_name} payload {payload_type} entries {depth}{bytes_text} ordering \"fifo\" "
             f"protocol @{protocol} ownership \"exclusive\" id \"{queue_name}\" path \"{queue_name}\" "
-            f"{{ac.host_input = {json.dumps(host_name)}}}"
+            f"{{{', '.join(attributes)}}}"
         )
     for process, _kind in processes:
         for capture in process.captures:
@@ -1132,7 +1401,7 @@ def lower_to_acir(
                 continue
             declared_queues.add(queue_name)
             lines.append(
-                f"    ac.queue @{queue_name} payload {payload} entries {depth} ordering \"fifo\" "
+                f"    ac.queue @{queue_name} payload {_payload_acir(payload, records)} entries {depth} ordering \"fifo\" "
                 f"protocol @{protocol} ownership \"exclusive\" id \"{queue_name}\" path \"{queue_name}\""
             )
     for boundary in program.flow_boundaries:
@@ -1143,7 +1412,7 @@ def lower_to_acir(
             for vc in range(len(boundary.queues))
         )
         flow_types = tuple(
-            f"!ac.flow<{payload}, @{protocol}>"
+            f"!ac.flow<{_payload_acir(payload, records)}, @{protocol}>"
             for _name, payload, protocol, _depth in boundary.queues
         )
         if all(queue_name in declared_queues for queue_name, *_ in boundary.queues):
@@ -1172,7 +1441,7 @@ def lower_to_acir(
                 )
             ]
             operands = ", ".join(flattened_operands)
-            flow_type = "!ac.flow<i32, @ready_valid>"
+            flow_type = f"!ac.flow<{_generator_payload_type(call)}, @ready_valid>"
             operand_types = ", ".join(flow_type for _ in flattened_operands)
             flat_results = [
                 (binding, vc)
@@ -1218,7 +1487,7 @@ def lower_to_acir(
         source_map.append((f"@{root}::@{call.instance_name}", call.source))
 
     for process, kind in processes:
-        lines.extend(_emit_process(process, kind))
+        lines.extend(_emit_process(process, kind, records))
     for boundary in program.flow_boundaries:
         if boundary.direction != "import":
             continue
@@ -1226,7 +1495,7 @@ def lower_to_acir(
         if not isinstance(source, tuple) or len(source) != len(boundary.queues):
             raise ValueError("ACPY-FLOW-007: Queue tuple and FlowBundle shape must match")
         flow_types = tuple(
-            f"!ac.flow<{payload}, @{protocol}>"
+            f"!ac.flow<{_payload_acir(payload, records)}, @{protocol}>"
             for _name, payload, protocol, _depth in boundary.queues
         )
         if all(queue_name in declared_queues for queue_name, *_ in boundary.queues):

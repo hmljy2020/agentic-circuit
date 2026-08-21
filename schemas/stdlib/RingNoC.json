@@ -17,7 +17,7 @@
       "$assignment_arity",
       "virtual_channels"
     ],
-    "payload": "i32",
+    "payload": "$input_payload",
     "protocol": "ready_valid"
   },
   "static_parameters": [
@@ -35,6 +35,14 @@
       "required": false,
       "default": 0,
       "constraint": "value >= 0",
+      "cpp_mapping": "constexpr_argument"
+    },
+    {
+      "name": "route_field",
+      "acir_type": "!ac.static_string",
+      "required": false,
+      "default": "",
+      "constraint": "empty for i32 payload or names one top-level i32 Packet field",
       "cpp_mapping": "constexpr_argument"
     },
     {
@@ -58,7 +66,7 @@
     {
       "name": "inputs",
       "binding_kind": "flow",
-      "acir_type": "FlowBundle[int, ReadyValid]",
+      "acir_type": "FlowBundle[Payload, ReadyValid]",
       "direction": "in",
       "role": "consumer",
       "cardinality": "$input_arity",
@@ -71,7 +79,7 @@
   "results": [
     {
       "name": "outputs",
-      "acir_type": "FlowBundle[int, ReadyValid]",
+      "acir_type": "FlowBundle[Payload, ReadyValid]",
       "source_binding": null,
       "linearity": "linear",
       "ownership": "owned"
@@ -143,5 +151,5 @@
     "gauges": [],
     "histograms": []
   },
-  "schema_fingerprint": "sha256:3ca3c9717199374920657397607db4f7f55688c33a96f8de5b146fd97386afa1"
+  "schema_fingerprint": "sha256:5ef607eb7c89352a871a2c6747d1f2c73390af1277f222078b0abbb11dc74b84"
 }

@@ -223,6 +223,28 @@ class _ProcessBuilder:
             )
         declaration = self._registry.find(node.func.id)
         if declaration is None:
+            from ._definitions import Definition
+
+            record = self._symbols.get(node.func.id)
+            if isinstance(record, Definition) and record.kind in {"struct", "packet"}:
+                self._record_uses(
+                    self._current,
+                    (*node.args, *(keyword.value for keyword in node.keywords)),
+                )
+                arguments = tuple(ast.unparse(argument) for argument in node.args) + tuple(
+                    f"{keyword.arg}={ast.unparse(keyword.value)}" for keyword in node.keywords
+                )
+                source = _span(self._path, node)
+                self._effects.append(ProcessEffect("record_create", "pure", source))
+                self._current.actions.append(
+                    ProcessAction(
+                        f"record_create:{record.__name__}", arguments, result, "pure", source
+                    )
+                )
+                if result is not None:
+                    for name in result if isinstance(result, tuple) else (result,):
+                        self._record_definition(self._current, name)
+                return
             self._error(
                 "ACPY-EFFECT-003",
                 f"operation {node.func.id!r} has no declared process effect",

@@ -22,6 +22,7 @@ PUBLIC = {
     "view",
     "queue",
     "host_input_queue",
+    "host_output_queue",
     "ResourceRef",
     "address_space",
     "address_map",
@@ -31,9 +32,20 @@ PUBLIC = {
     "export_flow",
     "import_flow",
     "Endpoint",
+    "i8",
+    "i16",
+    "i32",
+    "i64",
+    "f32",
+    "f64",
+    "Vector",
     "try_send",
     "try_recv",
     "yield_sim",
+    "record_get",
+    "record_with",
+    "packet_serialize",
+    "packet_deserialize",
 }
 
 
@@ -157,6 +169,10 @@ class PublicApiTest(unittest.TestCase):
             lambda: api.array(1, 2),
             lambda: api.instances(1, 2),
             lambda: api.view(object(), "field"),
+            lambda: api.record_get(object(), field="field"),
+            lambda: api.record_with(object(), field="field", value=1),
+            lambda: api.packet_serialize(object()),
+            lambda: api.packet_deserialize(object(), object()),
         )
         for operation in operations:
             with self.subTest(operation=operation):

@@ -266,6 +266,7 @@ def elaborate_frontend(
     from ._lower_acir import build_verified_acpy, lower_to_acir
     from ._normalize import normalize_program
     from ._process import EffectDeclaration, EffectRegistry
+    from ._records import collect_record_definitions
 
     captured = capture_definitions(request, namespace, schemas)
     if captured.diagnostics:
@@ -294,6 +295,10 @@ def elaborate_frontend(
                 EffectDeclaration("yield_sim", "suspension", suspension=True),
                 EffectDeclaration("try_send", "queue"),
                 EffectDeclaration("try_recv", "queue"),
+                EffectDeclaration("record_get", "pure"),
+                EffectDeclaration("record_with", "pure"),
+                EffectDeclaration("packet_serialize", "pure"),
+                EffectDeclaration("packet_deserialize", "pure"),
             )
         )
         process_records = []
@@ -313,11 +318,13 @@ def elaborate_frontend(
             process_programs.append(process)
             process_records.append((process, kind))
         document = build_verified_acpy(captured, program, tuple(process_programs))
+        records = collect_record_definitions(captured)
         artifact = lower_to_acir(
             program,
             document,
             system_name=captured.selected_system.__name__,
             processes=tuple(process_records),
+            records=records,
         )
     except ValueError as error:
         message = str(error)

@@ -28,6 +28,8 @@ EntityKind: TypeAlias = Literal[
     "capture",
     "escape",
     "process",
+    "struct",
+    "packet",
 ]
 _ENTITY_KINDS = {
     "system",
@@ -46,6 +48,8 @@ _ENTITY_KINDS = {
     "capture",
     "escape",
     "process",
+    "struct",
+    "packet",
 }
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _PROPERTY_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")

@@ -24,6 +24,7 @@ def ACIR_TypeScopeOp : ACIR_Op<"type_scope", [
                         $_builder.getStringAttr(name));
     $_state.addRegion();
   }]>];
+  let assemblyFormat = "$sym_name $body attr-dict";
 }
 
 def ACIR_TypeAliasOp : ACIR_Op<"type_alias", [Symbol]> {
@@ -35,6 +36,7 @@ class ACIR_RecordDeclarationOp<string mnemonic>
     : ACIR_Op<mnemonic, [Symbol, ACIR_RecordLike]> {
   let arguments = (ins SymbolNameAttr:$sym_name, ArrayAttr:$fields);
   let hasVerifier = 1;
+  let assemblyFormat = "$sym_name `fields` $fields attr-dict";
 }
 
 def ACIR_StructOp : ACIR_RecordDeclarationOp<"struct">;
@@ -53,6 +55,7 @@ def ACIR_UnionOp : ACIR_Op<"union", [Symbol]> {
 def ACIR_PacketOp : ACIR_Op<"packet", [Symbol, ACIR_RecordLike]> {
   let arguments = (ins SymbolNameAttr:$sym_name, ArrayAttr:$fields);
   let hasVerifier = 1;
+  let assemblyFormat = "$sym_name `fields` $fields attr-dict";
 }
 
 def ACIR_TransactionOp : ACIR_RecordDeclarationOp<"transaction">;
@@ -61,30 +64,35 @@ def ACIR_RecordCreateOp : ACIR_Op<"record.create", [Pure]> {
   let arguments = (ins Variadic<AnyType>:$values, StrArrayAttr:$field_names);
   let results = (outs AnyType:$result);
   let hasVerifier = 1;
+  let assemblyFormat = "$values attr-dict `:` functional-type($values, results)";
 }
 
 def ACIR_RecordGetOp : ACIR_Op<"record.get", [Pure]> {
   let arguments = (ins AnyType:$record, StrAttr:$field);
   let results = (outs AnyType:$result);
   let hasVerifier = 1;
+  let assemblyFormat = "$record attr-dict `:` functional-type($record, results)";
 }
 
 def ACIR_RecordWithOp : ACIR_Op<"record.with", [Pure]> {
   let arguments = (ins AnyType:$record, AnyType:$value, StrAttr:$field);
   let results = (outs AnyType:$result);
   let hasVerifier = 1;
+  let assemblyFormat = "$record `,` $value attr-dict `:` functional-type(operands, results)";
 }
 
 def ACIR_PacketSerializeOp : ACIR_Op<"packet.serialize", [Pure]> {
   let arguments = (ins AnyType:$packet_value, SymbolRefAttr:$packet);
   let results = (outs AnyType:$bytes);
   let hasVerifier = 1;
+  let assemblyFormat = "$packet_value attr-dict `:` functional-type($packet_value, results)";
 }
 
 def ACIR_PacketDeserializeOp : ACIR_Op<"packet.deserialize", [Pure]> {
   let arguments = (ins AnyType:$bytes, SymbolRefAttr:$packet);
   let results = (outs AnyType:$packet_value);
   let hasVerifier = 1;
+  let assemblyFormat = "$bytes attr-dict `:` functional-type($bytes, results)";
 }
 
 def ACIR_InterfaceOp : ACIR_Op<"interface", [

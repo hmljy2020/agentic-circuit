@@ -137,8 +137,13 @@ llvm::Error emitPacketHelper(std::ostringstream &output,
       implementation.helperRole.empty() ||
       implementation.helperResult.empty())
     return processError("generated packet helper metadata is invalid");
+  std::string guard = "ACIR_GENERATED_PACKET_" + implementation.symbol;
+  std::transform(guard.begin(), guard.end(), guard.begin(), [](char value) {
+    return static_cast<char>(std::toupper(static_cast<unsigned char>(value)));
+  });
   auto endian = implementation.helperBigEndian ? "true" : "false";
-  output << "inline " << implementation.helperResult << ' ' << name.str()
+  output << "#ifndef " << guard << "\n#define " << guard << "\n"
+         << "inline " << implementation.helperResult << ' ' << name.str()
          << '(';
   for (size_t index = 0; index < implementation.helperInputs.size(); ++index) {
     if (index)
@@ -186,7 +191,7 @@ llvm::Error emitPacketHelper(std::ostringstream &output,
   } else {
     return processError("generated packet helper has an unknown role");
   }
-  output << "}\n";
+  output << "}\n#endif // " << guard << "\n";
   return llvm::Error::success();
 }
 

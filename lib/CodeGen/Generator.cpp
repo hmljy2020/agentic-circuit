@@ -867,7 +867,7 @@ llvm::Expected<GeneratedFile> modelHeader(const ModelPlan &plan,
          "gfsim::TerminationResult terminationResult() const { return "
          "system_.terminationResult(); }\n  "
          "std::size_t hostInputCount() const;\n  std::string_view "
-         "hostInputName(std::size_t index) const;\n  bool hostInputReady(std::size_t "
+         "hostInputName(std::size_t index) const;\n  std::size_t hostInputSize(std::size_t index) const;\n  bool hostInputReady(std::size_t "
          "index) const;\n  bool offer(std::size_t index, int32_t value);\n  "
          "bool offerBytes(std::size_t index, std::span<const std::byte> bytes);\n  void reset();\n  "
          "std::size_t hostOutputCount() const;\n  std::string_view hostOutputName(std::size_t index) const;\n  "
@@ -1027,6 +1027,15 @@ llvm::Expected<GeneratedFile> modelSource(const ModelPlan &plan) {
   }
   output << "};\n  return index < names.size() ? names[index] : "
             "std::string_view{};\n}\n\n"
+            "std::size_t Model::hostInputSize(std::size_t index) const {\n"
+            "  switch (index) {\n";
+  for (auto [index, input] : llvm::enumerate(hostInputs)) {
+    auto cpp = hostInputCppType(plan, *input);
+    if (!cpp)
+      return cpp.takeError();
+    output << "  case " << index << ": return sizeof(" << *cpp << ");\n";
+  }
+  output << "  default: return 0;\n  }\n}\n\n"
             "bool Model::hostInputReady(std::size_t index) const {\n"
             "  switch (index) {\n";
   for (auto [index, input] : llvm::enumerate(hostInputs))
@@ -1100,10 +1109,12 @@ llvm::Expected<GeneratedFile> modelSource(const ModelPlan &plan) {
     auto cpp = hostInputCppType(plan, *outputPlacement);
     if (!cpp)
       return cpp.takeError();
-    output << "  case " << index << ": {\n    auto value = host_out_"
-           << outputPlacement->memberName << ".take();\n"
-           << "    if (!value || bytes.size() != sizeof(" << *cpp
-           << ")) return false;\n";
+    output << "  case " << index << ": {\n"
+           << "    if (bytes.size() != sizeof(" << *cpp
+           << ")) return false;\n"
+           << "    auto value = host_out_" << outputPlacement->memberName
+           << ".take();\n"
+           << "    if (!value) return false;\n";
     if (llvm::StringRef(*cpp).starts_with("gfsim::AtomicPacket<"))
       output << "    std::copy(value->bytes.begin(), value->bytes.end(), bytes.begin());\n";
     else
@@ -1203,6 +1214,7 @@ ac_model *ac_model_create(void);
 void ac_model_destroy(ac_model *model);
 size_t ac_model_host_input_count(const ac_model *model);
 const char *ac_model_host_input_name(const ac_model *model, size_t index);
+size_t ac_model_host_input_size(const ac_model *model, size_t index);
 int ac_model_host_input_ready(const ac_model *model, size_t index);
 int ac_model_offer(ac_model *model, size_t index, int32_t value);
 int ac_model_offer_bytes(ac_model *model, size_t index, const uint8_t *bytes, size_t size);
@@ -1234,11 +1246,12 @@ GeneratedFile cApiSource() {
 #include <vector>
 struct ac_model { acsim_generated::Model model; std::vector<gfsim::StatSnapshot> stats; std::string error; };
 extern "C" {
-uint32_t ac_model_abi_version(void) { return 2; }
+uint32_t ac_model_abi_version(void) { return 3; }
 ac_model *ac_model_create(void) { try { return new ac_model; } catch (...) { return nullptr; } }
 void ac_model_destroy(ac_model *model) { delete model; }
 size_t ac_model_host_input_count(const ac_model *model) { return model ? model->model.hostInputCount() : 0; }
 const char *ac_model_host_input_name(const ac_model *model, size_t index) { if (!model) return nullptr; auto name = model->model.hostInputName(index); return name.empty() ? nullptr : name.data(); }
+size_t ac_model_host_input_size(const ac_model *model, size_t index) { return model ? model->model.hostInputSize(index) : 0; }
 int ac_model_host_input_ready(const ac_model *model, size_t index) { return model && model->model.hostInputReady(index) ? 1 : 0; }
 int ac_model_offer(ac_model *model, size_t index, int32_t value) { if (!model || index >= model->model.hostInputCount()) return -1; return model->model.offer(index, value) ? 1 : 0; }
 int ac_model_offer_bytes(ac_model *model, size_t index, const uint8_t *bytes, size_t size) { if (!model || index >= model->model.hostInputCount() || (!bytes && size)) return -1; auto view = std::span<const std::byte>(reinterpret_cast<const std::byte *>(bytes), size); return model->model.offerBytes(index, view) ? 1 : 0; }

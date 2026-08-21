@@ -20,8 +20,23 @@ from ._definitions import (
     system,
     transaction,
 )
-from ._resources import address_map, address_space, host_input_queue, queue
-from ._types import Endpoint, Flow, FlowBundle, ResourceRef, Static, export_flow, import_flow
+from ._resources import address_map, address_space, host_input_queue, host_output_queue, queue
+from ._types import (
+    Endpoint,
+    Flow,
+    FlowBundle,
+    ResourceRef,
+    Static,
+    Vector,
+    export_flow,
+    f32,
+    f64,
+    i8,
+    i16,
+    i32,
+    i64,
+    import_flow,
+)
 
 
 __all__ = (
@@ -41,6 +56,7 @@ __all__ = (
     "view",
     "queue",
     "host_input_queue",
+    "host_output_queue",
     "ResourceRef",
     "address_space",
     "address_map",
@@ -50,9 +66,20 @@ __all__ = (
     "export_flow",
     "import_flow",
     "Endpoint",
+    "i8",
+    "i16",
+    "i32",
+    "i64",
+    "f32",
+    "f64",
+    "Vector",
     "try_send",
     "try_recv",
     "yield_sim",
+    "record_get",
+    "record_with",
+    "packet_serialize",
+    "packet_deserialize",
 )
 
 
@@ -78,7 +105,7 @@ def view(value: object, *selectors: object) -> Never:
     return _not_implemented("view")
 
 
-def try_send(queue: object, value: int) -> Never:
+def try_send(queue: object, value: object) -> Never:
     return _not_implemented("try_send")
 
 
@@ -88,3 +115,19 @@ def try_recv(queue: object) -> Never:
 
 def yield_sim() -> Never:
     return _not_implemented("yield_sim")
+
+
+def record_get(record: object, *, field: str) -> Never:
+    return _not_implemented("record_get")
+
+
+def record_with(record: object, *, field: str, value: object) -> Never:
+    return _not_implemented("record_with")
+
+
+def packet_serialize(packet: object) -> Never:
+    return _not_implemented("packet_serialize")
+
+
+def packet_deserialize(packet_type: object, value: object) -> Never:
+    return _not_implemented("packet_deserialize")

@@ -12,6 +12,38 @@ I = TypeVar("I")
 R = TypeVar("R")
 
 
+class i8:
+    """Signless 8-bit ACPy value type marker."""
+
+
+class i16:
+    """Signless 16-bit ACPy value type marker."""
+
+
+class i32:
+    """Signless 32-bit ACPy value type marker."""
+
+
+class i64:
+    """Signless 64-bit ACPy value type marker."""
+
+
+class f32:
+    """32-bit floating-point ACPy value type marker."""
+
+
+class f64:
+    """64-bit floating-point ACPy value type marker."""
+
+
+class Vector:
+    """Fixed ACPy value vector, spelled ``Vector[element, length]``."""
+
+    @classmethod
+    def __class_getitem__(cls, _parameters: object) -> type["Vector"]:
+        return cls
+
+
 class Static(Generic[T]):
     """Mark an elaboration-time specialization parameter."""
 
