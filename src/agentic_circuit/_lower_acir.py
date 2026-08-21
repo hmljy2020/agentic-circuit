@@ -189,6 +189,8 @@ def build_verified_acpy(
             if binding.port_index is not None:
                 result_properties["port_index"] = binding.port_index
                 result_properties["shape"] = binding.shape
+                if call.schema.identity in {"ac.std.RingNoC", "ac.std.MeshNoC"}:
+                    result_properties["node_id"] = binding.port_index
             result = allocator.allocate(
                 kind="result",
                 scope=program.definition,
@@ -422,6 +424,270 @@ def _crossbar_declaration(call: object) -> list[str]:
     return lines
 
 
+def _generator_parameters(call: object) -> dict[str, StaticValue]:
+    return dict(call.static_arguments)  # type: ignore[attr-defined]
+
+
+def _generator_symbol(call: object) -> str:
+    identity = call.schema.identity  # type: ignore[attr-defined]
+    if identity == "ac.std.Crossbar":
+        return _crossbar_symbol(call)
+    parameters = _generator_parameters(call)
+    digest = str(call.specialization).removeprefix("sha256:")[:12]  # type: ignore[attr-defined]
+    if identity == "ac.std.RingNoC":
+        return f"RingNoC__n{parameters['nodes']}__{digest}"
+    if identity == "ac.std.MeshNoC":
+        return f"MeshNoC__{parameters['width']}x{parameters['height']}__{digest}"
+    raise ValueError(
+        f"ACPY-GENERATOR-001: unsupported compiler-native generator {identity!r}; "
+        "supported generators: ac.std.Crossbar, ac.std.MeshNoC, ac.std.RingNoC"
+    )
+
+
+def _queue_line(name: str, depth: int) -> str:
+    return (
+        f"    ac.queue @{name} payload i32 entries {depth} ordering \"fifo\" "
+        f"protocol @ready_valid ownership \"exclusive\" id \"{name}\" path \"{name}\""
+    )
+
+
+def _resource_line(name: str) -> str:
+    return (
+        f"    ac.resource @{name} capacity 1 issue_width 1 ii 1 "
+        "latency {kind = \"fixed\", ticks = 1 : i64} "
+        "lifecycle {reservation = \"propose_commit\", release = \"balanced\", cancellation = \"explicit\"} "
+        f"ownership \"exclusive\" classes [] id \"{name}\" path \"{name}\""
+    )
+
+
+def _noc_header(call: object) -> tuple[list[str], int, int, str]:
+    parameters = _generator_parameters(call)
+    nodes = int(parameters["nodes"])
+    depth = int(parameters["queue_depth"])
+    symbol = _generator_symbol(call)
+    flow_type = "!ac.flow<i32, @ready_valid>"
+    arguments = ", ".join(f"%input{node} : {flow_type}" for node in range(nodes))
+    results = ", ".join(flow_type for _ in range(nodes))
+    signature = flow_type if nodes == 1 else f"({results})"
+    static_text = _static_arguments(call.static_arguments)  # type: ignore[attr-defined]
+    return ([f"  ac.module @{symbol}({arguments}) -> {signature} parameters {{{static_text}}} graph {{"], nodes, depth, flow_type)
+
+
+def _noc_scheduler(
+    node: int,
+    ingresses: list[tuple[str, str]],
+    egresses: list[tuple[str, str]],
+    route_requests: dict[tuple[str, str], str],
+    decode: list[str],
+) -> list[str]:
+    """Emit one deterministic output-major, ingress-minor fixed-priority scheduler."""
+
+    lines = [f"    ac.process @node{node}_scheduler kind \"control\" {{"]
+    for ingress_name, queue in ingresses:
+        lines.append(
+            f"      %head_{ingress_name}, %valid_{ingress_name} = ac.peek @{queue} : i32"
+        )
+    lines.extend(decode)
+    for egress_name, queue in egresses:
+        lines.append(f"      %space_{egress_name} = ac.space @{queue}")
+        lines.append(f"      %writable_{egress_name} = arith.cmpi sgt, %space_{egress_name}, %zero : i32")
+    candidates: list[tuple[str, str, str, str, str]] = []
+    for egress_name, egress_queue in egresses:
+        for ingress_name, ingress_queue in ingresses:
+            route = route_requests[(egress_name, ingress_name)]
+            request = f"%request_{egress_name}_{ingress_name}"
+            lines.append(
+                f"      {request} = arith.andi {route}, %writable_{egress_name} : i1"
+            )
+            candidates.append(
+                (request, ingress_name, ingress_queue, egress_name, egress_queue)
+            )
+    grants = [f"%grant_{index}" for index in range(len(candidates))]
+    lines.append(f"      {', '.join(grants)} = ac.arbitrate greedy_fixed_priority candidates [")
+    for index, (request, ingress_name, _iq, egress_name, _eq) in enumerate(candidates):
+        comma = "," if index + 1 != len(candidates) else ""
+        lines.append(
+            f"        {request} uses [@node{node}_pin_{ingress_name}, @node{node}_pout_{egress_name}]{comma}"
+        )
+    lines.append("      ] : (" + ", ".join("i1" for _ in candidates) + ")")
+    for index, (_request, _ingress_name, ingress_queue, _egress_name, egress_queue) in enumerate(candidates):
+        lines.append(
+            f"      %fire_{index} = ac.try_transfer @{ingress_queue} to @{egress_queue} when %grant_{index} : i32"
+        )
+    lines.extend(("      ac.yield_sim", "    }"))
+    return lines
+
+
+def _ring_declaration(call: object) -> list[str]:
+    lines, nodes, depth, flow_type = _noc_header(call)
+    parameters = _generator_parameters(call)
+    offset = int(parameters["route_offset"])
+    route_width = int(parameters["route_width"])
+    for node in range(nodes):
+        lines.append(_queue_line(f"node{node}_local_in", depth))
+        lines.append(_queue_line(f"node{node}_local_out", depth))
+        lines.append(_queue_line(f"link_n{node}_to_n{(node + 1) % nodes}_cw", depth))
+    for node in range(nodes):
+        lines.append(f"    ac.flow.import %input{node} to @node{node}_local_in : {flow_type}")
+        lines.append(f"    %output{node} = ac.flow.export @node{node}_local_out : {flow_type}")
+    for node in range(nodes):
+        previous = (node - 1) % nodes
+        ingresses = [
+            ("cw", f"link_n{previous}_to_n{node}_cw"),
+            ("local", f"node{node}_local_in"),
+        ]
+        egresses = [
+            ("local", f"node{node}_local_out"),
+            ("cw", f"link_n{node}_to_n{(node + 1) % nodes}_cw"),
+        ]
+        lines.extend(_resource_line(f"node{node}_pin_{name}") for name, _ in ingresses)
+        lines.extend(_resource_line(f"node{node}_pout_{name}") for name, _ in egresses)
+        decode: list[str] = ["      %zero = arith.constant 0 : i32"]
+        decode.append(f"      %node_count = arith.constant {nodes} : i32")
+        decode.append(f"      %route_mask = arith.constant {(1 << route_width) - 1} : i32")
+        if offset:
+            decode.append(f"      %route_shift = arith.constant {offset} : i32")
+        requests: dict[tuple[str, str], str] = {}
+        for ingress_name, _queue in ingresses:
+            source = f"%head_{ingress_name}"
+            if offset:
+                decode.append(f"      %shifted_{ingress_name} = arith.shrui {source}, %route_shift : i32")
+                source = f"%shifted_{ingress_name}"
+            decode.append(f"      %dst_{ingress_name} = arith.andi {source}, %route_mask : i32")
+            decode.append(f"      %dst_valid_{ingress_name} = arith.cmpi ult, %dst_{ingress_name}, %node_count : i32")
+            decode.append(f"      %node_match_{ingress_name} = arith.cmpi eq, %dst_{ingress_name}, %this_node : i32")
+            decode.append(f"      %not_node_{ingress_name} = arith.cmpi ne, %dst_{ingress_name}, %this_node : i32")
+            decode.append(f"      %valid_dst_{ingress_name} = arith.andi %valid_{ingress_name}, %dst_valid_{ingress_name} : i1")
+            decode.append(f"      %route_local_{ingress_name} = arith.andi %valid_dst_{ingress_name}, %node_match_{ingress_name} : i1")
+            decode.append(f"      %route_cw_{ingress_name} = arith.andi %valid_dst_{ingress_name}, %not_node_{ingress_name} : i1")
+            requests[("local", ingress_name)] = f"%route_local_{ingress_name}"
+            requests[("cw", ingress_name)] = f"%route_cw_{ingress_name}"
+        decode.insert(1, f"      %this_node = arith.constant {node} : i32")
+        lines.extend(_noc_scheduler(node, ingresses, egresses, requests, decode))
+    result_types = ", ".join(flow_type for _ in range(nodes))
+    lines.append(f"    ac.return {', '.join(f'%output{node}' for node in range(nodes))} : {result_types}")
+    lines.append("  }")
+    return lines
+
+
+_MESH_DIRECTIONS = {
+    "north": (0, 1),
+    "east": (1, 0),
+    "south": (0, -1),
+    "west": (-1, 0),
+}
+
+
+def _mesh_declaration(call: object) -> list[str]:
+    lines, nodes, depth, flow_type = _noc_header(call)
+    parameters = _generator_parameters(call)
+    width = int(parameters["width"])
+    height = int(parameters["height"])
+    offset = int(parameters["route_offset"])
+    x_width = int(parameters["route_x_width"])
+    y_width = int(parameters["route_y_width"])
+    for node in range(nodes):
+        lines.append(_queue_line(f"node{node}_local_in", depth))
+        lines.append(_queue_line(f"node{node}_local_out", depth))
+    for node in range(nodes):
+        x, y = node % width, node // width
+        for direction in ("north", "east", "south", "west"):
+            dx, dy = _MESH_DIRECTIONS[direction]
+            nx, ny = x + dx, y + dy
+            if 0 <= nx < width and 0 <= ny < height:
+                neighbor = ny * width + nx
+                lines.append(_queue_line(f"link_n{node}_to_n{neighbor}_{direction}", depth))
+    for node in range(nodes):
+        lines.append(f"    ac.flow.import %input{node} to @node{node}_local_in : {flow_type}")
+        lines.append(f"    %output{node} = ac.flow.export @node{node}_local_out : {flow_type}")
+    opposite = {"north": "south", "east": "west", "south": "north", "west": "east"}
+    for node in range(nodes):
+        x, y = node % width, node // width
+        inbound: dict[str, str] = {}
+        outbound: dict[str, str] = {}
+        for direction in ("north", "east", "south", "west"):
+            dx, dy = _MESH_DIRECTIONS[direction]
+            nx, ny = x + dx, y + dy
+            if 0 <= nx < width and 0 <= ny < height:
+                neighbor = ny * width + nx
+                inbound[direction] = f"link_n{neighbor}_to_n{node}_{opposite[direction]}"
+                outbound[direction] = f"link_n{node}_to_n{neighbor}_{direction}"
+        ingresses = [(name, inbound[name]) for name in ("north", "east", "south", "west") if name in inbound]
+        ingresses.append(("local", f"node{node}_local_in"))
+        egresses = [("local", f"node{node}_local_out")]
+        egresses.extend((name, outbound[name]) for name in ("north", "east", "south", "west") if name in outbound)
+        lines.extend(_resource_line(f"node{node}_pin_{name}") for name, _ in ingresses)
+        lines.extend(_resource_line(f"node{node}_pout_{name}") for name, _ in egresses)
+        decode = [
+            "      %zero = arith.constant 0 : i32",
+            f"      %this_x = arith.constant {x} : i32",
+            f"      %this_y = arith.constant {y} : i32",
+            f"      %width = arith.constant {width} : i32",
+            f"      %height = arith.constant {height} : i32",
+            f"      %x_mask = arith.constant {(1 << x_width) - 1} : i32",
+            f"      %y_mask = arith.constant {(1 << y_width) - 1} : i32",
+        ]
+        if offset:
+            decode.append(f"      %route_shift = arith.constant {offset} : i32")
+        decode.append(f"      %y_shift = arith.constant {x_width} : i32")
+        requests: dict[tuple[str, str], str] = {}
+        for ingress_name, _queue in ingresses:
+            source = f"%head_{ingress_name}"
+            if offset:
+                decode.append(f"      %shifted_{ingress_name} = arith.shrui {source}, %route_shift : i32")
+                source = f"%shifted_{ingress_name}"
+            decode.extend(
+                (
+                    f"      %dst_x_{ingress_name} = arith.andi {source}, %x_mask : i32",
+                    f"      %dst_y_bits_{ingress_name} = arith.shrui {source}, %y_shift : i32",
+                    f"      %dst_y_{ingress_name} = arith.andi %dst_y_bits_{ingress_name}, %y_mask : i32",
+                    f"      %x_valid_{ingress_name} = arith.cmpi ult, %dst_x_{ingress_name}, %width : i32",
+                    f"      %y_valid_{ingress_name} = arith.cmpi ult, %dst_y_{ingress_name}, %height : i32",
+                    f"      %coord_valid_{ingress_name} = arith.andi %x_valid_{ingress_name}, %y_valid_{ingress_name} : i1",
+                    f"      %flit_valid_{ingress_name} = arith.andi %valid_{ingress_name}, %coord_valid_{ingress_name} : i1",
+                    f"      %x_eq_{ingress_name} = arith.cmpi eq, %dst_x_{ingress_name}, %this_x : i32",
+                    f"      %x_gt_{ingress_name} = arith.cmpi ugt, %dst_x_{ingress_name}, %this_x : i32",
+                    f"      %x_lt_{ingress_name} = arith.cmpi ult, %dst_x_{ingress_name}, %this_x : i32",
+                    f"      %y_eq_{ingress_name} = arith.cmpi eq, %dst_y_{ingress_name}, %this_y : i32",
+                    f"      %y_gt_{ingress_name} = arith.cmpi ugt, %dst_y_{ingress_name}, %this_y : i32",
+                    f"      %y_lt_{ingress_name} = arith.cmpi ult, %dst_y_{ingress_name}, %this_y : i32",
+                    f"      %route_east_{ingress_name} = arith.andi %flit_valid_{ingress_name}, %x_gt_{ingress_name} : i1",
+                    f"      %route_west_{ingress_name} = arith.andi %flit_valid_{ingress_name}, %x_lt_{ingress_name} : i1",
+                    f"      %x_eq_y_gt_{ingress_name} = arith.andi %x_eq_{ingress_name}, %y_gt_{ingress_name} : i1",
+                    f"      %x_eq_y_lt_{ingress_name} = arith.andi %x_eq_{ingress_name}, %y_lt_{ingress_name} : i1",
+                    f"      %x_eq_y_eq_{ingress_name} = arith.andi %x_eq_{ingress_name}, %y_eq_{ingress_name} : i1",
+                    f"      %route_north_{ingress_name} = arith.andi %flit_valid_{ingress_name}, %x_eq_y_gt_{ingress_name} : i1",
+                    f"      %route_south_{ingress_name} = arith.andi %flit_valid_{ingress_name}, %x_eq_y_lt_{ingress_name} : i1",
+                    f"      %route_local_{ingress_name} = arith.andi %flit_valid_{ingress_name}, %x_eq_y_eq_{ingress_name} : i1",
+                )
+            )
+            for egress_name, _ in egresses:
+                requests[(egress_name, ingress_name)] = f"%route_{egress_name}_{ingress_name}"
+        lines.extend(_noc_scheduler(node, ingresses, egresses, requests, decode))
+    result_types = ", ".join(flow_type for _ in range(nodes))
+    lines.append(f"    ac.return {', '.join(f'%output{node}' for node in range(nodes))} : {result_types}")
+    lines.append("  }")
+    return lines
+
+
+_GENERATOR_EMITTERS = {
+    "ac.std.Crossbar": _crossbar_declaration,
+    "ac.std.MeshNoC": _mesh_declaration,
+    "ac.std.RingNoC": _ring_declaration,
+}
+
+
+def _generator_declaration(call: object) -> list[str]:
+    identity = call.schema.identity  # type: ignore[attr-defined]
+    emitter = _GENERATOR_EMITTERS.get(identity)
+    if emitter is None:
+        raise ValueError(
+            f"ACPY-GENERATOR-001: unsupported compiler-native generator {identity!r}; "
+            f"supported generators: {', '.join(sorted(_GENERATOR_EMITTERS))}"
+        )
+    return emitter(call)
+
+
 def _boundary_symbol(direction: str, value: ValueVersion) -> str:
     prefix = "FlowSource" if direction == "export" else "FlowSink"
     return f"{prefix}__{_ssa(value)}"
@@ -532,7 +798,7 @@ def _component_declarations(program: NormalizedProgram) -> list[str]:
         if call.schema.generator is not None and call.specialization is not None:
             specializations.setdefault(call.specialization, call)
     for fingerprint in sorted(specializations, key=utf16_sort_key):
-        lines.extend(_crossbar_declaration(specializations[fingerprint]))
+        lines.extend(_generator_declaration(specializations[fingerprint]))
     lines.extend(_flow_boundary_declarations(program))
     return lines
 
@@ -792,7 +1058,7 @@ def lower_to_acir(
             result_types = ", ".join(flow_type for _ in result_names)
             arrow = flow_type if len(result_names) == 1 else f"({result_types})"
             lines.append(
-                f"    {prefix}ac.instance @{_symbol(call.instance_name)} of @{_crossbar_symbol(call)}({operands}) "
+                f"    {prefix}ac.instance @{_symbol(call.instance_name)} of @{_generator_symbol(call)}({operands}) "
                 f"static {{{_static_arguments(call.static_arguments)}}} id {json.dumps(call.instance_name)} "
                 f"path {json.dumps(call.instance_name)} : ({operand_types}) -> {arrow}"
             )

@@ -1799,9 +1799,10 @@ mlir::LogicalResult ACIRToACSimPass::planProcesses(mlir::ModuleOp input) {
   processPlans = std::move(*plans);
   auto serializedPlans = serializeProcessStatePlan(*processPlans);
   if (!serializedPlans) {
-    llvm::consumeError(serializedPlans.takeError());
+    std::string detail = llvm::toString(serializedPlans.takeError());
     return lowerError(input, "ACLOWER-FINGERPRINT",
-                      "failed to serialize the canonical process-state plan");
+                      "failed to serialize the canonical process-state plan: " +
+                          detail);
   }
   processPlanBytes = std::move(*serializedPlans);
 

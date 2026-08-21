@@ -736,12 +736,20 @@ serializeProcessStatePlan(const ProcessStatePlanSet &plans,
   report["schema"] = "acir-process-state-plan-0.2";
   report["value_types"] =
       mapArray(plans.valueTypes(), [](const auto &x) { return json(x); });
-  auto canonical = bindings::canonicalizeJson(Value(std::move(report)));
+  bindings::JsonParseLimits jsonLimits;
+  jsonLimits.maxInputBytes = limits.maxCanonicalReportBytes;
+  jsonLimits.maxTotalStringBytes = limits.maxCanonicalReportBytes;
+  jsonLimits.maxStructuralWork = limits.maxPlannedOperations;
+  auto canonical =
+      bindings::canonicalizeJson(Value(std::move(report)), jsonLimits);
   if (!canonical)
     return canonical.takeError();
   if (canonical->size() > limits.maxCanonicalReportBytes)
     return llvm::createStringError(
-        "process-state plan capability maxCanonicalReportBytes exceeded");
+        "process-state plan capability maxCanonicalReportBytes exceeded "
+        "(actual=%zu, limit=%llu)",
+        canonical->size(),
+        static_cast<unsigned long long>(limits.maxCanonicalReportBytes));
   return canonical;
 }
 

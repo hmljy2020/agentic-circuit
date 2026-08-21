@@ -154,7 +154,7 @@ TEST(ProcessStateTask13ConsumerTest, ProcessStateLimitsDefaultsMatchContract) {
   EXPECT_EQ(limits.maxFairnessWork, 1U << 20);
   EXPECT_EQ(limits.maxTransitions, 1U << 22);
   EXPECT_EQ(limits.maxNestedRegionDepth, 512u);
-  EXPECT_EQ(limits.maxCanonicalReportBytes, 1U << 24);
+  EXPECT_EQ(limits.maxCanonicalReportBytes, 1U << 26);
 }
 
 TEST(ProcessStateTask13ConsumerTest, PublicApiHasNoForbiddenAccessors) {

@@ -34,7 +34,10 @@ struct ProcessStateLimits {
   uint64_t maxFairnessWork = 1U << 20;
   uint64_t maxTransitions = 1U << 22;
   uint64_t maxNestedRegionDepth = 512;
-  uint64_t maxCanonicalReportBytes = 1U << 24;
+  // A fully expanded 4x4 static NoC contains sixteen bounded router
+  // schedulers. Keep serialization bounded while admitting that supported
+  // topology under the compiler's memory cap.
+  uint64_t maxCanonicalReportBytes = 1U << 26;
 };
 
 #define ACIR_DECLARE_PROCESS_ID(Name)                                          \

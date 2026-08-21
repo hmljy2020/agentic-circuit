@@ -294,7 +294,7 @@ class _Normalizer:
     def _consume_bundle(self, value: ValueVersion, node: ast.AST) -> None:
         if value.category != "flow_bundle":
             raise ResolutionError(
-                f"Crossbar input {value.source_name!r} must be a FlowBundle[int, ReadyValid]"
+                f"input {value.source_name!r} must be a FlowBundle[int, ReadyValid]"
             )
         previous = self._consumed_bundles.get(value.name)
         if previous is not None:
@@ -331,13 +331,13 @@ class _Normalizer:
             bound = signature.bind(*node.args, **keyword_values)
             bound.apply_defaults()
             inputs_expression = bound.arguments["inputs"]
-            if not isinstance(inputs_expression, ast.Tuple) or not inputs_expression.elts:
-                raise ResolutionError("Crossbar inputs must be a non-empty fixed tuple")
+            if not isinstance(inputs_expression, (ast.Tuple, ast.List)) or not inputs_expression.elts:
+                raise ResolutionError(f"{display_name} inputs must be a non-empty fixed tuple/list")
             if any(not isinstance(item, ast.Name) for item in inputs_expression.elts):
-                raise ResolutionError("Crossbar inputs must name individual physical-port FlowBundles")
+                raise ResolutionError(f"{display_name} inputs must name individual node FlowBundles")
             input_values = tuple(self._value(item) for item in inputs_expression.elts)
             if len({value.name for value in input_values}) != len(input_values):
-                raise ResolutionError("ACPY-FLOW-006: Crossbar input tuple repeats one FlowBundle")
+                raise ResolutionError(f"ACPY-FLOW-006: {display_name} inputs repeat one FlowBundle")
             static_values = {
                 parameter.name: self._static(bound.arguments[parameter.name])
                 for parameter in schema.parameters
@@ -345,37 +345,97 @@ class _Normalizer:
             explicit_name = self._static(bound.arguments["name"])
             if explicit_name is not None and (type(explicit_name) is not str or not explicit_name):
                 raise ResolutionError("instance name must be a non-empty static string")
-            integers = (
-                "virtual_channels", "ingress_depth", "egress_depth", "route_offset", "route_width"
-            )
-            if any(type(static_values[name]) is not int for name in integers):
-                raise ResolutionError("Crossbar numeric parameters must be static integers")
-            vc = static_values["virtual_channels"]
-            ingress = static_values["ingress_depth"]
-            egress = static_values["egress_depth"]
-            offset = static_values["route_offset"]
-            width = static_values["route_width"]
-            assert isinstance(vc, int) and isinstance(ingress, int) and isinstance(egress, int)
-            assert isinstance(offset, int) and isinstance(width, int)
-            if vc < 1:
-                raise ResolutionError("Crossbar virtual_channels must be >= 1")
-            if ingress < 1 or egress < 1:
-                raise ResolutionError("Crossbar ingress_depth and egress_depth must be >= 1")
-            if offset < 0 or width < 1 or offset + width > 32:
-                raise ResolutionError("Crossbar route slice must satisfy 0 <= offset and offset + width <= 32")
-            if static_values["policy"] != "greedy_fixed_priority":
-                raise ResolutionError("Crossbar policy must be 'greedy_fixed_priority'")
             input_ports = len(input_values)
             output_ports = len(target_names)
-            if output_ports > 2**width:
-                raise ResolutionError("Crossbar output count exceeds route_width encoding")
-            if input_ports * output_ports * vc > 4096:
-                raise ResolutionError("Crossbar input_ports * output_ports * virtual_channels exceeds 4096")
+            if schema.identity == "ac.std.Crossbar":
+                integers = (
+                    "virtual_channels", "ingress_depth", "egress_depth", "route_offset", "route_width"
+                )
+                if any(type(static_values[name]) is not int for name in integers):
+                    raise ResolutionError("Crossbar numeric parameters must be static integers")
+                vc = static_values["virtual_channels"]
+                ingress = static_values["ingress_depth"]
+                egress = static_values["egress_depth"]
+                offset = static_values["route_offset"]
+                route_width = static_values["route_width"]
+                assert isinstance(vc, int) and isinstance(ingress, int) and isinstance(egress, int)
+                assert isinstance(offset, int) and isinstance(route_width, int)
+                if vc < 1:
+                    raise ResolutionError("Crossbar virtual_channels must be >= 1")
+                if ingress < 1 or egress < 1:
+                    raise ResolutionError("Crossbar ingress_depth and egress_depth must be >= 1")
+                if offset < 0 or route_width < 1 or offset + route_width > 32:
+                    raise ResolutionError("Crossbar route slice must satisfy 0 <= offset and offset + width <= 32")
+                if static_values["policy"] != "greedy_fixed_priority":
+                    raise ResolutionError("Crossbar policy must be 'greedy_fixed_priority'")
+                if output_ports > 2**route_width:
+                    raise ResolutionError("Crossbar output count exceeds route_width encoding")
+                if input_ports * output_ports * vc > 4096:
+                    raise ResolutionError("Crossbar input_ports * output_ports * virtual_channels exceeds 4096")
+                topology_fields: dict[str, StaticValue] = {}
+            elif schema.identity in {"ac.std.RingNoC", "ac.std.MeshNoC"}:
+                vc = 1
+                numeric = ("queue_depth", "route_offset")
+                if schema.identity == "ac.std.MeshNoC":
+                    numeric += ("width", "height")
+                if any(type(static_values[name]) is not int for name in numeric):
+                    raise ResolutionError(f"{display_name} numeric parameters must be static integers")
+                queue_depth = static_values["queue_depth"]
+                offset = static_values["route_offset"]
+                assert isinstance(queue_depth, int) and isinstance(offset, int)
+                if input_ports != output_ports:
+                    raise ResolutionError(f"{display_name} input and output node counts must match")
+                if not 1 <= queue_depth <= 64:
+                    raise ResolutionError(f"{display_name} queue_depth must be in [1, 64]")
+                if offset < 0:
+                    raise ResolutionError(f"{display_name} route_offset must be >= 0")
+                if static_values["arbitration"] != "greedy_fixed_priority":
+                    raise ResolutionError(
+                        f"{display_name} arbitration must be 'greedy_fixed_priority'"
+                    )
+                if schema.identity == "ac.std.RingNoC":
+                    if not 2 <= input_ports <= 16:
+                        raise ResolutionError("RingNoC node count must be in [2, 16]")
+                    if static_values["routing"] != "clockwise":
+                        raise ResolutionError("RingNoC routing must be 'clockwise'")
+                    route_width = max(1, (input_ports - 1).bit_length())
+                    topology_fields = {
+                        "topology": "ring",
+                        "nodes": input_ports,
+                        "route_width": route_width,
+                    }
+                else:
+                    mesh_width = static_values["width"]
+                    mesh_height = static_values["height"]
+                    assert isinstance(mesh_width, int) and isinstance(mesh_height, int)
+                    if not 1 <= mesh_width <= 4 or not 1 <= mesh_height <= 4:
+                        raise ResolutionError("MeshNoC width and height must be in [1, 4]")
+                    if mesh_width * mesh_height != input_ports:
+                        raise ResolutionError("MeshNoC width * height must equal node count")
+                    if static_values["routing"] != "xy":
+                        raise ResolutionError("MeshNoC routing must be 'xy'")
+                    route_x_width = max(1, (mesh_width - 1).bit_length())
+                    route_y_width = max(1, (mesh_height - 1).bit_length())
+                    route_width = route_x_width + route_y_width
+                    topology_fields = {
+                        "topology": "mesh",
+                        "nodes": input_ports,
+                        "route_x_width": route_x_width,
+                        "route_y_width": route_y_width,
+                        "route_width": route_width,
+                    }
+                if offset + route_width > 32:
+                    raise ResolutionError(f"{display_name} destination bits exceed i32 payload")
+            else:
+                raise ResolutionError(
+                    f"unsupported compiler-native generator {schema.identity!r}; "
+                    "supported generators: ac.std.Crossbar, ac.std.MeshNoC, ac.std.RingNoC"
+                )
             for expression, value in zip(inputs_expression.elts, input_values, strict=True):
                 bundle_spec = _bundle_spec_from_key(value.type_key)
                 if bundle_spec is not None and bundle_spec != ("int", "ReadyValid", vc):
                     raise ResolutionError(
-                        f"Crossbar input {value.source_name!r} must have shape ({vc},) and Flow[int, ReadyValid] leaves"
+                        f"{display_name} input {value.source_name!r} must have shape ({vc},) and Flow[int, ReadyValid] leaves"
                     )
                 self._consume_bundle(value, expression)
         except (ResolutionError, ValueError, TypeError) as error:
@@ -385,7 +445,7 @@ class _Normalizer:
                 else ""
             )
             self._error(
-                "ACPY-CROSSBAR-001",
+                "ACPY-CROSSBAR-001" if schema.identity == "ac.std.Crossbar" else "ACPY-NOC-001",
                 f"{diagnostic_name}{count}: {error}",
                 target or node,
             )
@@ -415,8 +475,10 @@ class _Normalizer:
             **static_values,
             "input_ports": input_ports,
             "output_ports": output_ports,
+            "virtual_channels": vc,
             "payload": "i32",
             "protocol": "ready_valid",
+            **topology_fields,
         }
         fingerprint = sha256_bytes(
             canonical_json_bytes({"schema": schema.fingerprint, **derived})
