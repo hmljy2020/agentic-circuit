@@ -77,13 +77,13 @@ backpressure.  Python advances complete ticks rather than internal deltas.
 | ID | Day | Status | Work item | Acceptance evidence | Commit |
 |---:|:---:|:---:|---|---|---|
 | 31 | Host | DONE | Execution ledger and host-ingress timing contract | Baseline `f715f16` clean; contract committed before implementation | `6391e11` |
-| 32 | Host | IN_PROGRESS | Static HostIngress runtime and ACPy declaration | Runtime mailbox/backpressure test: `GfsimTests` 1/1 passed; ACPy declaration pending | pending |
-| 33 | Host | TODO | Canonical ingress table and Model stepping | `step_tick()` handles all deltas; no-offer result equals bounded `run()` | pending |
-| 34 | Host | TODO | Versioned C ABI and ctypes wrapper | one `.so` supports discovery, batch offer, stepping, diagnostics, and statistics | pending |
-| 35 | Host | TODO | Python Bernoulli TrafficManager | runtime rate/seed/uniform/transpose; pending FIFO conservation; deterministic replay | pending |
-| 36 | Host | TODO | Warmup/measurement sweep and canonical CSV | one build scans all points; repeated CSV bytes match | pending |
-| 37 | Host | TODO | BookSim injection/profile comparison | matched single-flit parameters and multi-seed curve output | pending |
-| 38 | Host | TODO | Final regression, documentation, commits, and push | serial full regression under memory cap; clean tree and `chao/main` aligned | pending |
+| 32 | Host | DONE | Static HostIngress runtime and ACPy declaration | `GfsimTests` passes mailbox/full-Queue barrier; frontend 72/72; `host_input_queue` verifies as root i32/ready-valid | `ad84571`, `f0c2856` |
+| 33 | Host | DONE | Canonical ingress table and Model stepping | fresh 2x2 build discovers `node0..node3`; busy offer rejected; 12 complete ticks deliver node0→node3 | `f0c2856` |
+| 34 | Host | DONE | Versioned C ABI and ctypes wrapper | PIC `.so` loaded by `ModelRuntime`; ABI v1 discovery, offer, tick, reset, diagnostics and statistics pass | `f0c2856` |
+| 35 | Host | DONE | Python Bernoulli TrafficManager | runtime rate/seed plus uniform/transpose; one pending flit per source preserves backpressure | `8b85f70` |
+| 36 | Host | DONE | Warmup/measurement sweep and canonical CSV | rates 0.1/0.5/1.0 run from one `.so`; repeated `/tmp/ac-saturation-*.csv` diff is empty | `8b85f70` |
+| 37 | Host | DONE | BookSim injection/profile comparison | BookSim 2x2 DOR, 1 flit, 1 VC, depth 2 config runs; rate 0.1 seed 1 parsed throughput 0.09575 | `8b85f70` |
+| 38 | Host | DONE | Final regression, documentation, commits, and push | catalog 36; contracts 21/21; frontend 72/72; CTest 12/12; fresh host build/ctypes sweep, Ring and Mesh runners pass; `git diff --check` clean | final ledger commit |
 
 ## Target acceptance commands
 
