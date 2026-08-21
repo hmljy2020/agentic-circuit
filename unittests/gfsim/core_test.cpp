@@ -2,6 +2,7 @@
 #include "gfsim/core.h"
 #include "gfsim/dispatch.h"
 #include "gfsim/harness.h"
+#include "gfsim/host.h"
 #include "gfsim/object.h"
 #include "gfsim/observation.h"
 #include "gfsim/packet.h"
@@ -1568,6 +1569,39 @@ static_assert(Component<Sink<>>);
 static_assert(Component<Sink<std::string>>);
 static_assert(Component<ReadyValid<uint64_t>>);
 static_assert(Component<RequestResponse<uint64_t, uint64_t>>);
+
+TEST(GfsimComponentsTest, HostIngressStagesAndCommitsThroughQueueBarrier) {
+  Queue<int32_t> queue("queue", 1, nullptr, 1);
+  HostIngress<int32_t> ingress("host", 0, nullptr, queue);
+
+  EXPECT_TRUE(ingress.stage(17));
+  EXPECT_FALSE(ingress.stage(18));
+  EXPECT_EQ(queue.committedSize(), 0u);
+
+  ingress.doWork({0, 0});
+  EXPECT_TRUE(ingress.hasPendingCommit());
+  EXPECT_EQ(queue.committedSize(), 0u);
+  queue.doXfer({0, 0});
+  ingress.doXfer({0, 0});
+
+  ASSERT_EQ(queue.committedSize(), 1u);
+  ASSERT_NE(queue.peek(), nullptr);
+  EXPECT_EQ(*queue.peek(), 17);
+  EXPECT_FALSE(ingress.mailboxOccupied());
+  EXPECT_EQ(ingress.hostAccepted(), 1u);
+  EXPECT_EQ(ingress.queueCommitted(), 1u);
+
+  EXPECT_TRUE(ingress.stage(19));
+  ingress.doWork({1, 0});
+  EXPECT_FALSE(ingress.hasPendingCommit());
+  EXPECT_TRUE(ingress.mailboxOccupied());
+  EXPECT_EQ(ingress.queueCommitted(), 1u);
+
+  ingress.reset();
+  EXPECT_FALSE(ingress.mailboxOccupied());
+  EXPECT_EQ(ingress.hostAccepted(), 0u);
+  EXPECT_EQ(ingress.queueCommitted(), 0u);
+}
 
 TEST(GfsimComponentsTest, BaselineTemplatesExposeCanonicalObjectKinds) {
   TraceSource<> trace("trace", 0, nullptr);
