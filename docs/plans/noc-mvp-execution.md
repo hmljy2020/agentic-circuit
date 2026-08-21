@@ -66,6 +66,25 @@ Deferred difficulty assessment:
   counters are cumulative and the generated Model lacks a warmup checkpoint,
   counter snapshot/reset, or measurement-gated ejection counter.
 
+## Host-driven saturation benchmark
+
+This extension keeps traffic policy in a Python TrafficManager.  Only explicitly
+declared root `i32` ready-valid host ingress queues are externally visible.  A
+host offer enters a one-entry mailbox; a static runtime actor submits the value
+through the normal Work/Xfer barrier, so host control cannot bypass Queue
+backpressure.  Python advances complete ticks rather than internal deltas.
+
+| ID | Day | Status | Work item | Acceptance evidence | Commit |
+|---:|:---:|:---:|---|---|---|
+| 31 | Host | IN_PROGRESS | Execution ledger and host-ingress timing contract | Baseline `f715f16` clean; `SimSystem::step()` exists, generated Model currently exposes only `run()` | pending |
+| 32 | Host | TODO | Static HostIngress runtime and ACPy declaration | mailbox/backpressure/tick-visibility unit tests | pending |
+| 33 | Host | TODO | Canonical ingress table and Model stepping | `step_tick()` handles all deltas; no-offer result equals bounded `run()` | pending |
+| 34 | Host | TODO | Versioned C ABI and ctypes wrapper | one `.so` supports discovery, batch offer, stepping, diagnostics, and statistics | pending |
+| 35 | Host | TODO | Python Bernoulli TrafficManager | runtime rate/seed/uniform/transpose; pending FIFO conservation; deterministic replay | pending |
+| 36 | Host | TODO | Warmup/measurement sweep and canonical CSV | one build scans all points; repeated CSV bytes match | pending |
+| 37 | Host | TODO | BookSim injection/profile comparison | matched single-flit parameters and multi-seed curve output | pending |
+| 38 | Host | TODO | Final regression, documentation, commits, and push | serial full regression under memory cap; clean tree and `chao/main` aligned | pending |
+
 ## Target acceptance commands
 
 Exact paths/targets are refined as the implementation discovers repository-native
