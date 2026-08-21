@@ -1224,6 +1224,11 @@ LogicalResult ModelAnalysis::verify() {
         "expected top-level 'ac.contract_epoch' string attribute equal to "
         "\"0.2\"");
 
+  // Flow connectivity elaborates concrete module instances. Reject a module
+  // instantiation cycle with the bounded iterative graph check before that
+  // recursive dataflow analysis can expand it indefinitely.
+  if (failed(ac::verifyGraphStructure(model)))
+    return failure();
   if (failed(verifyPureProcessCalls()))
     return failure();
   if (failed(mlir::verify(model)))

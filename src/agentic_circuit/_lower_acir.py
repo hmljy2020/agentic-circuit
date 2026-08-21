@@ -1020,13 +1020,19 @@ def lower_to_acir(
             f"!ac.flow<{payload}, @{protocol}>"
             for _name, payload, protocol, _depth in boundary.queues
         )
-        arrow = flow_types[0] if len(flow_types) == 1 else f"({', '.join(flow_types)})"
-        instance = f"boundary_source_{boundary.value.source_name}"
-        lines.append(
-            f"    {', '.join(leaves)} = ac.instance @{instance} of "
-            f"@{_boundary_symbol(boundary.direction, boundary.value)}() static {{}} "
-            f"id {json.dumps(instance)} path {json.dumps(instance)} : () -> {arrow}"
-        )
+        if all(queue_name in declared_queues for queue_name, *_ in boundary.queues):
+            for leaf, flow_type, (queue_name, *_rest) in zip(
+                leaves, flow_types, boundary.queues, strict=True
+            ):
+                lines.append(f"    {leaf} = ac.flow.export @{queue_name} : {flow_type}")
+        else:
+            arrow = flow_types[0] if len(flow_types) == 1 else f"({', '.join(flow_types)})"
+            instance = f"boundary_source_{boundary.value.source_name}"
+            lines.append(
+                f"    {', '.join(leaves)} = ac.instance @{instance} of "
+                f"@{_boundary_symbol(boundary.direction, boundary.value)}() static {{}} "
+                f"id {json.dumps(instance)} path {json.dumps(instance)} : () -> {arrow}"
+            )
         names[boundary.value.name] = tuple(leaves)
     for call in program.calls:
         if call.schema.generator is not None:
@@ -1097,12 +1103,18 @@ def lower_to_acir(
             f"!ac.flow<{payload}, @{protocol}>"
             for _name, payload, protocol, _depth in boundary.queues
         )
-        instance = f"boundary_sink_{boundary.value.source_name}"
-        lines.append(
-            f"    ac.instance @{instance} of @{_boundary_symbol(boundary.direction, boundary.value)}"
-            f"({', '.join(source)}) static {{}} id {json.dumps(instance)} path {json.dumps(instance)} "
-            f": ({', '.join(flow_types)}) -> ()"
-        )
+        if all(queue_name in declared_queues for queue_name, *_ in boundary.queues):
+            for leaf, flow_type, (queue_name, *_rest) in zip(
+                source, flow_types, boundary.queues, strict=True
+            ):
+                lines.append(f"    ac.flow.import {leaf} to @{queue_name} : {flow_type}")
+        else:
+            instance = f"boundary_sink_{boundary.value.source_name}"
+            lines.append(
+                f"    ac.instance @{instance} of @{_boundary_symbol(boundary.direction, boundary.value)}"
+                f"({', '.join(source)}) static {{}} id {json.dumps(instance)} path {json.dumps(instance)} "
+                f": ({', '.join(flow_types)}) -> ()"
+            )
     if program.returns:
         flattened_returns = [
             leaf

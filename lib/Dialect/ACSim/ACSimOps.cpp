@@ -2182,20 +2182,46 @@ LogicalResult verifyModulesAndTypedGraph(ModelOp model,
             target ? findEndpoint(realizationForBase(target.getBase(), index),
                                   "ports", target.getAccessorAttr())
                    : DictionaryAttr();
-        if (!sourceRecord || !targetRecord ||
-            sourceRecord.getAs<StringAttr>("direction").getValue() !=
-                "output" ||
-            targetRecord.getAs<StringAttr>("direction").getValue() != "input")
+        bool sourceNative = source && isNativeQueueFlowProjection(source, index);
+        bool targetNative = target && isNativeQueueFlowProjection(target, index);
+        auto sourceType = source ? dyn_cast<PortType>(source.getType()) : PortType();
+        auto targetType = target ? dyn_cast<PortType>(target.getType()) : PortType();
+        bool sourceDirection =
+            sourceNative
+                ? sourceType &&
+                      sourceType.getRole().getRootReference().getValue() ==
+                          "acir_native_flow_source"
+                : sourceRecord &&
+                      sourceRecord.getAs<StringAttr>("direction").getValue() ==
+                          "output";
+        bool targetDirection =
+            targetNative
+                ? targetType &&
+                      targetType.getRole().getRootReference().getValue() ==
+                          "acir_native_flow_sink"
+                : targetRecord &&
+                      targetRecord.getAs<StringAttr>("direction").getValue() ==
+                          "input";
+        if (!sourceDirection || !targetDirection)
           return bind.emitOpError("port binding must connect exact output and "
                                   "input endpoint records");
-        if (sourceRecord.get("interface") != targetRecord.get("interface") ||
+        if ((sourceNative || targetNative) &&
+            (!sourceType || !targetType ||
+             sourceType.getInterface() != targetType.getInterface() ||
+             sourceType.getPayload() != targetType.getPayload() ||
+             sourceType.getProtocol() != targetType.getProtocol()))
+          return bind.emitOpError(
+              "native Flow bind endpoints must have identical interface, "
+              "payload, and protocol");
+        if (!sourceNative && !targetNative &&
+            (sourceRecord.get("interface") != targetRecord.get("interface") ||
             sourceRecord.get("payload") != targetRecord.get("payload") ||
             sourceRecord.get("protocol") != targetRecord.get("protocol") ||
             sourceRecord.get("cardinality") !=
                 targetRecord.get("cardinality") ||
             sourceRecord.get("delegation") != targetRecord.get("delegation") ||
             sourceRecord.get("ownership") != targetRecord.get("ownership") ||
-            sourceRecord.get("time_domain") != targetRecord.get("time_domain"))
+            sourceRecord.get("time_domain") != targetRecord.get("time_domain")))
           return bind.emitOpError(
               "port bind endpoints must have identical interface, payload, "
               "protocol, cardinality, delegation, ownership, and time domain");
@@ -3078,42 +3104,84 @@ LogicalResult BindOp::verify() {
       return definition && definition.getKind() == "interface" &&
              definition.getCppName() == "acir::native_flow_interface";
     };
-    if (!source || !target || !sourceRecord || !targetRecord ||
-        sourceRecord.getAs<StringAttr>("direction").getValue() != "output" ||
-        targetRecord.getAs<StringAttr>("direction").getValue() != "input" ||
+    // PortOp verification has already established that a projection without
+    // an endpoint record is exactly a native Queue flowSource/flowSink
+    // accessor. Preserve that closed exception here so root-owned queues can
+    // terminate an internal generated-module Flow link.
+    bool sourceNative =
+        !sourceRecord && source && isNativeFlowInterface(source) &&
+        source.getRole().getRootReference().getValue() ==
+            "acir_native_flow_source";
+    bool targetNative =
+        !targetRecord && target && isNativeFlowInterface(target) &&
+        target.getRole().getRootReference().getValue() ==
+            "acir_native_flow_sink";
+    bool sourceDirection =
+        sourceNative
+            ? source && source.getRole().getRootReference().getValue() ==
+                            "acir_native_flow_source"
+            : sourceRecord &&
+                  sourceRecord.getAs<StringAttr>("direction").getValue() ==
+                      "output";
+    bool targetDirection =
+        targetNative
+            ? target && target.getRole().getRootReference().getValue() ==
+                            "acir_native_flow_sink"
+            : targetRecord &&
+                  targetRecord.getAs<StringAttr>("direction").getValue() ==
+                      "input";
+    if (!source || !target || !sourceDirection || !targetDirection ||
+        (!sourceNative &&
         sourceRecord.getAs<FlatSymbolRefAttr>("interface") !=
             source.getInterface() ||
+        !sourceNative &&
         sourceRecord.getAs<FlatSymbolRefAttr>("role") != source.getRole() ||
+        !sourceNative &&
         sourceRecord.getAs<FlatSymbolRefAttr>("payload") !=
             source.getPayload() ||
+        !sourceNative &&
         sourceRecord.getAs<FlatSymbolRefAttr>("protocol") !=
             source.getProtocol() ||
+        !targetNative &&
         targetRecord.getAs<FlatSymbolRefAttr>("interface") !=
             target.getInterface() ||
+        !targetNative &&
         targetRecord.getAs<FlatSymbolRefAttr>("role") != target.getRole() ||
+        !targetNative &&
         targetRecord.getAs<FlatSymbolRefAttr>("payload") !=
             target.getPayload() ||
+        !targetNative &&
         targetRecord.getAs<FlatSymbolRefAttr>("protocol") !=
-            target.getProtocol())
+            target.getProtocol()))
       return emitOpError("port bind endpoints must match exact output/input "
                          "binding-lock records");
     const bool nativeFlow = isNativeFlowInterface(source);
     if (getKind() == "flow" &&
         (!nativeFlow ||
-         !isa_and_nonnull<ModuleOp>(findRealization(sourceOp.getBase())) ||
-         !isa_and_nonnull<ModuleOp>(findRealization(targetOp.getBase()))))
+         (!sourceNative &&
+          !isa_and_nonnull<ModuleOp>(findRealization(sourceOp.getBase()))) ||
+         (!targetNative &&
+          !isa_and_nonnull<ModuleOp>(findRealization(targetOp.getBase())))))
       return emitOpError("flow bind accepts only compiler-native native-Flow "
-                         "generated-module ports");
+                         "generated-module or native-queue ports");
     if (getKind() == "port" && nativeFlow)
       return emitOpError(
           "port bind cannot consume compiler-native native-Flow ports");
-    if (sourceRecord.get("interface") != targetRecord.get("interface") ||
+    if ((sourceNative || targetNative) &&
+        (source.getInterface() != target.getInterface() ||
+         source.getPayload() != target.getPayload() ||
+         source.getProtocol() != target.getProtocol()))
+      return emitOpError(
+          "native Flow bind endpoints must have identical interface, "
+          "payload, and protocol");
+    if (!sourceNative && !targetNative &&
+        (sourceRecord.get("interface") != targetRecord.get("interface") ||
         sourceRecord.get("payload") != targetRecord.get("payload") ||
         sourceRecord.get("protocol") != targetRecord.get("protocol") ||
         sourceRecord.get("cardinality") != targetRecord.get("cardinality") ||
         sourceRecord.get("delegation") != targetRecord.get("delegation") ||
         sourceRecord.get("ownership") != targetRecord.get("ownership") ||
-        sourceRecord.get("time_domain") != targetRecord.get("time_domain"))
+        sourceRecord.get("time_domain") != targetRecord.get("time_domain")))
       return emitOpError(
           "port bind endpoints must have identical interface, payload, "
           "protocol, cardinality, delegation, ownership, and time domain");

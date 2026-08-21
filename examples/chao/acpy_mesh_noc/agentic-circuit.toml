@@ -1,0 +1,26 @@
+contract_epoch = "0.2"
+
+[project]
+name = "acpy-mesh-noc"
+version = "0.2.0"
+architecture = "model.py"
+system = "main"
+
+[providers]
+standard_library = ["ac.std"]
+
+[build]
+profile = "fast"
+compiler = "c++"
+standard_library = "libstdc++"
+component_roots = []
+protocol_roots = []
+build_root = "build-noc"
+instrumentation_layers = []
+
+[run]
+trace_roots = []
+inputs = {}
+
+[diagnostics]
+format = "text"

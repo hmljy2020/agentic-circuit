@@ -1463,13 +1463,19 @@ mlir::LogicalResult ACIRToACSimPass::planModule(ac::ModuleOp module,
         return failure();
       flowExports[exportOp.getFlow()] = {exportOp.getQueue().str(),
                                          std::move(*metadata)};
+      auto queue = llvm::find_if(planned.placements, [&](const auto &candidate) {
+        return candidate.kind == PlacementPlan::Kind::RuntimeObject &&
+               candidate.name == exportOp.getQueue();
+      });
+      if (queue == planned.placements.end())
+        return lowerError(exportOp, "ACLOWER-OWNERSHIP",
+                          "native Flow export queue has no native owner");
+      queue->outputPorts.push_back(
+          {exportOp.getFlow(), flowExports[exportOp.getFlow()].second, true});
       continue;
     }
     if (auto importOp = dyn_cast<ac::FlowImportOp>(operation)) {
       auto argument = dyn_cast<BlockArgument>(importOp.getFlow());
-      if (!argument || argument.getOwner() != &module.getBody().front())
-        return lowerError(importOp, "ACLOWER-UNSUPPORTED-CONSTRUCT",
-                          "native Flow import must consume a module argument");
       auto flow = cast<ac::FlowType>(importOp.getFlow().getType());
       std::string accessorIdentity = "acir_flow_sink_accessor_" +
                                      module.getSymName().str() + "_" +
@@ -1478,8 +1484,21 @@ mlir::LogicalResult ACIRToACSimPass::planModule(ac::ModuleOp module,
           nativeFlowPort(importOp, flow, "input", accessorIdentity, "flowSink");
       if (failed(metadata))
         return failure();
-      flowImports[importOp.getFlow()] = {importOp.getQueue().str(),
-                                         std::move(*metadata)};
+      if (argument && argument.getOwner() == &module.getBody().front()) {
+        flowImports[importOp.getFlow()] = {importOp.getQueue().str(),
+                                           std::move(*metadata)};
+      } else {
+        auto queue =
+            llvm::find_if(planned.placements, [&](const auto &candidate) {
+              return candidate.kind == PlacementPlan::Kind::RuntimeObject &&
+                     candidate.name == importOp.getQueue();
+            });
+        if (queue == planned.placements.end())
+          return lowerError(importOp, "ACLOWER-OWNERSHIP",
+                            "native Flow import queue has no native owner");
+        queue->inputPorts.push_back(
+            {importOp.getFlow(), std::move(*metadata), true});
+      }
       continue;
     }
     if (auto domain = dyn_cast<ac::TimeDomainOp>(operation)) {
@@ -1551,22 +1570,30 @@ mlir::LogicalResult ACIRToACSimPass::planModule(ac::ModuleOp module,
       edge.nativeFlow = input.nativeFlow;
       if (edge.nativeFlow) {
         const PlacementPlan &source = planned.placements[*sourceIndex];
-        auto sourceModule = moduleIndexByName.find(source.targetSymbol);
-        auto targetModule = moduleIndexByName.find(target.targetSymbol);
-        if (sourceModule == moduleIndexByName.end() ||
-            targetModule == moduleIndexByName.end())
-          return lowerError(target.inputPorts.front().value.getDefiningOp(),
-                            "ACLOWER-UNSUPPORTED-CONSTRUCT",
-                            "native Flow endpoints must be concrete modules");
-        for (const ModulePortPlan &port : modules[sourceModule->second].ports)
-          if (port.nativeFlow && port.resultIndex >= 0 &&
-              port.metadata.accessor == sourceEndpoint->metadata.accessor)
-            edge.sourceChild = port.queue;
-        for (const ModulePortPlan &port : modules[targetModule->second].ports)
-          if (port.nativeFlow && port.inputIndex >= 0 &&
-              port.metadata.accessor == input.metadata.accessor)
-            edge.targetChild = port.queue;
-        if (edge.sourceChild.empty() || edge.targetChild.empty())
+        if (!source.targetIsRuntimeObject) {
+          auto sourceModule = moduleIndexByName.find(source.targetSymbol);
+          if (sourceModule == moduleIndexByName.end())
+            return lowerError(target.inputPorts.front().value.getDefiningOp(),
+                              "ACLOWER-UNSUPPORTED-CONSTRUCT",
+                              "native Flow source must be a concrete module or queue");
+          for (const ModulePortPlan &port : modules[sourceModule->second].ports)
+            if (port.nativeFlow && port.resultIndex >= 0 &&
+                port.metadata.accessor == sourceEndpoint->metadata.accessor)
+              edge.sourceChild = port.queue;
+        }
+        if (!target.targetIsRuntimeObject) {
+          auto targetModule = moduleIndexByName.find(target.targetSymbol);
+          if (targetModule == moduleIndexByName.end())
+            return lowerError(target.inputPorts.front().value.getDefiningOp(),
+                              "ACLOWER-UNSUPPORTED-CONSTRUCT",
+                              "native Flow target must be a concrete module or queue");
+          for (const ModulePortPlan &port : modules[targetModule->second].ports)
+            if (port.nativeFlow && port.inputIndex >= 0 &&
+                port.metadata.accessor == input.metadata.accessor)
+              edge.targetChild = port.queue;
+        }
+        if ((!source.targetIsRuntimeObject && edge.sourceChild.empty()) ||
+            (!target.targetIsRuntimeObject && edge.targetChild.empty()))
           return lowerError(target.inputPorts.front().value.getDefiningOp(),
                             "ACLOWER-OWNERSHIP",
                             "native Flow endpoint has no boundary queue");
@@ -3161,13 +3188,15 @@ ACIRToACSimPass::emit(mlir::ModuleOp input) {
               module.placements[edge.sourcePlacement];
           const PlacementPlan &targetPlacement =
               module.placements[edge.targetPlacement];
-          std::string sourceSuffix =
-              "." + sourcePlacement.name + "." + edge.sourceChild;
+          std::string sourceSuffix = "." + sourcePlacement.name;
+          if (!edge.sourceChild.empty())
+            sourceSuffix += "." + edge.sourceChild;
           if (!StringRef(source.path).ends_with(sourceSuffix))
             continue;
           for (auto [targetId, target] : llvm::enumerate(runtimeRows)) {
-            std::string targetSuffix =
-                "." + targetPlacement.name + "." + edge.targetChild;
+            std::string targetSuffix = "." + targetPlacement.name;
+            if (!edge.targetChild.empty())
+              targetSuffix += "." + edge.targetChild;
             if (!StringRef(target.path).ends_with(targetSuffix))
               continue;
             for (auto [linkId, link] : llvm::enumerate(runtimeRows)) {
