@@ -115,7 +115,7 @@
       "canonical_name": "ac.std.MeshNoC",
       "availability": "available",
       "schema_path": "schemas/stdlib/MeshNoC.json",
-      "schema_fingerprint": "sha256:b8650b9d4dbdffbeefc2be493730a15bd3d67b4f2bcc66ecf6fb5781cd7bc224"
+      "schema_fingerprint": "sha256:2538f4e990860abd1359f50d24f13cbb0a0aee609c0d46916a7ed9b23aff9052"
     },
     {
       "canonical_name": "ac.std.Packetizer",

@@ -46,6 +46,54 @@
       "cpp_mapping": "constexpr_argument"
     },
     {
+      "name": "virtual_channels",
+      "acir_type": "index",
+      "required": false,
+      "default": 1,
+      "constraint": "value == 1",
+      "cpp_mapping": "constexpr_argument"
+    },
+    {
+      "name": "flow_control",
+      "acir_type": "!ac.static_string",
+      "required": false,
+      "default": "ready_valid",
+      "constraint": "value == ready_valid",
+      "cpp_mapping": "constexpr_argument"
+    },
+    {
+      "name": "link_latency",
+      "acir_type": "index",
+      "required": false,
+      "default": 1,
+      "constraint": "value == 1",
+      "cpp_mapping": "constexpr_argument"
+    },
+    {
+      "name": "router_pipeline",
+      "acir_type": "!ac.static_string",
+      "required": false,
+      "default": "single_stage_elastic",
+      "constraint": "value == single_stage_elastic",
+      "cpp_mapping": "constexpr_argument"
+    },
+    {
+      "name": "input_speedup",
+      "acir_type": "index",
+      "required": false,
+      "default": 1,
+      "constraint": "value == 1",
+      "cpp_mapping": "constexpr_argument"
+    },
+    {
+      "name": "output_speedup",
+      "acir_type": "index",
+      "required": false,
+      "default": 1,
+      "constraint": "value == 1",
+      "cpp_mapping": "constexpr_argument"
+    },
+    {
       "name": "route_offset",
       "acir_type": "index",
       "required": false,
@@ -66,7 +114,7 @@
       "acir_type": "!ac.static_string",
       "required": false,
       "default": "greedy_fixed_priority",
-      "constraint": "value == greedy_fixed_priority",
+      "constraint": "value in [greedy_fixed_priority, round_robin]",
       "cpp_mapping": "constexpr_argument"
     }
   ],
@@ -159,5 +207,5 @@
     "gauges": [],
     "histograms": []
   },
-  "schema_fingerprint": "sha256:b8650b9d4dbdffbeefc2be493730a15bd3d67b4f2bcc66ecf6fb5781cd7bc224"
+  "schema_fingerprint": "sha256:2538f4e990860abd1359f50d24f13cbb0a0aee609c0d46916a7ed9b23aff9052"
 }

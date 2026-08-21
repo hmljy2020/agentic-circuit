@@ -377,7 +377,14 @@ class _Normalizer:
                 vc = 1
                 numeric = ("queue_depth", "route_offset")
                 if schema.identity == "ac.std.MeshNoC":
-                    numeric += ("width", "height")
+                    numeric += (
+                        "width",
+                        "height",
+                        "virtual_channels",
+                        "link_latency",
+                        "input_speedup",
+                        "output_speedup",
+                    )
                 if any(type(static_values[name]) is not int for name in numeric):
                     raise ResolutionError(f"{display_name} numeric parameters must be static integers")
                 queue_depth = static_values["queue_depth"]
@@ -389,11 +396,11 @@ class _Normalizer:
                     raise ResolutionError(f"{display_name} queue_depth must be in [1, 64]")
                 if offset < 0:
                     raise ResolutionError(f"{display_name} route_offset must be >= 0")
-                if static_values["arbitration"] != "greedy_fixed_priority":
-                    raise ResolutionError(
-                        f"{display_name} arbitration must be 'greedy_fixed_priority'"
-                    )
                 if schema.identity == "ac.std.RingNoC":
+                    if static_values["arbitration"] != "greedy_fixed_priority":
+                        raise ResolutionError(
+                            "RingNoC arbitration must be 'greedy_fixed_priority'"
+                        )
                     if not 2 <= input_ports <= 16:
                         raise ResolutionError("RingNoC node count must be in [2, 16]")
                     if static_values["routing"] != "clockwise":
@@ -407,13 +414,40 @@ class _Normalizer:
                 else:
                     mesh_width = static_values["width"]
                     mesh_height = static_values["height"]
+                    mesh_vcs = static_values["virtual_channels"]
+                    link_latency = static_values["link_latency"]
+                    input_speedup = static_values["input_speedup"]
+                    output_speedup = static_values["output_speedup"]
                     assert isinstance(mesh_width, int) and isinstance(mesh_height, int)
+                    assert isinstance(mesh_vcs, int) and isinstance(link_latency, int)
+                    assert isinstance(input_speedup, int) and isinstance(output_speedup, int)
                     if not 1 <= mesh_width <= 4 or not 1 <= mesh_height <= 4:
                         raise ResolutionError("MeshNoC width and height must be in [1, 4]")
                     if mesh_width * mesh_height != input_ports:
                         raise ResolutionError("MeshNoC width * height must equal node count")
+                    if mesh_vcs != 1:
+                        raise ResolutionError("MeshNoC virtual_channels must be exactly 1")
+                    if static_values["flow_control"] != "ready_valid":
+                        raise ResolutionError("MeshNoC flow_control must be 'ready_valid'")
+                    if link_latency != 1:
+                        raise ResolutionError("MeshNoC link_latency must be exactly 1")
+                    if static_values["router_pipeline"] != "single_stage_elastic":
+                        raise ResolutionError(
+                            "MeshNoC router_pipeline must be 'single_stage_elastic'"
+                        )
+                    if input_speedup != 1 or output_speedup != 1:
+                        raise ResolutionError(
+                            "MeshNoC input_speedup and output_speedup must be exactly 1"
+                        )
                     if static_values["routing"] != "xy":
                         raise ResolutionError("MeshNoC routing must be 'xy'")
+                    if static_values["arbitration"] not in {
+                        "greedy_fixed_priority",
+                        "round_robin",
+                    }:
+                        raise ResolutionError(
+                            "MeshNoC arbitration must be 'greedy_fixed_priority' or 'round_robin'"
+                        )
                     route_x_width = max(1, (mesh_width - 1).bit_length())
                     route_y_width = max(1, (mesh_height - 1).bit_length())
                     route_width = route_x_width + route_y_width
