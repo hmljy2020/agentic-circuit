@@ -16,8 +16,8 @@ one item is `IN_PROGRESS`.
 | ID | Status | Work item | Acceptance evidence | Commit |
 |---:|:---:|---|---|---|
 | 0 | DONE | Ledger and baseline | `git status --short --branch`: `main` ahead 1; eight protected edits recorded | ledger commit |
-| 1 | IN_PROGRESS | Mesh schema, validation, specialization | catalog/contracts/frontend tests | pending |
-| 2 | TODO | Topology-neutral NoC descriptors | synthetic non-Mesh descriptor test | pending |
+| 1 | DONE | Mesh schema, validation, specialization | catalog 36; contracts 21/21; NoC frontend 8/8 | schema commit |
+| 2 | IN_PROGRESS | Topology-neutral NoC descriptors | synthetic non-Mesh descriptor test | pending |
 | 3 | TODO | VC state and reverse credit events | ACIR verify/freeze/lower | pending |
 | 4 | TODO | Single-stage credit VC runtime | owner, credit, backpressure and invalid-route tests | pending |
 | 5 | TODO | Owner-only saturation curve | two byte-identical benchmark runs | pending |

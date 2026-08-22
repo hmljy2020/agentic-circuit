@@ -58,7 +58,7 @@
       "acir_type": "!ac.static_string",
       "required": false,
       "default": "ready_valid",
-      "constraint": "value == ready_valid",
+      "constraint": "value in [ready_valid, credit]",
       "cpp_mapping": "constexpr_argument"
     },
     {
@@ -74,7 +74,39 @@
       "acir_type": "!ac.static_string",
       "required": false,
       "default": "single_stage_elastic",
-      "constraint": "value == single_stage_elastic",
+      "constraint": "value in [single_stage_elastic, input_queued]",
+      "cpp_mapping": "constexpr_argument"
+    },
+    {
+      "name": "credit_delay",
+      "acir_type": "index",
+      "required": false,
+      "default": 0,
+      "constraint": "0 <= value <= 64",
+      "cpp_mapping": "constexpr_argument"
+    },
+    {
+      "name": "vc_alloc_delay",
+      "acir_type": "index",
+      "required": false,
+      "default": 0,
+      "constraint": "0 <= value <= 64",
+      "cpp_mapping": "constexpr_argument"
+    },
+    {
+      "name": "sw_alloc_delay",
+      "acir_type": "index",
+      "required": false,
+      "default": 0,
+      "constraint": "0 <= value <= 64",
+      "cpp_mapping": "constexpr_argument"
+    },
+    {
+      "name": "wait_for_tail_credit",
+      "acir_type": "i1",
+      "required": false,
+      "default": false,
+      "constraint": "static boolean",
       "cpp_mapping": "constexpr_argument"
     },
     {
@@ -215,5 +247,5 @@
     "gauges": [],
     "histograms": []
   },
-  "schema_fingerprint": "sha256:cb4ad1defe383673b7a320997f0ebadef92fd959c3963e8744d1d30ccd2e719e"
+  "schema_fingerprint": "sha256:711991d2cc8b3c520c024f08bde055801ec4de296b84523f69c3795e0d82db75"
 }

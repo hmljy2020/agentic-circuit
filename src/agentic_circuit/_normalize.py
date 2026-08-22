@@ -423,6 +423,9 @@ class _Normalizer:
                         "height",
                         "virtual_channels",
                         "link_latency",
+                        "credit_delay",
+                        "vc_alloc_delay",
+                        "sw_alloc_delay",
                         "input_speedup",
                         "output_speedup",
                     )
@@ -464,22 +467,65 @@ class _Normalizer:
                     link_latency = static_values["link_latency"]
                     input_speedup = static_values["input_speedup"]
                     output_speedup = static_values["output_speedup"]
+                    credit_delay = static_values["credit_delay"]
+                    vc_alloc_delay = static_values["vc_alloc_delay"]
+                    sw_alloc_delay = static_values["sw_alloc_delay"]
+                    wait_for_tail_credit = static_values["wait_for_tail_credit"]
                     assert isinstance(mesh_width, int) and isinstance(mesh_height, int)
                     assert isinstance(mesh_vcs, int) and isinstance(link_latency, int)
                     assert isinstance(input_speedup, int) and isinstance(output_speedup, int)
+                    assert isinstance(credit_delay, int) and isinstance(vc_alloc_delay, int)
+                    assert isinstance(sw_alloc_delay, int)
                     if not 1 <= mesh_width <= 4 or not 1 <= mesh_height <= 4:
                         raise ResolutionError("MeshNoC width and height must be in [1, 4]")
                     if mesh_width * mesh_height != input_ports:
                         raise ResolutionError("MeshNoC width * height must equal node count")
                     if mesh_vcs != 1:
                         raise ResolutionError("MeshNoC virtual_channels must be exactly 1")
-                    if static_values["flow_control"] != "ready_valid":
-                        raise ResolutionError("MeshNoC flow_control must be 'ready_valid'")
+                    flow_control = static_values["flow_control"]
+                    router_pipeline = static_values["router_pipeline"]
+                    if flow_control not in {"ready_valid", "credit"}:
+                        raise ResolutionError(
+                            "MeshNoC flow_control must be 'ready_valid' or 'credit'"
+                        )
                     if link_latency != 1:
                         raise ResolutionError("MeshNoC link_latency must be exactly 1")
-                    if static_values["router_pipeline"] != "single_stage_elastic":
+                    if router_pipeline not in {"single_stage_elastic", "input_queued"}:
                         raise ResolutionError(
-                            "MeshNoC router_pipeline must be 'single_stage_elastic'"
+                            "MeshNoC router_pipeline must be 'single_stage_elastic' or 'input_queued'"
+                        )
+                    if not 0 <= credit_delay <= 64:
+                        raise ResolutionError("MeshNoC credit_delay must be in [0, 64]")
+                    if not 0 <= vc_alloc_delay <= 64 or not 0 <= sw_alloc_delay <= 64:
+                        raise ResolutionError(
+                            "MeshNoC allocation delays must be in [0, 64]"
+                        )
+                    if type(wait_for_tail_credit) is not bool:
+                        raise ResolutionError(
+                            "MeshNoC wait_for_tail_credit must be a static boolean"
+                        )
+                    if flow_control == "ready_valid":
+                        if router_pipeline != "single_stage_elastic":
+                            raise ResolutionError(
+                                "MeshNoC ready_valid requires router_pipeline='single_stage_elastic'"
+                            )
+                        if credit_delay or vc_alloc_delay or sw_alloc_delay or wait_for_tail_credit:
+                            raise ResolutionError(
+                                "MeshNoC ready_valid does not accept credit or allocation timing"
+                            )
+                    elif router_pipeline == "single_stage_elastic":
+                        if vc_alloc_delay or sw_alloc_delay:
+                            raise ResolutionError(
+                                "MeshNoC single_stage_elastic requires zero allocation delays"
+                            )
+                    else:
+                        if vc_alloc_delay < 1 or sw_alloc_delay < 1:
+                            raise ResolutionError(
+                                "MeshNoC input_queued requires positive VC and switch allocation delays"
+                            )
+                    if not wait_for_tail_credit and credit_delay:
+                        raise ResolutionError(
+                            "MeshNoC credit_delay requires wait_for_tail_credit=True"
                         )
                     if input_speedup != 1 or output_speedup != 1:
                         raise ResolutionError(

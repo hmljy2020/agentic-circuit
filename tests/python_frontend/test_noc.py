@@ -21,7 +21,12 @@ def _registry():
 
 def _source(kind: str, nodes: int, *, width: int = 1, height: int = 1,
             depth: int = 2, name: str = "noc",
-            arbitration: str = "greedy_fixed_priority") -> str:
+            arbitration: str = "greedy_fixed_priority",
+            flow_control: str = "ready_valid",
+            router_pipeline: str = "single_stage_elastic",
+            credit_delay: int = 0, vc_alloc_delay: int = 0,
+            sw_alloc_delay: int = 0,
+            wait_for_tail_credit: bool = False) -> str:
     declarations = []
     for node in range(nodes):
         declarations.extend(
@@ -47,8 +52,10 @@ def _source(kind: str, nodes: int, *, width: int = 1, height: int = 1,
     else:
         arguments = (
             f'width={width}, height={height}, queue_depth={depth}, route_offset=0, '
-            'virtual_channels=1, flow_control="ready_valid", link_latency=1, '
-            'router_pipeline="single_stage_elastic", input_speedup=1, '
+            f'virtual_channels=1, flow_control="{flow_control}", link_latency=1, '
+            f'router_pipeline="{router_pipeline}", credit_delay={credit_delay}, '
+            f'vc_alloc_delay={vc_alloc_delay}, sw_alloc_delay={sw_alloc_delay}, '
+            f'wait_for_tail_credit={wait_for_tail_credit}, input_speedup=1, '
             f'output_speedup=1, routing="xy", arbitration="{arbitration}", '
             f'name="{name}"'
         )
@@ -207,6 +214,10 @@ class NoCFrontendTest(unittest.TestCase):
         self.assertEqual("ready_valid", properties["flow_control"])
         self.assertEqual(1, properties["link_latency"])
         self.assertEqual("single_stage_elastic", properties["router_pipeline"])
+        self.assertEqual(0, properties["credit_delay"])
+        self.assertEqual(0, properties["vc_alloc_delay"])
+        self.assertEqual(0, properties["sw_alloc_delay"])
+        self.assertFalse(properties["wait_for_tail_credit"])
         self.assertEqual(1, properties["input_speedup"])
         self.assertEqual(1, properties["output_speedup"])
         self.assertNotIn("_rr_", fixed.acir)
@@ -247,7 +258,7 @@ class NoCFrontendTest(unittest.TestCase):
             _source("MeshNoC", 4, width=2, height=2).replace("link_latency=1", "link_latency=2"),
             _source("MeshNoC", 4, width=2, height=2).replace("input_speedup=1", "input_speedup=2"),
             _source("MeshNoC", 4, width=2, height=2).replace("output_speedup=1", "output_speedup=2"),
-            _source("MeshNoC", 4, width=2, height=2).replace('flow_control="ready_valid"', 'flow_control="credit"'),
+            _source("MeshNoC", 4, width=2, height=2).replace('flow_control="ready_valid"', 'flow_control="tokens"'),
             _source("MeshNoC", 4, width=2, height=2).replace('router_pipeline="single_stage_elastic"', 'router_pipeline="iq"'),
             _source("MeshNoC", 4, width=2, height=2).replace('arbitration="greedy_fixed_priority"', 'arbitration="age_based"'),
         )
@@ -256,6 +267,58 @@ class NoCFrontendTest(unittest.TestCase):
                 result = _elaborate(source)
                 self.assertIn("ACPY-NOC-001", tuple(item.code for item in result.diagnostics))
                 self.assertTrue(all(item.source is not None for item in result.diagnostics))
+
+    def test_mesh_credit_and_input_queued_parameter_contract(self) -> None:
+        credit = _elaborate(
+            _source(
+                "MeshNoC", 4, width=2, height=2,
+                flow_control="credit", credit_delay=3,
+                wait_for_tail_credit=True,
+            )
+        )
+        iq = _elaborate(
+            _source(
+                "MeshNoC", 4, width=2, height=2,
+                flow_control="credit", router_pipeline="input_queued",
+                credit_delay=2, vc_alloc_delay=1, sw_alloc_delay=3,
+                wait_for_tail_credit=True,
+            )
+        )
+        self.assertEqual((), credit.diagnostics)
+        self.assertEqual((), iq.diagnostics)
+        assert credit.document is not None and iq.document is not None
+        credit_call = next(e for e in credit.document.entities if e.kind == "call")
+        iq_call = next(e for e in iq.document.entities if e.kind == "call")
+        credit_properties = dict((p.name, p.value) for p in credit_call.properties)
+        iq_properties = dict((p.name, p.value) for p in iq_call.properties)
+        self.assertEqual("credit", credit_properties["flow_control"])
+        self.assertEqual(3, credit_properties["credit_delay"])
+        self.assertEqual("input_queued", iq_properties["router_pipeline"])
+        self.assertEqual(3, iq_properties["sw_alloc_delay"])
+        self.assertNotEqual(
+            credit_properties["specialization"], iq_properties["specialization"]
+        )
+
+        invalid = (
+            _source("MeshNoC", 4, width=2, height=2, credit_delay=1),
+            _source(
+                "MeshNoC", 4, width=2, height=2,
+                flow_control="credit", credit_delay=65,
+                wait_for_tail_credit=True,
+            ),
+            _source(
+                "MeshNoC", 4, width=2, height=2,
+                flow_control="credit", vc_alloc_delay=1,
+            ),
+            _source(
+                "MeshNoC", 4, width=2, height=2,
+                flow_control="credit", router_pipeline="input_queued",
+                vc_alloc_delay=0, sw_alloc_delay=1,
+            ),
+        )
+        for source in invalid:
+            result = _elaborate(source)
+            self.assertIn("ACPY-NOC-001", tuple(item.code for item in result.diagnostics))
 
     def test_unknown_generator_dispatch_is_explicit(self) -> None:
         from agentic_circuit._lower_acir import _generator_declaration
