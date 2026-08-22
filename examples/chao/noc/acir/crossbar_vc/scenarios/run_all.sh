@@ -67,12 +67,12 @@ run_scenario() {
   "${out_root}/bin/${name}-demo"
 }
 
-# scenario-name  system-name   generated-object count (model + module + processes)
-run_scenario sc02_contend_out0      sc02_demo 5
-run_scenario sc03_a_over_b          sc03_demo 5
-run_scenario sc04_b_without_a       sc04_demo 4
-run_scenario sc05_a_blocked_b_moves sc05_demo 4
-run_scenario sc06_same_input_two_vc sc06_demo 4
-run_scenario sc09_fifo_order        sc09_demo 5
+# scenario-name  system-name   generated-object count (C API + model + module + processes)
+run_scenario sc02_contend_out0      sc02_demo 6
+run_scenario sc03_a_over_b          sc03_demo 6
+run_scenario sc04_b_without_a       sc04_demo 5
+run_scenario sc05_a_blocked_b_moves sc05_demo 5
+run_scenario sc06_same_input_two_vc sc06_demo 5
+run_scenario sc09_fifo_order        sc09_demo 6
 
 echo "all scenarios passed"

@@ -6,9 +6,12 @@ ulimit -v 1900000
 example_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "${example_root}/../../.." && pwd)"
 model_name="model.mlir"
-build_name="build-rtl-ideal"
-if [[ $# -ne 0 ]]; then
-  echo "usage: $0" >&2
+build_name="build-model"
+if [[ "${1:-}" == "--rtl-ideal" ]]; then
+  model_name="model.rtl-ideal.mlir"
+  build_name="build-rtl-ideal"
+elif [[ $# -ne 0 ]]; then
+  echo "usage: $0 [--rtl-ideal]" >&2
   exit 2
 fi
 build_root="${example_root}/${build_name}"
@@ -59,8 +62,8 @@ while IFS= read -r object; do
   fi
 done < <(find "${out_root}/obj" -maxdepth 1 -type f -name '*.o' | sort)
 
-# model + 1 module + 5 processes (producer0, producer1, scheduler, sink0, sink1).
-if [[ ${#generated_objects[@]} -ne 7 ]]; then
+# C API + model + 1 module + 5 processes (producer0, producer1, scheduler, sink0, sink1).
+if [[ ${#generated_objects[@]} -ne 8 ]]; then
   echo "unexpected generated object set (${#generated_objects[@]} objects)" >&2
   exit 1
 fi
