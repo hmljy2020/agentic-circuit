@@ -27,3 +27,13 @@ host output name; a wrong-node delivery fails the benchmark.
 Run `./run-booksim-comparison.sh` for the checked-in one-VC comparison with
 BookSim 2.0. Unlike disposable build output, its CSV data, exact BookSim
 configuration, and plot are stored under `benchmark-results/vc1/`.
+
+Build and run the topology-neutral VC owner/tail-credit specialization with:
+
+```sh
+PROFILE=credit MODEL_FILE=model_credit.py RUNNER_FILE=run_credit.py ./build-run.sh
+```
+
+Its reproducible curve is stored under `benchmark-results/vc1-credit/`.  The
+reverse credit path is an ordinary internal i32 Queue and a per-egress
+countdown state, so no NoC-specific operation or runtime component is needed.

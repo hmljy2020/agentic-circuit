@@ -31,6 +31,10 @@ def main() -> None:
     parser.add_argument("booksim", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--summary", type=Path)
+    parser.add_argument("--ac-label", default="AC Packet MeshNoC")
+    parser.add_argument(
+        "--title", default="2×2 Uniform Traffic: AC vs BookSim (1 VC, 1-flit packets)"
+    )
     args = parser.parse_args()
 
     ac = read_samples(args.ac)
@@ -55,7 +59,7 @@ def main() -> None:
     figure, axis = plt.subplots(figsize=(7.4, 4.8), dpi=150)
     axis.plot(rates, rates, "--", color="#8a8f98", label="ideal y = x")
     for samples, color, label in (
-        (ac, "#2878b5", "AC Packet MeshNoC"),
+        (ac, "#2878b5", args.ac_label),
         (booksim, "#d35400", "BookSim 2.0 IQ mesh"),
     ):
         averages = [mean(samples[rate]) for rate in rates]
@@ -64,7 +68,7 @@ def main() -> None:
         axis.fill_between(rates, lows, highs, color=color, alpha=0.14)
         axis.plot(rates, averages, marker="o", linewidth=2.2, color=color, label=label)
     axis.set(
-        title="2×2 Uniform Traffic: AC vs BookSim (1 VC, 1-flit packets)",
+        title=args.title,
         xlabel="Requested injection rate (packets / node / cycle)",
         ylabel="Accepted throughput (packets / node / cycle)",
         xlim=(0.0, 1.02),

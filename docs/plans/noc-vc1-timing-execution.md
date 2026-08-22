@@ -17,11 +17,11 @@ one item is `IN_PROGRESS`.
 |---:|:---:|---|---|---|
 | 0 | DONE | Ledger and baseline | `git status --short --branch`: `main` ahead 1; eight protected edits recorded | ledger commit |
 | 1 | DONE | Mesh schema, validation, specialization | catalog 36; contracts 21/21; NoC frontend 8/8 | schema commit |
-| 2 | IN_PROGRESS | Topology-neutral NoC descriptors | synthetic non-Mesh descriptor test | pending |
-| 3 | TODO | VC state and reverse credit events | ACIR verify/freeze/lower | pending |
-| 4 | TODO | Single-stage credit VC runtime | owner, credit, backpressure and invalid-route tests | pending |
-| 5 | TODO | Owner-only saturation curve | two byte-identical benchmark runs | pending |
-| 6 | TODO | Input-queued ingress state machine | exact VA/SA timing tests | pending |
+| 2 | DONE | Topology-neutral NoC descriptors | synthetic transit/forward descriptor has no Mesh directions; frontend 9/9 | owner commit |
+| 3 | DONE | VC state and reverse credit channels | ordinary credit Queue + countdown; verify/freeze/lower pass | owner commit |
+| 4 | DONE | Single-stage credit VC runtime | delivery ticks 6,8; backpressure 4/4; conservation/capacity and independent traffic pass | owner commit |
+| 5 | DONE | Owner-only saturation curve | rate 1.0 mean 0.567625; repeated CSV/summary/PNG SHA-256 identical | owner commit |
+| 6 | IN_PROGRESS | Input-queued ingress state machine | exact VA/SA timing tests | pending |
 | 7 | TODO | IQ runtime and contention | owner retention, fairness, reset and conservation | pending |
 | 8 | TODO | IQ/BookSim comparison | durable raw data, summary, plot and hashes | pending |
 | 9 | TODO | Genericity/Ring reuse proof | common emitter contains no topology decisions | pending |

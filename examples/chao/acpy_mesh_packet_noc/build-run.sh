@@ -4,8 +4,12 @@ ulimit -v 1900000
 
 example_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "${example_root}/../../.." && pwd)"
-build_root="${example_root}/build-packet"
-if [[ "${build_root}" != "${example_root}/build-packet" || -L "${build_root}" ]]; then exit 1; fi
+profile="${PROFILE:-packet}"
+model_file="${MODEL_FILE:-model.py}"
+runner_file="${RUNNER_FILE:-run.py}"
+if [[ ! "${profile}" =~ ^[a-z0-9-]+$ || ! "${model_file}" =~ ^[A-Za-z0-9_.-]+$ || ! "${runner_file}" =~ ^[A-Za-z0-9_.-]+$ ]]; then exit 1; fi
+build_root="${example_root}/build-${profile}"
+if [[ "${build_root}" != "${example_root}/build-${profile}" || -L "${build_root}" ]]; then exit 1; fi
 if [[ -d "${build_root}" ]]; then rm -rf -- "${build_root}"; fi
 mkdir -p -- "${build_root}"
 
@@ -18,12 +22,12 @@ run_stage() {
   return "${rc}"
 }
 
-elaborate() { cd -- "${example_root}" && PYTHONPATH="${repo_root}/src:${repo_root}/build/dev-llvm22/python" python -m agentic_circuit._cli elaborate model.py --system main -o "${build_root}/model.ac.mlir"; }
+elaborate() { cd -- "${example_root}" && PYTHONPATH="${repo_root}/src:${repo_root}/build/dev-llvm22/python" python -m agentic_circuit._cli elaborate "${model_file}" --system main -o "${build_root}/model.ac.mlir"; }
 freeze() { "${repo_root}/build/dev-llvm22/bin/acir-opt" --verify-each=false --pass-pipeline='builtin.module(ac-freeze-topology)' "${build_root}/model.ac.mlir" -o "${build_root}/model.frozen.mlir"; }
 lower() { "${repo_root}/build/dev-llvm22/bin/acir-opt" --ac-lower-to-acsim --ac-binding-profile=fast --ac-binding-target=x86_64-linux-gnu "${build_root}/model.frozen.mlir" -o "${build_root}/model.acsim.mlir"; }
 generate() { "${repo_root}/build/dev-llvm22/bin/acir-cxxgen" "${build_root}/model.acsim.mlir" --stop-after=link --output-root="${build_root}/generated" --project-name=acpy-mesh-packet --project-identity=project.chao.acpy-mesh-packet --system-name=mesh_packet --system-identity=system.chao.mesh-packet --profile=fast --compiler=/usr/bin/c++ --standard-library=libstdc++ --abi-mode=default --object-format=elf --contract-flag=-std=c++20 --compiler-flag=-fPIC --include-root="${repo_root}/include" --link-input="${repo_root}/build/dev-llvm22/lib/gfsim/libgfsim.a" --link-input="${repo_root}/build/dev-llvm22/lib/Bindings/libACIRBindings.a" --linker-flag=-L/usr/lib/llvm-22/lib --linker-flag=-lLLVM; }
 shared() { local objects=(); mapfile -t objects < <(find "${build_root}/generated/obj" -maxdepth 1 -type f -name '*.o' ! -name '*_main_cpp.o' | sort); /usr/bin/c++ -shared "${objects[@]}" "${repo_root}/build/dev-llvm22/lib/gfsim/libgfsim.a" "${repo_root}/build/dev-llvm22/lib/Bindings/libACIRBindings.a" -L/usr/lib/llvm-22/lib -lLLVM -o "${build_root}/generated/bin/libmodel.so"; }
-smoke() { PYTHONPATH="${repo_root}/src" python "${example_root}/run.py" "${build_root}/generated/bin/libmodel.so"; }
+smoke() { PYTHONPATH="${repo_root}/src" python "${example_root}/${runner_file}" "${build_root}/generated/bin/libmodel.so"; }
 
 run_stage elaborate elaborate
 run_stage freeze freeze

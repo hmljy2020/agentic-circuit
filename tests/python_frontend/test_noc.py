@@ -298,6 +298,12 @@ class NoCFrontendTest(unittest.TestCase):
         self.assertNotEqual(
             credit_properties["specialization"], iq_properties["specialization"]
         )
+        assert credit.acir is not None and iq.acir is not None
+        self.assertEqual(8, credit.acir.count("ac.queue @credit_"))
+        self.assertEqual(8, credit.acir.count("ac.queue @node") - 8)
+        self.assertIn("%vc_busy_east", credit.acir)
+        self.assertIn("ac.try_send @credit_", credit.acir)
+        self._verify(credit.acir)
 
         invalid = (
             _source("MeshNoC", 4, width=2, height=2, credit_delay=1),
@@ -319,6 +325,49 @@ class NoCFrontendTest(unittest.TestCase):
         for source in invalid:
             result = _elaborate(source)
             self.assertIn("ACPY-NOC-001", tuple(item.code for item in result.diagnostics))
+
+    def test_common_noc_scheduler_has_no_mesh_direction_dependency(self) -> None:
+        from agentic_circuit._lower_acir import (
+            _NoCEgress,
+            _NoCIngress,
+            _NoCTiming,
+            _noc_scheduler,
+        )
+
+        ingresses = [
+            _NoCIngress("transit", "link_prev", "credit_back"),
+            _NoCIngress("inject", "local_in"),
+        ]
+        egresses = [
+            _NoCEgress("capture", "local_out"),
+            _NoCEgress("forward", "link_next", "vc_forward", "credit_forward"),
+        ]
+        routes = {
+            (egress.name, ingress.name): f"%route_{egress.name}_{ingress.name}"
+            for egress in egresses
+            for ingress in ingresses
+        }
+        emitted = "\n".join(
+            _noc_scheduler(
+                7,
+                ingresses,
+                egresses,
+                routes,
+                ["      %zero = arith.constant 0 : i32"],
+                "i32",
+                timing=_NoCTiming(
+                    flow_control="credit",
+                    credit_delay=2,
+                    wait_for_tail_credit=True,
+                ),
+            )
+        )
+        self.assertIn("@vc_forward", emitted)
+        self.assertIn("@credit_forward", emitted)
+        self.assertIn("@credit_back", emitted)
+        self.assertIn("arith.constant 2 : i32", emitted)
+        for mesh_direction in ("north", "east", "south", "west"):
+            self.assertNotIn(mesh_direction, emitted)
 
     def test_unknown_generator_dispatch_is_explicit(self) -> None:
         from agentic_circuit._lower_acir import _generator_declaration

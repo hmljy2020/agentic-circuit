@@ -546,6 +546,31 @@ def _resource_line(name: str) -> str:
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _NoCIngress:
+    name: str
+    queue: str
+    return_credit_queue: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _NoCEgress:
+    name: str
+    queue: str
+    vc_state_queue: str | None = None
+    receive_credit_queue: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _NoCTiming:
+    flow_control: str = "ready_valid"
+    router_pipeline: str = "single_stage_elastic"
+    credit_delay: int = 0
+    vc_alloc_delay: int = 0
+    sw_alloc_delay: int = 0
+    wait_for_tail_credit: bool = False
+
+
 def _noc_header(call: object) -> tuple[list[str], int, int, str, str, int | None]:
     parameters = _generator_parameters(call)
     nodes = int(parameters["nodes"])
@@ -563,37 +588,87 @@ def _noc_header(call: object) -> tuple[list[str], int, int, str, str, int | None
 
 def _noc_scheduler(
     node: int,
-    ingresses: list[tuple[str, str]],
-    egresses: list[tuple[str, str]],
+    ingresses: list[_NoCIngress],
+    egresses: list[_NoCEgress],
     route_requests: dict[tuple[str, str], str],
     decode: list[str],
     payload_type: str,
     arbitration: str = "greedy_fixed_priority",
+    timing: _NoCTiming = _NoCTiming(),
 ) -> list[str]:
     """Emit one deterministic output-major, ingress-minor NoC scheduler."""
 
     lines = [f"    ac.process @node{node}_scheduler kind \"control\" {{"]
-    for ingress_name, queue in ingresses:
+    for ingress in ingresses:
         lines.append(
-            f"      %head_{ingress_name}, %valid_{ingress_name} = ac.peek @{queue} : {payload_type}"
+            f"      %head_{ingress.name}, %valid_{ingress.name} = ac.peek @{ingress.queue} : {payload_type}"
         )
     lines.extend(decode)
-    for egress_name, queue in egresses:
-        lines.append(f"      %space_{egress_name} = ac.space @{queue}")
-        lines.append(f"      %writable_{egress_name} = arith.cmpi sgt, %space_{egress_name}, %zero : i32")
+    credit_egresses = [
+        egress
+        for egress in egresses
+        if timing.wait_for_tail_credit and egress.receive_credit_queue is not None
+    ]
+    if credit_egresses:
+        lines.append("      %vc_true = arith.constant true")
+        lines.append("      %vc_false = arith.constant false")
+        lines.append("      %vc_one = arith.constant 1 : i32")
+        lines.append("      %vc_wait = arith.constant -1 : i32")
+        for egress in credit_egresses:
+            assert egress.vc_state_queue is not None
+            lines.append(
+                f"      %vc_state_{egress.name}, %vc_state_valid_{egress.name} = "
+                f"ac.try_recv @{egress.vc_state_queue} : i32"
+            )
+            lines.append(
+                f"      %credit_token_{egress.name}, %credit_ready_{egress.name} = "
+                f"ac.try_recv @{egress.receive_credit_queue} : i32"
+            )
+            lines.append(
+                f"      %vc_counting_{egress.name} = arith.cmpi sgt, "
+                f"%vc_state_{egress.name}, %zero : i32"
+            )
+            lines.append(
+                f"      %vc_decremented_{egress.name} = arith.subi "
+                f"%vc_state_{egress.name}, %vc_one : i32"
+            )
+            lines.append(
+                f"      %vc_aged_{egress.name} = arith.select %vc_counting_{egress.name}, "
+                f"%vc_decremented_{egress.name}, %vc_state_{egress.name} : i32"
+            )
+            lines.append(
+                f"      %vc_effective_{egress.name} = arith.select %credit_ready_{egress.name}, "
+                f"%credit_token_{egress.name}, %vc_aged_{egress.name} : i32"
+            )
+            lines.append(
+                f"      %vc_busy_{egress.name} = arith.cmpi ne, "
+                f"%vc_effective_{egress.name}, %zero : i32"
+            )
+            lines.append(
+                f"      %vc_free_{egress.name} = arith.xori %vc_busy_{egress.name}, %vc_true : i1"
+            )
+    for egress in egresses:
+        lines.append(f"      %space_{egress.name} = ac.space @{egress.queue}")
+        lines.append(f"      %writable_{egress.name} = arith.cmpi sgt, %space_{egress.name}, %zero : i32")
     candidates: list[tuple[str, str, str, str, str]] = []
     candidates_by_egress: dict[str, list[int]] = {}
-    for egress_name, egress_queue in egresses:
-        for ingress_name, ingress_queue in ingresses:
-            route = route_requests[(egress_name, ingress_name)]
-            request = f"%request_{egress_name}_{ingress_name}"
+    for egress in egresses:
+        for ingress in ingresses:
+            route = route_requests[(egress.name, ingress.name)]
+            request = f"%request_{egress.name}_{ingress.name}"
             lines.append(
-                f"      {request} = arith.andi {route}, %writable_{egress_name} : i1"
+                f"      {request} = arith.andi {route}, %writable_{egress.name} : i1"
             )
+            if egress in credit_egresses:
+                gated = f"%request_vc_{egress.name}_{ingress.name}"
+                lines.append(
+                    f"      {gated} = arith.andi {request}, %vc_free_{egress.name} : i1"
+                )
+                request = gated
             candidates.append(
-                (request, ingress_name, ingress_queue, egress_name, egress_queue)
+                (request, ingress.name, ingress.queue, egress.name, egress.queue)
             )
-            candidates_by_egress.setdefault(egress_name, []).append(len(candidates) - 1)
+            candidates_by_egress.setdefault(egress.name, []).append(len(candidates) - 1)
     arbiter_requests = [candidate[0] for candidate in candidates]
     rr_pointers: dict[str, tuple[str, list[int]]] = {}
     if arbitration == "round_robin":
@@ -677,6 +752,50 @@ def _noc_scheduler(
         lines.append(
             f"      %fire_{index} = ac.try_transfer @{ingress_queue} to @{egress_queue} when %grant_{index} : {payload_type}"
         )
+    fires_by_egress: dict[str, list[str]] = {}
+    fires_by_ingress: dict[str, list[str]] = {}
+    for index, (_request, ingress_name, _iq, egress_name, _eq) in enumerate(candidates):
+        fires_by_egress.setdefault(egress_name, []).append(f"%fire_{index}")
+        fires_by_ingress.setdefault(ingress_name, []).append(f"%fire_{index}")
+
+    def emit_any(prefix: str, terms: list[str]) -> str:
+        value = terms[0]
+        for ordinal, term in enumerate(terms[1:], start=1):
+            combined = f"%{prefix}_{ordinal}"
+            lines.append(f"      {combined} = arith.ori {value}, {term} : i1")
+            value = combined
+        return value
+
+    for egress in credit_egresses:
+        assert egress.vc_state_queue is not None
+        fired = emit_any(f"vc_fired_{egress.name}", fires_by_egress[egress.name])
+        next_state = f"%vc_state_next_{egress.name}"
+        lines.append(
+            f"      {next_state} = arith.select {fired}, %vc_wait, "
+            f"%vc_effective_{egress.name} : i32"
+        )
+        lines.append(
+            f"      %vc_state_written_{egress.name} = ac.try_send "
+            f"@{egress.vc_state_queue} {next_state} : i32"
+        )
+    if timing.wait_for_tail_credit:
+        lines.append(f"      %credit_value = arith.constant {timing.credit_delay} : i32")
+        for ingress in ingresses:
+            if ingress.return_credit_queue is None:
+                continue
+            departed = emit_any(
+                f"departed_{ingress.name}", fires_by_ingress[ingress.name]
+            )
+            lines.append(f"      scf.if {departed} {{")
+            lines.append(
+                f"        %credit_accepted_{ingress.name} = ac.try_send "
+                f"@{ingress.return_credit_queue} %credit_value : i32"
+            )
+            lines.append(
+                f"        ac.assert %credit_accepted_{ingress.name}, "
+                f'"NoC credit queue overflow on {ingress.return_credit_queue}"'
+            )
+            lines.append("      }")
     for egress_name, (pointer, indices) in rr_pointers.items():
         next_pointer = pointer
         for position, candidate_index in enumerate(indices):
@@ -714,22 +833,23 @@ def _ring_declaration(call: object) -> list[str]:
     for node in range(nodes):
         previous = (node - 1) % nodes
         ingresses = [
-            ("cw", f"link_n{previous}_to_n{node}_cw"),
-            ("local", f"node{node}_local_in"),
+            _NoCIngress("cw", f"link_n{previous}_to_n{node}_cw"),
+            _NoCIngress("local", f"node{node}_local_in"),
         ]
         egresses = [
-            ("local", f"node{node}_local_out"),
-            ("cw", f"link_n{node}_to_n{(node + 1) % nodes}_cw"),
+            _NoCEgress("local", f"node{node}_local_out"),
+            _NoCEgress("cw", f"link_n{node}_to_n{(node + 1) % nodes}_cw"),
         ]
-        lines.extend(_resource_line(f"node{node}_pin_{name}") for name, _ in ingresses)
-        lines.extend(_resource_line(f"node{node}_pout_{name}") for name, _ in egresses)
+        lines.extend(_resource_line(f"node{node}_pin_{item.name}") for item in ingresses)
+        lines.extend(_resource_line(f"node{node}_pout_{item.name}") for item in egresses)
         decode: list[str] = ["      %zero = arith.constant 0 : i32"]
         decode.append(f"      %node_count = arith.constant {nodes} : i32")
         decode.append(f"      %route_mask = arith.constant {(1 << route_width) - 1} : i32")
         if offset:
             decode.append(f"      %route_shift = arith.constant {offset} : i32")
         requests: dict[tuple[str, str], str] = {}
-        for ingress_name, _queue in ingresses:
+        for ingress in ingresses:
+            ingress_name = ingress.name
             source = f"%head_{ingress_name}"
             if route_field:
                 source = f"%route_value_{ingress_name}"
@@ -775,6 +895,14 @@ def _mesh_declaration(call: object) -> list[str]:
     y_width = int(parameters["route_y_width"])
     arbitration = str(parameters["arbitration"])
     route_field = str(parameters["route_field"])
+    timing = _NoCTiming(
+        flow_control=str(parameters["flow_control"]),
+        router_pipeline=str(parameters["router_pipeline"]),
+        credit_delay=int(parameters["credit_delay"]),
+        vc_alloc_delay=int(parameters["vc_alloc_delay"]),
+        sw_alloc_delay=int(parameters["sw_alloc_delay"]),
+        wait_for_tail_credit=bool(parameters["wait_for_tail_credit"]),
+    )
     for node in range(nodes):
         lines.append(_queue_line(f"node{node}_local_in", depth, payload_type, payload_size))
         lines.append(_queue_line(f"node{node}_local_out", depth, payload_type, payload_size))
@@ -786,6 +914,17 @@ def _mesh_declaration(call: object) -> list[str]:
             if 0 <= nx < width and 0 <= ny < height:
                 neighbor = ny * width + nx
                 lines.append(_queue_line(f"link_n{node}_to_n{neighbor}_{direction}", depth, payload_type, payload_size))
+    if timing.wait_for_tail_credit:
+        for node in range(nodes):
+            x, y = node % width, node // width
+            for direction in ("north", "east", "south", "west"):
+                dx, dy = _MESH_DIRECTIONS[direction]
+                nx, ny = x + dx, y + dy
+                if 0 <= nx < width and 0 <= ny < height:
+                    neighbor = ny * width + nx
+                    credit = f"credit_n{neighbor}_to_n{node}_for_{direction}"
+                    lines.append(_queue_line(credit, 2))
+                    lines.append(_queue_line(f"node{node}_vc_{direction}", 2))
     if arbitration == "round_robin":
         for node in range(nodes):
             x, y = node % width, node // width
@@ -809,12 +948,33 @@ def _mesh_declaration(call: object) -> list[str]:
                 neighbor = ny * width + nx
                 inbound[direction] = f"link_n{neighbor}_to_n{node}_{opposite[direction]}"
                 outbound[direction] = f"link_n{node}_to_n{neighbor}_{direction}"
-        ingresses = [(name, inbound[name]) for name in ("north", "east", "south", "west") if name in inbound]
-        ingresses.append(("local", f"node{node}_local_in"))
-        egresses = [("local", f"node{node}_local_out")]
-        egresses.extend((name, outbound[name]) for name in ("north", "east", "south", "west") if name in outbound)
-        lines.extend(_resource_line(f"node{node}_pin_{name}") for name, _ in ingresses)
-        lines.extend(_resource_line(f"node{node}_pout_{name}") for name, _ in egresses)
+        ingresses: list[_NoCIngress] = []
+        for name in ("north", "east", "south", "west"):
+            if name not in inbound:
+                continue
+            source_node = int(inbound[name].split("_n", 1)[1].split("_to", 1)[0])
+            source_direction = opposite[name]
+            credit = (
+                f"credit_n{node}_to_n{source_node}_for_{source_direction}"
+                if timing.wait_for_tail_credit
+                else None
+            )
+            ingresses.append(_NoCIngress(name, inbound[name], credit))
+        ingresses.append(_NoCIngress("local", f"node{node}_local_in"))
+        egresses: list[_NoCEgress] = [_NoCEgress("local", f"node{node}_local_out")]
+        for name in ("north", "east", "south", "west"):
+            if name not in outbound:
+                continue
+            neighbor = node + _MESH_DIRECTIONS[name][1] * width + _MESH_DIRECTIONS[name][0]
+            credit = (
+                f"credit_n{neighbor}_to_n{node}_for_{name}"
+                if timing.wait_for_tail_credit
+                else None
+            )
+            state = f"node{node}_vc_{name}" if timing.wait_for_tail_credit else None
+            egresses.append(_NoCEgress(name, outbound[name], state, credit))
+        lines.extend(_resource_line(f"node{node}_pin_{item.name}") for item in ingresses)
+        lines.extend(_resource_line(f"node{node}_pout_{item.name}") for item in egresses)
         decode = [
             "      %zero = arith.constant 0 : i32",
             f"      %this_x = arith.constant {x} : i32",
@@ -828,7 +988,8 @@ def _mesh_declaration(call: object) -> list[str]:
             decode.append(f"      %route_shift = arith.constant {offset} : i32")
         decode.append(f"      %y_shift = arith.constant {x_width} : i32")
         requests: dict[tuple[str, str], str] = {}
-        for ingress_name, _queue in ingresses:
+        for ingress in ingresses:
+            ingress_name = ingress.name
             source = f"%head_{ingress_name}"
             if route_field:
                 source = f"%route_value_{ingress_name}"
@@ -864,8 +1025,8 @@ def _mesh_declaration(call: object) -> list[str]:
                     f"      %route_local_{ingress_name} = arith.andi %flit_valid_{ingress_name}, %x_eq_y_eq_{ingress_name} : i1",
                 )
             )
-            for egress_name, _ in egresses:
-                requests[(egress_name, ingress_name)] = f"%route_{egress_name}_{ingress_name}"
+            for egress in egresses:
+                requests[(egress.name, ingress_name)] = f"%route_{egress.name}_{ingress_name}"
         lines.extend(
             _noc_scheduler(
                 node,
@@ -875,6 +1036,7 @@ def _mesh_declaration(call: object) -> list[str]:
                 decode,
                 payload_type,
                 arbitration=arbitration,
+                timing=timing,
             )
         )
     result_types = ", ".join(flow_type for _ in range(nodes))
@@ -1251,7 +1413,14 @@ def lower_to_acir(
             flow_specs.add(bundle[:2])
     for call in program.calls:
         if call.schema.generator is not None:
-            flow_specs.add((str(dict(call.static_arguments)["payload"]), "ready_valid"))
+            parameters = dict(call.static_arguments)
+            flow_specs.add((str(parameters["payload"]), "ready_valid"))
+            if call.schema.identity == "ac.std.MeshNoC" and (
+                parameters.get("arbitration") == "round_robin"
+                or parameters.get("wait_for_tail_credit") is True
+                or parameters.get("router_pipeline") == "input_queued"
+            ):
+                flow_specs.add(("i32", "ready_valid"))
             continue
         for port in call.schema.ports:
             if (spec := _flow_spec(port.acir_type)) is not None:
