@@ -21,11 +21,11 @@ one item is `IN_PROGRESS`.
 | 3 | DONE | VC state and reverse credit channels | ordinary credit Queue + countdown; verify/freeze/lower pass | owner commit |
 | 4 | DONE | Single-stage credit VC runtime | delivery ticks 6,8; backpressure 4/4; conservation/capacity and independent traffic pass | owner commit |
 | 5 | DONE | Owner-only saturation curve | rate 1.0 mean 0.567625; repeated CSV/summary/PNG SHA-256 identical | owner commit |
-| 6 | IN_PROGRESS | Input-queued ingress state machine | exact VA/SA timing tests | pending |
-| 7 | TODO | IQ runtime and contention | owner retention, fairness, reset and conservation | pending |
-| 8 | TODO | IQ/BookSim comparison | durable raw data, summary, plot and hashes | pending |
-| 9 | TODO | Genericity/Ring reuse proof | common emitter contains no topology decisions | pending |
-| 10 | TODO | Final serial regression and documentation | catalog, contracts, frontend, CTest, examples, diff check | pending |
+| 6 | DONE | Input-queued ingress state machine | ACIR verify; VA/SA constants 101/201; runtime delivery ticks exactly 10,15 | `3eeae5a` |
+| 7 | DONE | IQ runtime and contention | backpressure 4/4; RR order 300,400,...; reset and all Queue invariants pass | `3eeae5a` |
+| 8 | DONE | IQ/BookSim comparison | two 30-point runs byte-identical; IQ mean at rate 1.0 = 0.228291667 | `3eeae5a` |
+| 9 | DONE | Genericity/Ring reuse proof | synthetic transit/inject/capture/forward IQ emitter contains no cardinal directions | `3eeae5a` |
+| 10 | DONE | Final serial regression and documentation | catalog 36; contracts 21/21; frontend 14/14; CTest 12/12; four executable profiles and both comparison scripts pass; diff check clean | final ledger commit |
 
 ## Fixed interface
 
@@ -49,3 +49,18 @@ examples/chao/acpy_mesh_packet_noc/build-run.sh
 examples/chao/acpy_mesh_packet_noc/run-booksim-comparison.sh
 git diff --check
 ```
+
+## Final acceptance evidence
+
+- `python scripts/generate-stdlib-catalog.py --check`: 36 schemas, passed.
+- contracts command above: 21 tests passed.
+- NoC/Packet frontend command above: 14 tests passed, including ACIR verification.
+- constrained single-thread build: passed; CTest: 12/12 in 254.91 seconds.
+- `acpy_mesh_noc/build-run.sh`: full chain and runtime passed in 36.98 seconds.
+- Packet default: 4/4 delivered; owner-only: ticks 6,8 and backpressure
+  4/4; IQ: ticks 10,15, backpressure 4/4, deterministic alternating
+  contention, reset, conservation, and capacity checks passed.
+- Both BookSim comparison scripts passed. Two full IQ comparisons produced
+  identical hashes recorded in `benchmark-results/vc1-iq/README.md`.
+- `git diff --check`: passed. The eight protected user modifications remain
+  present and were not staged or committed.
