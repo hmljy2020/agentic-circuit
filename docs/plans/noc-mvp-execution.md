@@ -85,6 +85,21 @@ backpressure.  Python advances complete ticks rather than internal deltas.
 | 37 | Host | DONE | BookSim injection/profile comparison | BookSim 2x2 DOR, 1 flit, 1 VC, depth 2 config runs; rate 0.1 seed 1 parsed throughput 0.09575 | `8b85f70` |
 | 38 | Host | DONE | Final regression, documentation, commits, and push | catalog 36; contracts 21/21; frontend 72/72; CTest 12/12; fresh host build/ctypes sweep, Ring and Mesh runners pass; `git diff --check` clean | final ledger commit |
 
+## Compact round-robin arbitration extension
+
+| ID | Status | Work item | Acceptance evidence | Commit |
+|---:|:---:|---|---|---|
+| 39 | DONE | General explicit-state `ac.arbitrate round_robin` | ACIR parser/printer/verifier tests pass; fixed syntax unchanged; common-resource and one-grant contract enforced | `df369ad` |
+| 40 | DONE | Compact ProcessState/ACSim/C++ realization | one ACSim invoke per arbiter; helper shared by candidate count; CodeGen compile test passes with no heap or dynamic topology | `df369ad` |
+| 41 | DONE | Mesh IQ VA migration | 2x2 runtime retains ticks `10,15` and contention `300,400,301,401,302,402,303,403`; manual blocked/term/selected SSA absent | `df369ad` |
+| 42 | DONE | Canonical report peak-memory fix | element-wise serialization preserves canonical bytes; ProcessState, Conversion, and CodeGen CTests pass | `df369ad` |
+| 43 | DONE | 4x4 compile/runtime/benchmark | lower peak RSS 194040 KB under 1.9 GB; ACIR 806476 bytes, frozen 2111259 bytes; full C++ link; runtime `mesh=4x4 delivered=3 ticks=25` identical twice; benchmark repeated twice with identical AC/BookSim CSV and PNG hashes | this commit |
+
+Final regression evidence for this extension: catalog 36 schemas; contracts
+21/21; Python frontend 79/79; CTest 12/12; lit 116/116; final focused CodeGen
+assertion 1/1; `git diff --check` clean. The durable 4x4 benchmark hashes are
+recorded beside the data in `examples/chao/acpy_mesh_packet_noc/benchmark-results/vc1-iq-4x4/README.md`.
+
 ## Target acceptance commands
 
 Exact paths/targets are refined as the implementation discovers repository-native

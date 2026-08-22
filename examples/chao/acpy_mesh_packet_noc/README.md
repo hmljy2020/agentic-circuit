@@ -57,3 +57,16 @@ Its raw samples, summary, exact BookSim configuration, hashes, and plot are in
 `benchmark-results/vc1-iq/`. The IQ result is materially closer to BookSim but
 is not yet cycle-equivalent; the result README records the remaining semantic
 differences explicitly.
+
+The same input-queued profile scales to the checked-in 4x4 model:
+
+```sh
+PROFILE=iq-4x4 MODEL_FILE=model_iq_4x4.py RUNNER_FILE=run_iq_4x4.py ./build-run.sh
+./run-iq-4x4-booksim-comparison.sh
+```
+
+Its durable raw samples, BookSim configuration, summary, and plot are stored in
+`benchmark-results/vc1-iq-4x4/`. The AC and BookSim curves saturate at different
+levels because switch traversal/channel timing, credit visibility, and traffic
+RNG traces are not yet cycle-equivalent; the comparison is a reproducible
+trend benchmark, not a claim of quantitative equivalence.

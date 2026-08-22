@@ -10,9 +10,6 @@ from pathlib import Path
 from agentic_circuit.runtime import ModelRuntime
 
 
-NODES = 4
-
-
 def packet(destination: int, sequence: int) -> bytes:
     return struct.pack("<ii", destination, sequence)
 
@@ -21,17 +18,18 @@ def packet(destination: int, sequence: int) -> bytes:
 class UniformTraffic:
     model: ModelRuntime
     seed: int
+    nodes: int
 
     def __post_init__(self) -> None:
         self.random = random.Random(self.seed)
-        self.pending: list[bytes | None] = [None] * NODES
+        self.pending: list[bytes | None] = [None] * self.nodes
         self.sequence = 0
 
     def inject(self, rate: float) -> int:
         accepted = 0
         for source, ingress in enumerate(self.model.inputs):
             if self.pending[source] is None and self.random.random() < rate:
-                destination = self.random.randrange(NODES)
+                destination = self.random.randrange(self.nodes)
                 self.pending[source] = packet(destination, self.sequence)
                 self.sequence += 1
             value = self.pending[source]
@@ -60,10 +58,15 @@ def advance(model: ModelRuntime, traffic: UniformTraffic, rate: float) -> tuple[
 
 
 def run_point(
-    model: ModelRuntime, rate: float, seed: int, warmup: int, measure: int
+    model: ModelRuntime,
+    nodes: int,
+    rate: float,
+    seed: int,
+    warmup: int,
+    measure: int,
 ) -> tuple[int, int, float]:
     model.reset()
-    traffic = UniformTraffic(model, seed)
+    traffic = UniformTraffic(model, seed, nodes)
     for _ in range(warmup):
         advance(model, traffic, rate)
     accepted = 0
@@ -72,7 +75,7 @@ def run_point(
         tick_accepted, tick_delivered = advance(model, traffic, rate)
         accepted += tick_accepted
         delivered += tick_delivered
-    return accepted, delivered, delivered / (measure * NODES)
+    return accepted, delivered, delivered / (measure * nodes)
 
 
 def main() -> None:
@@ -93,14 +96,16 @@ def main() -> None:
     seeds = tuple(int(value) for value in args.seeds.split(","))
     rows: list[tuple[float, int, int, int, float]] = []
     with ModelRuntime(args.library) as model:
-        if model.input_sizes != {f"node{node}": 8 for node in range(NODES)}:
-            raise RuntimeError("benchmark requires four eight-byte Packet inputs")
-        if model.output_sizes != {f"node{node}": 8 for node in range(NODES)}:
-            raise RuntimeError("benchmark requires four eight-byte Packet outputs")
+        nodes = len(model.input_sizes)
+        expected = {f"node{node}": 8 for node in range(nodes)}
+        if nodes == 0 or model.input_sizes != expected:
+            raise RuntimeError("benchmark requires contiguous eight-byte nodeN inputs")
+        if model.output_sizes != expected:
+            raise RuntimeError("benchmark requires matching eight-byte nodeN outputs")
         for rate in rates:
             for seed in seeds:
                 accepted, delivered, throughput = run_point(
-                    model, rate, seed, args.warmup, args.measure
+                    model, nodes, rate, seed, args.warmup, args.measure
                 )
                 rows.append((rate, seed, accepted, delivered, throughput))
                 print(
