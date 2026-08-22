@@ -304,6 +304,15 @@ class NoCFrontendTest(unittest.TestCase):
         self.assertIn("%vc_busy_east", credit.acir)
         self.assertIn("ac.try_send @credit_", credit.acir)
         self._verify(credit.acir)
+        self.assertEqual(8, iq.acir.count("ac.queue @credit_"))
+        self.assertEqual(24, iq.acir.count("ac.queue @node") - 8)
+        self.assertIn("ac.queue @node0_pipe_local", iq.acir)
+        self.assertIn("ac.queue @node0_vc_local", iq.acir)
+        self.assertIn("%va_grant_", iq.acir)
+        self.assertIn("%sa_grant_", iq.acir)
+        self.assertIn("arith.constant 101 : i32", iq.acir)
+        self.assertIn("arith.constant 203 : i32", iq.acir)
+        self._verify(iq.acir)
 
         invalid = (
             _source("MeshNoC", 4, width=2, height=2, credit_delay=1),
@@ -331,6 +340,7 @@ class NoCFrontendTest(unittest.TestCase):
             _NoCEgress,
             _NoCIngress,
             _NoCTiming,
+            _noc_iq_scheduler,
             _noc_scheduler,
         )
 
@@ -368,6 +378,37 @@ class NoCFrontendTest(unittest.TestCase):
         self.assertIn("arith.constant 2 : i32", emitted)
         for mesh_direction in ("north", "east", "south", "west"):
             self.assertNotIn(mesh_direction, emitted)
+
+        iq_emitted = "\n".join(
+            _noc_iq_scheduler(
+                7,
+                ingresses,
+                [
+                    _NoCEgress("capture", "local_out", "vc_capture"),
+                    _NoCEgress(
+                        "forward", "link_next", "vc_forward", "credit_forward"
+                    ),
+                ],
+                routes,
+                ["      %zero = arith.constant 0 : i32"],
+                "i32",
+                arbitration="greedy_fixed_priority",
+                timing=_NoCTiming(
+                    flow_control="credit",
+                    router_pipeline="input_queued",
+                    credit_delay=2,
+                    vc_alloc_delay=1,
+                    sw_alloc_delay=1,
+                    wait_for_tail_credit=True,
+                ),
+            )
+        )
+        self.assertIn("@node7_pipe_transit", iq_emitted)
+        self.assertIn("@node7_va_pin_transit", iq_emitted)
+        self.assertIn("@vc_capture", iq_emitted)
+        self.assertIn("@credit_forward", iq_emitted)
+        for mesh_direction in ("north", "east", "south", "west"):
+            self.assertNotIn(mesh_direction, iq_emitted)
 
     def test_unknown_generator_dispatch_is_explicit(self) -> None:
         from agentic_circuit._lower_acir import _generator_declaration

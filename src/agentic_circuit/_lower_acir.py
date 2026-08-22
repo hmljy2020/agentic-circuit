@@ -817,6 +817,408 @@ def _noc_scheduler(
     return lines
 
 
+def _noc_iq_scheduler(
+    node: int,
+    ingresses: list[_NoCIngress],
+    egresses: list[_NoCEgress],
+    route_requests: dict[tuple[str, str], str],
+    decode: list[str],
+    payload_type: str,
+    arbitration: str,
+    timing: _NoCTiming,
+) -> list[str]:
+    """Emit a topology-neutral one-VC input-queued router scheduler."""
+
+    lines = [f"    ac.process @node{node}_scheduler kind \"control\" {{"]
+    for ingress in ingresses:
+        lines.append(
+            f"      %head_{ingress.name}, %valid_{ingress.name} = "
+            f"ac.peek @{ingress.queue} : {payload_type}"
+        )
+    lines.extend(decode)
+    lines.extend(
+        (
+            "      %iq_true = arith.constant true",
+            "      %iq_false = arith.constant false",
+            "      %iq_one = arith.constant 1 : i32",
+            "      %iq_wait_credit = arith.constant -128 : i32",
+            "      %iq_va_base = arith.constant 100 : i32",
+            "      %iq_sa_base = arith.constant 200 : i32",
+        )
+    )
+    for egress in egresses:
+        lines.append(f"      %space_{egress.name} = ac.space @{egress.queue}")
+        lines.append(
+            f"      %writable_{egress.name} = arith.cmpi sgt, "
+            f"%space_{egress.name}, %zero : i32"
+        )
+
+    pipe_effective: dict[str, str] = {}
+    pipe_idle: dict[str, str] = {}
+    pipe_va_ready: dict[str, str] = {}
+    pipe_sa_ready: dict[str, str] = {}
+    ingress_valid_route: dict[str, str] = {}
+
+    def emit_any(prefix: str, terms: list[str]) -> str:
+        value = terms[0]
+        for ordinal, term in enumerate(terms[1:], start=1):
+            combined = f"%{prefix}_{ordinal}"
+            lines.append(f"      {combined} = arith.ori {value}, {term} : i1")
+            value = combined
+        return value
+
+    for ingress in ingresses:
+        state_queue = f"node{node}_pipe_{ingress.name}"
+        lines.append(
+            f"      %pipe_state_{ingress.name}, %pipe_state_valid_{ingress.name} = "
+            f"ac.try_recv @{state_queue} : i32"
+        )
+        lines.append(
+            f"      %pipe_gt_va_{ingress.name} = arith.cmpi sgt, "
+            f"%pipe_state_{ingress.name}, %iq_va_base : i32"
+        )
+        lines.append(
+            f"      %pipe_lt_sa_{ingress.name} = arith.cmpi slt, "
+            f"%pipe_state_{ingress.name}, %iq_sa_base : i32"
+        )
+        lines.append(
+            f"      %pipe_va_counting_{ingress.name} = arith.andi "
+            f"%pipe_gt_va_{ingress.name}, %pipe_lt_sa_{ingress.name} : i1"
+        )
+        lines.append(
+            f"      %pipe_sa_counting_{ingress.name} = arith.cmpi sgt, "
+            f"%pipe_state_{ingress.name}, %iq_sa_base : i32"
+        )
+        lines.append(
+            f"      %pipe_counting_{ingress.name} = arith.ori "
+            f"%pipe_va_counting_{ingress.name}, %pipe_sa_counting_{ingress.name} : i1"
+        )
+        lines.append(
+            f"      %pipe_decremented_{ingress.name} = arith.subi "
+            f"%pipe_state_{ingress.name}, %iq_one : i32"
+        )
+        effective = f"%pipe_effective_{ingress.name}"
+        lines.append(
+            f"      {effective} = arith.select %pipe_counting_{ingress.name}, "
+            f"%pipe_decremented_{ingress.name}, %pipe_state_{ingress.name} : i32"
+        )
+        pipe_effective[ingress.name] = effective
+        pipe_idle[ingress.name] = f"%pipe_idle_{ingress.name}"
+        pipe_va_ready[ingress.name] = f"%pipe_va_ready_{ingress.name}"
+        pipe_sa_ready[ingress.name] = f"%pipe_sa_ready_{ingress.name}"
+        lines.append(
+            f"      {pipe_idle[ingress.name]} = arith.cmpi eq, {effective}, %zero : i32"
+        )
+        lines.append(
+            f"      {pipe_va_ready[ingress.name]} = arith.cmpi eq, "
+            f"{effective}, %iq_va_base : i32"
+        )
+        lines.append(
+            f"      {pipe_sa_ready[ingress.name]} = arith.cmpi eq, "
+            f"{effective}, %iq_sa_base : i32"
+        )
+        routes = [route_requests[(egress.name, ingress.name)] for egress in egresses]
+        ingress_valid_route[ingress.name] = emit_any(
+            f"valid_route_{ingress.name}", routes
+        )
+
+    egress_effective: dict[str, str] = {}
+    egress_free: dict[str, str] = {}
+    for egress in egresses:
+        assert egress.vc_state_queue is not None
+        lines.append(
+            f"      %owner_state_{egress.name}, %owner_state_valid_{egress.name} = "
+            f"ac.try_recv @{egress.vc_state_queue} : i32"
+        )
+        current = f"%owner_state_{egress.name}"
+        if timing.wait_for_tail_credit and egress.receive_credit_queue is not None:
+            lines.append(
+                f"      %owner_credit_{egress.name}, %owner_credit_ready_{egress.name} = "
+                f"ac.try_recv @{egress.receive_credit_queue} : i32"
+            )
+            lines.append(
+                f"      %owner_after_wait_{egress.name} = arith.cmpi sgt, "
+                f"{current}, %iq_wait_credit : i32"
+            )
+            lines.append(
+                f"      %owner_before_free_{egress.name} = arith.cmpi slt, "
+                f"{current}, %zero : i32"
+            )
+            lines.append(
+                f"      %owner_counting_{egress.name} = arith.andi "
+                f"%owner_after_wait_{egress.name}, %owner_before_free_{egress.name} : i1"
+            )
+            lines.append(
+                f"      %owner_incremented_{egress.name} = arith.addi "
+                f"{current}, %iq_one : i32"
+            )
+            lines.append(
+                f"      %owner_aged_{egress.name} = arith.select "
+                f"%owner_counting_{egress.name}, %owner_incremented_{egress.name}, "
+                f"{current} : i32"
+            )
+            lines.append(
+                f"      %owner_credit_negative_{egress.name} = arith.subi "
+                f"%zero, %owner_credit_{egress.name} : i32"
+            )
+            current = f"%owner_effective_{egress.name}"
+            lines.append(
+                f"      {current} = arith.select %owner_credit_ready_{egress.name}, "
+                f"%owner_credit_negative_{egress.name}, %owner_aged_{egress.name} : i32"
+            )
+        egress_effective[egress.name] = current
+        egress_free[egress.name] = f"%owner_free_{egress.name}"
+        lines.append(
+            f"      {egress_free[egress.name]} = arith.cmpi eq, {current}, %zero : i32"
+        )
+
+    va_candidates: list[tuple[str, _NoCIngress, _NoCEgress]] = []
+    va_by_egress: dict[str, list[int]] = {}
+    for egress in egresses:
+        for ingress in ingresses:
+            route_ready = f"%va_route_{egress.name}_{ingress.name}"
+            request = f"%va_request_{egress.name}_{ingress.name}"
+            lines.append(
+                f"      {route_ready} = arith.andi "
+                f"{route_requests[(egress.name, ingress.name)]}, "
+                f"{pipe_va_ready[ingress.name]} : i1"
+            )
+            lines.append(
+                f"      {request} = arith.andi {route_ready}, "
+                f"{egress_free[egress.name]} : i1"
+            )
+            va_candidates.append((request, ingress, egress))
+            va_by_egress.setdefault(egress.name, []).append(len(va_candidates) - 1)
+
+    va_arbiter_requests = [item[0] for item in va_candidates]
+    va_rr_state: dict[str, tuple[str, list[int]]] = {}
+    if arbitration == "round_robin":
+        for egress in egresses:
+            indices = va_by_egress[egress.name]
+            pointer = f"%va_rr_pointer_{egress.name}"
+            lines.append(
+                f"      {pointer}, %va_rr_valid_{egress.name} = ac.try_recv "
+                f"@node{node}_va_rr_{egress.name} : i32"
+            )
+            at_positions: list[str] = []
+            for position in range(len(indices)):
+                lines.append(
+                    f"      %va_rr_position_{egress.name}_{position} = "
+                    f"arith.constant {position} : i32"
+                )
+                at_position = f"%va_rr_at_{egress.name}_{position}"
+                lines.append(
+                    f"      {at_position} = arith.cmpi eq, {pointer}, "
+                    f"%va_rr_position_{egress.name}_{position} : i32"
+                )
+                at_positions.append(at_position)
+            for target, candidate_index in enumerate(indices):
+                terms: list[str] = []
+                for start in range(len(indices)):
+                    earlier: list[int] = []
+                    cursor = start
+                    while cursor != target:
+                        earlier.append(cursor)
+                        cursor = (cursor + 1) % len(indices)
+                    eligible = at_positions[start]
+                    if earlier:
+                        blocked = va_candidates[indices[earlier[0]]][0]
+                        for ordinal, position in enumerate(earlier[1:], start=1):
+                            combined = f"%va_rr_blocked_{egress.name}_{target}_{start}_{ordinal}"
+                            lines.append(
+                                f"      {combined} = arith.ori {blocked}, "
+                                f"{va_candidates[indices[position]][0]} : i1"
+                            )
+                            blocked = combined
+                        available = f"%va_rr_available_{egress.name}_{target}_{start}"
+                        lines.append(
+                            f"      {available} = arith.xori {blocked}, %iq_true : i1"
+                        )
+                        start_ok = f"%va_rr_start_{egress.name}_{target}_{start}"
+                        lines.append(
+                            f"      {start_ok} = arith.andi {eligible}, {available} : i1"
+                        )
+                        eligible = start_ok
+                    term = f"%va_rr_term_{egress.name}_{target}_{start}"
+                    lines.append(
+                        f"      {term} = arith.andi {eligible}, "
+                        f"{va_candidates[candidate_index][0]} : i1"
+                    )
+                    terms.append(term)
+                va_arbiter_requests[candidate_index] = emit_any(
+                    f"va_rr_selected_{egress.name}_{target}", terms
+                )
+            va_rr_state[egress.name] = (pointer, indices)
+
+    va_grants = [f"%va_grant_{index}" for index in range(len(va_candidates))]
+    lines.append(
+        f"      {', '.join(va_grants)} = ac.arbitrate greedy_fixed_priority candidates ["
+    )
+    for index, (_request, ingress, egress) in enumerate(va_candidates):
+        comma = "," if index + 1 != len(va_candidates) else ""
+        lines.append(
+            f"        {va_arbiter_requests[index]} uses "
+            f"[@node{node}_va_pin_{ingress.name}, @node{node}_va_pout_{egress.name}]{comma}"
+        )
+    lines.append("      ] : (" + ", ".join("i1" for _ in va_candidates) + ")")
+
+    va_grants_by_ingress: dict[str, list[str]] = {item.name: [] for item in ingresses}
+    va_grants_by_egress: dict[str, list[tuple[str, int]]] = {
+        item.name: [] for item in egresses
+    }
+    for index, (_request, ingress, egress) in enumerate(va_candidates):
+        va_grants_by_ingress[ingress.name].append(va_grants[index])
+        va_grants_by_egress[egress.name].append(
+            (va_grants[index], ingresses.index(ingress) + 1)
+        )
+
+    sa_candidates: list[tuple[str, _NoCIngress, _NoCEgress]] = []
+    for egress in egresses:
+        for ingress_index, ingress in enumerate(ingresses, start=1):
+            owner_value = f"%owner_value_{egress.name}_{ingress.name}"
+            owner_match = f"%owner_match_{egress.name}_{ingress.name}"
+            stage_route = f"%sa_stage_route_{egress.name}_{ingress.name}"
+            owned_route = f"%sa_owned_route_{egress.name}_{ingress.name}"
+            request = f"%sa_request_{egress.name}_{ingress.name}"
+            lines.append(f"      {owner_value} = arith.constant {ingress_index} : i32")
+            lines.append(
+                f"      {owner_match} = arith.cmpi eq, {egress_effective[egress.name]}, "
+                f"{owner_value} : i32"
+            )
+            lines.append(
+                f"      {stage_route} = arith.andi "
+                f"{route_requests[(egress.name, ingress.name)]}, "
+                f"{pipe_sa_ready[ingress.name]} : i1"
+            )
+            lines.append(f"      {owned_route} = arith.andi {stage_route}, {owner_match} : i1")
+            lines.append(
+                f"      {request} = arith.andi {owned_route}, "
+                f"%writable_{egress.name} : i1"
+            )
+            sa_candidates.append((request, ingress, egress))
+
+    sa_grants = [f"%sa_grant_{index}" for index in range(len(sa_candidates))]
+    lines.append(
+        f"      {', '.join(sa_grants)} = ac.arbitrate greedy_fixed_priority candidates ["
+    )
+    for index, (_request, ingress, egress) in enumerate(sa_candidates):
+        comma = "," if index + 1 != len(sa_candidates) else ""
+        lines.append(
+            f"        {_request} uses "
+            f"[@node{node}_pin_{ingress.name}, @node{node}_pout_{egress.name}]{comma}"
+        )
+    lines.append("      ] : (" + ", ".join("i1" for _ in sa_candidates) + ")")
+    fires_by_ingress: dict[str, list[str]] = {item.name: [] for item in ingresses}
+    fires_by_egress: dict[str, list[str]] = {item.name: [] for item in egresses}
+    for index, (_request, ingress, egress) in enumerate(sa_candidates):
+        fire = f"%fire_{index}"
+        lines.append(
+            f"      {fire} = ac.try_transfer @{ingress.queue} to @{egress.queue} "
+            f"when {sa_grants[index]} : {payload_type}"
+        )
+        fires_by_ingress[ingress.name].append(fire)
+        fires_by_egress[egress.name].append(fire)
+
+    if timing.wait_for_tail_credit:
+        lines.append(f"      %credit_value = arith.constant {timing.credit_delay} : i32")
+        for ingress in ingresses:
+            if ingress.return_credit_queue is None:
+                continue
+            departed = emit_any(f"departed_{ingress.name}", fires_by_ingress[ingress.name])
+            lines.append(f"      scf.if {departed} {{")
+            lines.append(
+                f"        %credit_accepted_{ingress.name} = ac.try_send "
+                f"@{ingress.return_credit_queue} %credit_value : i32"
+            )
+            lines.append(
+                f"        ac.assert %credit_accepted_{ingress.name}, "
+                f'"NoC credit queue overflow on {ingress.return_credit_queue}"'
+            )
+            lines.append("      }")
+
+    for egress in egresses:
+        current = egress_effective[egress.name]
+        for ordinal, (grant, owner) in enumerate(va_grants_by_egress[egress.name]):
+            owner_constant = f"%owner_grant_value_{egress.name}_{ordinal}"
+            updated = f"%owner_after_va_{egress.name}_{ordinal}"
+            lines.append(f"      {owner_constant} = arith.constant {owner} : i32")
+            lines.append(
+                f"      {updated} = arith.select {grant}, {owner_constant}, {current} : i32"
+            )
+            current = updated
+        fired = emit_any(f"owner_fired_{egress.name}", fires_by_egress[egress.name])
+        release = (
+            "%iq_wait_credit"
+            if timing.wait_for_tail_credit and egress.receive_credit_queue is not None
+            else "%zero"
+        )
+        next_state = f"%owner_next_{egress.name}"
+        lines.append(
+            f"      {next_state} = arith.select {fired}, {release}, {current} : i32"
+        )
+        lines.append(
+            f"      %owner_written_{egress.name} = ac.try_send "
+            f"@{egress.vc_state_queue} {next_state} : i32"
+        )
+
+    va_ready_value = 100 + timing.vc_alloc_delay
+    sa_ready_value = 200 + timing.sw_alloc_delay
+    for ingress in ingresses:
+        start = f"%pipe_start_{ingress.name}"
+        lines.append(
+            f"      {start} = arith.andi {pipe_idle[ingress.name]}, "
+            f"{ingress_valid_route[ingress.name]} : i1"
+        )
+        lines.append(
+            f"      %pipe_va_value_{ingress.name} = arith.constant {va_ready_value} : i32"
+        )
+        lines.append(
+            f"      %pipe_sa_value_{ingress.name} = arith.constant {sa_ready_value} : i32"
+        )
+        current = f"%pipe_after_start_{ingress.name}"
+        lines.append(
+            f"      {current} = arith.select {start}, %pipe_va_value_{ingress.name}, "
+            f"{pipe_effective[ingress.name]} : i32"
+        )
+        va_granted = emit_any(
+            f"pipe_va_granted_{ingress.name}", va_grants_by_ingress[ingress.name]
+        )
+        after_va = f"%pipe_after_va_{ingress.name}"
+        lines.append(
+            f"      {after_va} = arith.select {va_granted}, "
+            f"%pipe_sa_value_{ingress.name}, {current} : i32"
+        )
+        fired = emit_any(f"pipe_fired_{ingress.name}", fires_by_ingress[ingress.name])
+        next_state = f"%pipe_next_{ingress.name}"
+        lines.append(
+            f"      {next_state} = arith.select {fired}, %zero, {after_va} : i32"
+        )
+        lines.append(
+            f"      %pipe_written_{ingress.name} = ac.try_send "
+            f"@node{node}_pipe_{ingress.name} {next_state} : i32"
+        )
+
+    for egress_name, (pointer, indices) in va_rr_state.items():
+        current = pointer
+        for position, candidate_index in enumerate(indices):
+            next_value = f"%va_rr_next_value_{egress_name}_{position}"
+            updated = f"%va_rr_next_pointer_{egress_name}_{position}"
+            lines.append(
+                f"      {next_value} = arith.constant {(position + 1) % len(indices)} : i32"
+            )
+            lines.append(
+                f"      {updated} = arith.select {va_grants[candidate_index]}, "
+                f"{next_value}, {current} : i32"
+            )
+            current = updated
+        lines.append(
+            f"      %va_rr_written_{egress_name} = ac.try_send "
+            f"@node{node}_va_rr_{egress_name} {current} : i32"
+        )
+    lines.extend(("      ac.yield_sim", "    }"))
+    return lines
+
+
 def _ring_declaration(call: object) -> list[str]:
     lines, nodes, depth, flow_type, payload_type, payload_size = _noc_header(call)
     parameters = _generator_parameters(call)
@@ -914,6 +1316,7 @@ def _mesh_declaration(call: object) -> list[str]:
             if 0 <= nx < width and 0 <= ny < height:
                 neighbor = ny * width + nx
                 lines.append(_queue_line(f"link_n{node}_to_n{neighbor}_{direction}", depth, payload_type, payload_size))
+    input_queued = timing.router_pipeline == "input_queued"
     if timing.wait_for_tail_credit:
         for node in range(nodes):
             x, y = node % width, node // width
@@ -924,8 +1327,24 @@ def _mesh_declaration(call: object) -> list[str]:
                     neighbor = ny * width + nx
                     credit = f"credit_n{neighbor}_to_n{node}_for_{direction}"
                     lines.append(_queue_line(credit, 2))
+    if input_queued:
+        for node in range(nodes):
+            x, y = node % width, node // width
+            lines.append(_queue_line(f"node{node}_vc_local", 2))
+            lines.append(_queue_line(f"node{node}_pipe_local", 2))
+            for direction in ("north", "east", "south", "west"):
+                dx, dy = _MESH_DIRECTIONS[direction]
+                if 0 <= x + dx < width and 0 <= y + dy < height:
                     lines.append(_queue_line(f"node{node}_vc_{direction}", 2))
-    if arbitration == "round_robin":
+                    lines.append(_queue_line(f"node{node}_pipe_{direction}", 2))
+    elif timing.wait_for_tail_credit:
+        for node in range(nodes):
+            x, y = node % width, node // width
+            for direction in ("north", "east", "south", "west"):
+                dx, dy = _MESH_DIRECTIONS[direction]
+                if 0 <= x + dx < width and 0 <= y + dy < height:
+                    lines.append(_queue_line(f"node{node}_vc_{direction}", 2))
+    if arbitration == "round_robin" and not input_queued:
         for node in range(nodes):
             x, y = node % width, node // width
             lines.append(_queue_line(f"node{node}_rr_local", 2))
@@ -933,6 +1352,14 @@ def _mesh_declaration(call: object) -> list[str]:
                 dx, dy = _MESH_DIRECTIONS[direction]
                 if 0 <= x + dx < width and 0 <= y + dy < height:
                     lines.append(_queue_line(f"node{node}_rr_{direction}", 2))
+    if arbitration == "round_robin" and input_queued:
+        for node in range(nodes):
+            x, y = node % width, node // width
+            lines.append(_queue_line(f"node{node}_va_rr_local", 2))
+            for direction in ("north", "east", "south", "west"):
+                dx, dy = _MESH_DIRECTIONS[direction]
+                if 0 <= x + dx < width and 0 <= y + dy < height:
+                    lines.append(_queue_line(f"node{node}_va_rr_{direction}", 2))
     for node in range(nodes):
         lines.append(f"    ac.flow.import %input{node} to @node{node}_local_in : {flow_type}")
         lines.append(f"    %output{node} = ac.flow.export @node{node}_local_out : {flow_type}")
@@ -961,7 +1388,13 @@ def _mesh_declaration(call: object) -> list[str]:
             )
             ingresses.append(_NoCIngress(name, inbound[name], credit))
         ingresses.append(_NoCIngress("local", f"node{node}_local_in"))
-        egresses: list[_NoCEgress] = [_NoCEgress("local", f"node{node}_local_out")]
+        egresses: list[_NoCEgress] = [
+            _NoCEgress(
+                "local",
+                f"node{node}_local_out",
+                f"node{node}_vc_local" if input_queued else None,
+            )
+        ]
         for name in ("north", "east", "south", "west"):
             if name not in outbound:
                 continue
@@ -971,10 +1404,21 @@ def _mesh_declaration(call: object) -> list[str]:
                 if timing.wait_for_tail_credit
                 else None
             )
-            state = f"node{node}_vc_{name}" if timing.wait_for_tail_credit else None
+            state = (
+                f"node{node}_vc_{name}"
+                if input_queued or timing.wait_for_tail_credit
+                else None
+            )
             egresses.append(_NoCEgress(name, outbound[name], state, credit))
         lines.extend(_resource_line(f"node{node}_pin_{item.name}") for item in ingresses)
         lines.extend(_resource_line(f"node{node}_pout_{item.name}") for item in egresses)
+        if input_queued:
+            lines.extend(
+                _resource_line(f"node{node}_va_pin_{item.name}") for item in ingresses
+            )
+            lines.extend(
+                _resource_line(f"node{node}_va_pout_{item.name}") for item in egresses
+            )
         decode = [
             "      %zero = arith.constant 0 : i32",
             f"      %this_x = arith.constant {x} : i32",
@@ -1027,8 +1471,9 @@ def _mesh_declaration(call: object) -> list[str]:
             )
             for egress in egresses:
                 requests[(egress.name, ingress_name)] = f"%route_{egress.name}_{ingress_name}"
+        scheduler = _noc_iq_scheduler if input_queued else _noc_scheduler
         lines.extend(
-            _noc_scheduler(
+            scheduler(
                 node,
                 ingresses,
                 egresses,

@@ -37,3 +37,23 @@ PROFILE=credit MODEL_FILE=model_credit.py RUNNER_FILE=run_credit.py ./build-run.
 Its reproducible curve is stored under `benchmark-results/vc1-credit/`.  The
 reverse credit path is an ordinary internal i32 Queue and a per-egress
 countdown state, so no NoC-specific operation or runtime component is needed.
+
+Build the input-queued VC1 specialization, which adds explicit one-tick VC
+allocation and switch-allocation stages, with:
+
+```sh
+PROFILE=iq MODEL_FILE=model_iq.py RUNNER_FILE=run_iq.py ./build-run.sh
+```
+
+The smoke test checks exact delivery ticks, owner retention under
+backpressure, deterministic round-robin contention, Queue conservation, and
+reset. Generate the durable four-curve timing comparison with:
+
+```sh
+./run-iq-booksim-comparison.sh
+```
+
+Its raw samples, summary, exact BookSim configuration, hashes, and plot are in
+`benchmark-results/vc1-iq/`. The IQ result is materially closer to BookSim but
+is not yet cycle-equivalent; the result README records the remaining semantic
+differences explicitly.
