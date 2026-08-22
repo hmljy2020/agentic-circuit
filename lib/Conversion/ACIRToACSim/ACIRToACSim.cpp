@@ -169,7 +169,14 @@ Attribute jsonToStaticAttribute(OpBuilder &builder,
 /// Fingerprint a canonical JSON descriptor with the shared RFC 8785 + SHA-256
 /// recipe used across the binding infrastructure.
 std::string fingerprintJson(const llvm::json::Value &value) {
-  auto canonical = bindings::canonicalizeJson(value);
+  bindings::JsonParseLimits limits;
+  limits.maxInputBytes = 1U << 26;
+  limits.maxStructuralWork = 1U << 20;
+  limits.maxStringBytes = 1U << 24;
+  limits.maxTotalStringBytes = 1U << 26;
+  limits.maxArrayElements = 1U << 20;
+  limits.maxObjectMembers = 1U << 16;
+  auto canonical = bindings::canonicalizeJson(value, limits);
   if (!canonical) {
     llvm::consumeError(canonical.takeError());
     return {};
@@ -1990,6 +1997,26 @@ mlir::LogicalResult ACIRToACSimPass::planProcesses(mlir::ModuleOp input) {
     if (failed(typeSymbols.intern(input, symbol, "implementation", callee.cpp(),
                                   callee.fingerprint())))
       return mlir::failure();
+    if (callee.role() == ProcessHelperRole::ArbitrateRoundRobin) {
+      uint64_t candidates = callee.payload().arbitrateRoundRobin().candidates();
+      llvm::SmallVector<Attribute> inputs(candidates,
+                                          builder.getStringAttr("bool"));
+      inputs.push_back(builder.getStringAttr("std::int32_t"));
+      std::string result = "std::tuple<";
+      for (uint64_t index = 0; index < candidates; ++index)
+        result += index ? ", bool" : "bool";
+      if (candidates)
+        result += ", ";
+      result += "std::int32_t>";
+      DictionaryAttr helper = builder.getDictionaryAttr(
+          {builder.getNamedAttr("role",
+                                builder.getStringAttr("arbitrate_round_robin")),
+           builder.getNamedAttr("inputs", builder.getArrayAttr(inputs)),
+           builder.getNamedAttr("result", builder.getStringAttr(result)),
+           builder.getNamedAttr("offsets", builder.getArrayAttr({})),
+           builder.getNamedAttr("big_endian", builder.getBoolAttr(false))});
+      typeSymbols.setHelper(symbol, helper);
+    }
     if (callee.role() == ProcessHelperRole::RecordCreate ||
         callee.role() == ProcessHelperRole::RecordGet ||
         callee.role() == ProcessHelperRole::RecordWith ||
@@ -3565,6 +3592,8 @@ mlir::LogicalResult ACIRToACSimPass::lowerArbiters(mlir::ModuleOp input) {
   for (ac::ArbitrateOp arbiter : arbiters) {
     if (failed(arbiter.verify()))
       return mlir::failure();
+    if (arbiter.getPolicy() == "round_robin")
+      continue;
     OpBuilder builder(arbiter);
     llvm::StringMap<unsigned> resourceIds;
     llvm::SmallVector<Value> occupied;

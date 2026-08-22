@@ -28,5 +28,5 @@ builtin.module attributes {ac.contract_epoch = "0.2"} {
 // CHECK: !ac.struct<@types::@S>
 // CHECK: !ac.packet<@types::@P>
 // CHECK: serialization_width = 8 : i64
-// CHECK: "ac.packet.serialize"
+// CHECK: ac.packet.serialize
 // CHECK-SAME: packet = @types::@P

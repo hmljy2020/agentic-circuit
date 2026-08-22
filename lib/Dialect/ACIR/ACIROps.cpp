@@ -3263,9 +3263,16 @@ ParseResult ArbitrateOp::parse(OpAsmParser &parser, OperationState &result) {
   Builder &builder = parser.getBuilder();
   StringRef policy;
   SmallVector<OpAsmParser::UnresolvedOperand> requests;
+  std::optional<OpAsmParser::UnresolvedOperand> state;
   SmallVector<Attribute> candidateResources;
-  if (parser.parseKeyword(&policy) || parser.parseKeyword("candidates") ||
-      parser.parseLSquare())
+  if (parser.parseKeyword(&policy))
+    return failure();
+  if (policy == "round_robin") {
+    state.emplace();
+    if (parser.parseKeyword("state") || parser.parseOperand(*state))
+      return failure();
+  }
+  if (parser.parseKeyword("candidates") || parser.parseLSquare())
     return failure();
   if (failed(parser.parseOptionalRSquare())) {
     do {
@@ -3306,18 +3313,54 @@ ParseResult ArbitrateOp::parse(OpAsmParser &parser, OperationState &result) {
     if (parser.parseRParen())
       return failure();
   }
-  if (types.size() != requests.size())
-    return parser.emitError(parser.getCurrentLocation(),
-                            "expected one i1 type per candidate");
-  if (parser.resolveOperands(requests, types, parser.getCurrentLocation(),
-                             result.operands))
-    return failure();
-  result.addTypes(types);
+  if (state) {
+    if (types.size() != requests.size() + 1 || !types.front().isInteger(32))
+      return parser.emitError(parser.getCurrentLocation(),
+                              "expected i32 state followed by one i1 type per candidate");
+    if (parser.parseArrow() || parser.parseLParen())
+      return failure();
+    SmallVector<Type> resultTypes;
+    if (failed(parser.parseOptionalRParen())) {
+      do {
+        Type type;
+        if (parser.parseType(type))
+          return failure();
+        resultTypes.push_back(type);
+      } while (succeeded(parser.parseOptionalComma()));
+      if (parser.parseRParen())
+        return failure();
+    }
+    if (resultTypes.size() != requests.size() + 1 ||
+        !resultTypes.back().isInteger(32))
+      return parser.emitError(parser.getCurrentLocation(),
+                              "expected one i1 grant per candidate followed by i32 next state");
+    if (parser.resolveOperands(requests, ArrayRef<Type>(types).drop_front(),
+                               parser.getCurrentLocation(), result.operands) ||
+        parser.resolveOperand(*state, types.front(), result.operands))
+      return failure();
+    result.addTypes(resultTypes);
+  } else {
+    if (types.size() != requests.size())
+      return parser.emitError(parser.getCurrentLocation(),
+                              "expected one i1 type per candidate");
+    if (parser.resolveOperands(requests, types, parser.getCurrentLocation(),
+                               result.operands))
+      return failure();
+    result.addTypes(types);
+  }
+  auto &properties = result.getOrAddProperties<ArbitrateOp::Properties>();
+  properties.operandSegmentSizes = {
+      static_cast<int32_t>(requests.size()), state ? 1 : 0};
+  properties.resultSegmentSizes = {
+      static_cast<int32_t>(requests.size()), state ? 1 : 0};
   return success();
 }
 
 void ArbitrateOp::print(OpAsmPrinter &printer) {
-  printer << ' ' << getPolicy() << " candidates [";
+  printer << ' ' << getPolicy();
+  if (getState())
+    printer << " state " << getState();
+  printer << " candidates [";
   llvm::interleaveComma(llvm::zip(getRequests(), getCandidateResources()),
                         printer, [&](auto candidate) {
                           printer << std::get<0>(candidate) << " uses [";
@@ -3328,20 +3371,35 @@ void ArbitrateOp::print(OpAsmPrinter &printer) {
                         });
   printer << ']';
   printer.printOptionalAttrDictWithKeyword((*this)->getAttrs(),
-                                           {"policy", "candidate_resources"});
+                                           {"policy", "candidate_resources",
+                                            "operandSegmentSizes",
+                                            "resultSegmentSizes"});
   printer << " : (";
+  if (getState())
+    printer << getState().getType() << ", ";
   llvm::interleaveComma(getRequests().getTypes(), printer,
                         [&](Type type) { printer << type; });
   printer << ')';
+  if (getState()) {
+    printer << " -> (";
+    llvm::interleaveComma(getGrants().getTypes(), printer,
+                          [&](Type type) { printer << type; });
+    if (!getGrants().empty())
+      printer << ", ";
+    printer << getNextState().getType() << ')';
+  }
 }
 
 LogicalResult ArbitrateOp::verify() {
-  if (getPolicy() != "greedy_fixed_priority")
-    return emitOpError("policy must be exactly 'greedy_fixed_priority'");
+  bool fixed = getPolicy() == "greedy_fixed_priority";
+  bool roundRobin = getPolicy() == "round_robin";
+  if (!fixed && !roundRobin)
+    return emitOpError(
+        "policy must be one of 'greedy_fixed_priority' or 'round_robin'");
   auto process = dyn_cast_or_null<ProcessOp>((*this)->getParentOp());
   if (!process)
-    return emitOpError(
-        "greedy_fixed_priority must be directly inside an ac.process body");
+    return emitOpError()
+           << getPolicy() << " must be directly inside an ac.process body";
   if (getRequests().size() != getGrants().size() ||
       getRequests().size() != getCandidateResources().size())
     return emitOpError(
@@ -3352,6 +3410,12 @@ LogicalResult ArbitrateOp::verify() {
   for (Value grant : getGrants())
     if (!grant.getType().isInteger(1))
       return emitOpError("all results must have type i1");
+  if (fixed && (getState() || getNextState()))
+    return emitOpError("greedy_fixed_priority does not accept state");
+  if (roundRobin && (!getState() || !getNextState()))
+    return emitOpError("round_robin requires i32 state and i32 next state");
+  if (roundRobin && getRequests().empty())
+    return emitOpError("round_robin requires at least one candidate");
 
   auto module = (*this)->getParentOfType<ModuleOp>();
   if (!module)
@@ -3390,6 +3454,26 @@ LogicalResult ArbitrateOp::verify() {
                << "' must have capacity=1, issue_width=1, ii=1, and fixed "
                   "latency of 1 tick";
     }
+  }
+  if (roundRobin) {
+    llvm::DenseSet<Attribute> common;
+    for (Attribute attribute :
+         cast<ArrayAttr>(*getCandidateResources().begin()))
+      common.insert(attribute);
+    for (Attribute resourceList : llvm::drop_begin(getCandidateResources())) {
+      llvm::DenseSet<Attribute> current;
+      for (Attribute attribute : cast<ArrayAttr>(resourceList))
+        current.insert(attribute);
+      llvm::SmallVector<Attribute> removed;
+      for (Attribute attribute : common)
+        if (!current.contains(attribute))
+          removed.push_back(attribute);
+      for (Attribute attribute : removed)
+        common.erase(attribute);
+    }
+    if (common.empty())
+      return emitOpError(
+          "round_robin candidates must share at least one common resource");
   }
   return success();
 }

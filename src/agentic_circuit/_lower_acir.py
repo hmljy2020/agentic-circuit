@@ -990,77 +990,46 @@ def _noc_iq_scheduler(
             va_candidates.append((request, ingress, egress))
             va_by_egress.setdefault(egress.name, []).append(len(va_candidates) - 1)
 
-    va_arbiter_requests = [item[0] for item in va_candidates]
-    va_rr_state: dict[str, tuple[str, list[int]]] = {}
-    if arbitration == "round_robin":
-        for egress in egresses:
-            indices = va_by_egress[egress.name]
+    va_grants = [f"%va_grant_{index}" for index in range(len(va_candidates))]
+    va_rr_next: dict[str, str] = {}
+    # Deterministic routing makes every ingress request at most one egress.
+    # The input half of a separable input-first allocator therefore has one
+    # request; emit the contested output halves independently.  Keeping each
+    # ACIR arbiter bounded by the router radix avoids a topology-size-dependent
+    # conversion blow-up without changing the grant relation.
+    for egress in egresses:
+        indices = va_by_egress[egress.name]
+        results = [va_grants[index] for index in indices]
+        if arbitration == "round_robin":
             pointer = f"%va_rr_pointer_{egress.name}"
+            next_pointer = f"%va_rr_next_{egress.name}"
             lines.append(
                 f"      {pointer}, %va_rr_valid_{egress.name} = ac.try_recv "
                 f"@node{node}_va_rr_{egress.name} : i32"
             )
-            at_positions: list[str] = []
-            for position in range(len(indices)):
-                lines.append(
-                    f"      %va_rr_position_{egress.name}_{position} = "
-                    f"arith.constant {position} : i32"
-                )
-                at_position = f"%va_rr_at_{egress.name}_{position}"
-                lines.append(
-                    f"      {at_position} = arith.cmpi eq, {pointer}, "
-                    f"%va_rr_position_{egress.name}_{position} : i32"
-                )
-                at_positions.append(at_position)
-            for target, candidate_index in enumerate(indices):
-                terms: list[str] = []
-                for start in range(len(indices)):
-                    earlier: list[int] = []
-                    cursor = start
-                    while cursor != target:
-                        earlier.append(cursor)
-                        cursor = (cursor + 1) % len(indices)
-                    eligible = at_positions[start]
-                    if earlier:
-                        blocked = va_candidates[indices[earlier[0]]][0]
-                        for ordinal, position in enumerate(earlier[1:], start=1):
-                            combined = f"%va_rr_blocked_{egress.name}_{target}_{start}_{ordinal}"
-                            lines.append(
-                                f"      {combined} = arith.ori {blocked}, "
-                                f"{va_candidates[indices[position]][0]} : i1"
-                            )
-                            blocked = combined
-                        available = f"%va_rr_available_{egress.name}_{target}_{start}"
-                        lines.append(
-                            f"      {available} = arith.xori {blocked}, %iq_true : i1"
-                        )
-                        start_ok = f"%va_rr_start_{egress.name}_{target}_{start}"
-                        lines.append(
-                            f"      {start_ok} = arith.andi {eligible}, {available} : i1"
-                        )
-                        eligible = start_ok
-                    term = f"%va_rr_term_{egress.name}_{target}_{start}"
-                    lines.append(
-                        f"      {term} = arith.andi {eligible}, "
-                        f"{va_candidates[candidate_index][0]} : i1"
-                    )
-                    terms.append(term)
-                va_arbiter_requests[candidate_index] = emit_any(
-                    f"va_rr_selected_{egress.name}_{target}", terms
-                )
-            va_rr_state[egress.name] = (pointer, indices)
-
-    va_grants = [f"%va_grant_{index}" for index in range(len(va_candidates))]
-    lines.append(
-        f"      {', '.join(va_grants)} = ac.arbitrate greedy_fixed_priority candidates ["
-    )
-    for index, (_request, ingress, egress) in enumerate(va_candidates):
-        comma = "," if index + 1 != len(va_candidates) else ""
-        lines.append(
-            f"        {va_arbiter_requests[index]} uses "
-            f"[@node{node}_va_pin_{ingress.name}, @node{node}_va_pout_{egress.name}]{comma}"
-        )
-    lines.append("      ] : (" + ", ".join("i1" for _ in va_candidates) + ")")
+            lines.append(
+                f"      {', '.join(results + [next_pointer])} = "
+                f"ac.arbitrate round_robin state {pointer} candidates ["
+            )
+            va_rr_next[egress.name] = next_pointer
+        else:
+            lines.append(
+                f"      {', '.join(results)} = "
+                "ac.arbitrate greedy_fixed_priority candidates ["
+            )
+        for ordinal, index in enumerate(indices):
+            comma = "," if ordinal + 1 != len(indices) else ""
+            lines.append(
+                f"        {va_candidates[index][0]} uses "
+                f"[@node{node}_va_pout_{egress.name}]{comma}"
+            )
+        request_types = ", ".join("i1" for _ in indices)
+        if arbitration == "round_robin":
+            lines.append(
+                f"      ] : (i32, {request_types}) -> ({request_types}, i32)"
+            )
+        else:
+            lines.append(f"      ] : ({request_types})")
 
     va_grants_by_ingress: dict[str, list[str]] = {item.name: [] for item in ingresses}
     va_grants_by_egress: dict[str, list[tuple[str, int]]] = {
@@ -1098,13 +1067,15 @@ def _noc_iq_scheduler(
             sa_candidates.append((request, ingress, egress))
 
     sa_grants = [f"%sa_grant_{index}" for index in range(len(sa_candidates))]
+    # Transfers remain in one resource arbiter so ACIR can prove that the
+    # syntactically repeated pop operations for each ingress are exclusive.
     lines.append(
         f"      {', '.join(sa_grants)} = ac.arbitrate greedy_fixed_priority candidates ["
     )
-    for index, (_request, ingress, egress) in enumerate(sa_candidates):
+    for index, (request, ingress, egress) in enumerate(sa_candidates):
         comma = "," if index + 1 != len(sa_candidates) else ""
         lines.append(
-            f"        {_request} uses "
+            f"        {request} uses "
             f"[@node{node}_pin_{ingress.name}, @node{node}_pout_{egress.name}]{comma}"
         )
     lines.append("      ] : (" + ", ".join("i1" for _ in sa_candidates) + ")")
@@ -1198,22 +1169,10 @@ def _noc_iq_scheduler(
             f"@node{node}_pipe_{ingress.name} {next_state} : i32"
         )
 
-    for egress_name, (pointer, indices) in va_rr_state.items():
-        current = pointer
-        for position, candidate_index in enumerate(indices):
-            next_value = f"%va_rr_next_value_{egress_name}_{position}"
-            updated = f"%va_rr_next_pointer_{egress_name}_{position}"
-            lines.append(
-                f"      {next_value} = arith.constant {(position + 1) % len(indices)} : i32"
-            )
-            lines.append(
-                f"      {updated} = arith.select {va_grants[candidate_index]}, "
-                f"{next_value}, {current} : i32"
-            )
-            current = updated
+    for egress_name, next_pointer in va_rr_next.items():
         lines.append(
             f"      %va_rr_written_{egress_name} = ac.try_send "
-            f"@node{node}_va_rr_{egress_name} {current} : i32"
+            f"@node{node}_va_rr_{egress_name} {next_pointer} : i32"
         )
     lines.extend(("      ac.yield_sim", "    }"))
     return lines
@@ -1413,9 +1372,6 @@ def _mesh_declaration(call: object) -> list[str]:
         lines.extend(_resource_line(f"node{node}_pin_{item.name}") for item in ingresses)
         lines.extend(_resource_line(f"node{node}_pout_{item.name}") for item in egresses)
         if input_queued:
-            lines.extend(
-                _resource_line(f"node{node}_va_pin_{item.name}") for item in ingresses
-            )
             lines.extend(
                 _resource_line(f"node{node}_va_pout_{item.name}") for item in egresses
             )

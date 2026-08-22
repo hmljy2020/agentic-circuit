@@ -252,6 +252,7 @@ FIELD_GET(ProcessScalarUnwrapPayload, ProcessWrapperDirection, direction,
           direction)
 STR_GET(ProcessScalarUnwrapPayload, scalar, scalar)
 STR_GET(ProcessScalarUnwrapPayload, valueType, valueType)
+FIELD_GET(ProcessArbitrateRoundRobinPayload, uint64_t, candidates, candidates)
 FIELD_GET(ProcessGeneratedCalleePayload, ProcessHelperRole, role, role)
 #define PAYLOAD_REF(Type, Method, Field)                                       \
   REF_GET(ProcessGeneratedCalleePayload, Type, Method, Field)
@@ -284,6 +285,8 @@ PAYLOAD_REF(ProcessWakeEventQueuePayload, wakeEventQueue, wakeEventQueue)
 PAYLOAD_REF(ProcessWakeNextDeltaPayload, wakeNextDelta, wakeNextDelta)
 PAYLOAD_REF(ProcessScalarWrapPayload, scalarWrap, scalarWrap)
 PAYLOAD_REF(ProcessScalarUnwrapPayload, scalarUnwrap, scalarUnwrap)
+PAYLOAD_REF(ProcessArbitrateRoundRobinPayload, arbitrateRoundRobin,
+            arbitrateRoundRobin)
 #undef PAYLOAD_REF
 FIELD_GET(ProcessValueTypeMemberPlan, ProcessValueTypeMemberKind, kind, kind)
 STR_GET(ProcessValueTypeMemberPlan, name, name)

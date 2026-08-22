@@ -487,10 +487,11 @@ def ACIR_TryRecvOp : ACIR_RuntimeEffectOp<"try_recv"> {
   let assemblyFormat = "$queue attr-dict `:` type($value)";
 }
 
-def ACIR_ArbitrateOp : ACIR_Op<"arbitrate", [Pure]> {
+def ACIR_ArbitrateOp : ACIR_Op<"arbitrate", [Pure,
+    AttrSizedOperandSegments, AttrSizedResultSegments]> {
   let arguments = (ins Variadic<I1>:$requests, StrAttr:$policy,
-                       ArrayAttr:$candidate_resources);
-  let results = (outs Variadic<I1>:$grants);
+                       ArrayAttr:$candidate_resources, Optional<I32>:$state);
+  let results = (outs Variadic<I1>:$grants, Optional<I32>:$next_state);
   let hasCustomAssemblyFormat = 1;
   let hasVerifier = 1;
 }

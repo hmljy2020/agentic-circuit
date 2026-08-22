@@ -4,8 +4,33 @@ builtin.module attributes {ac.contract_epoch = "0.2"} {
   ac.module @Bad() parameters {} graph {
     ac.process @p kind "control" {
       %r = arith.constant true
-      // expected-error @+1 {{policy must be exactly 'greedy_fixed_priority'}}
-      %g = ac.arbitrate round_robin candidates [%r uses []] : (i1)
+      // expected-error @+1 {{policy must be one of 'greedy_fixed_priority' or 'round_robin'}}
+      %g = ac.arbitrate random candidates [%r uses []] : (i1)
+      ac.yield_sim
+    }
+    ac.return
+  }
+}
+
+// -----
+
+builtin.module attributes {ac.contract_epoch = "0.2"} {
+  ac.module @Bad() parameters {} graph {
+    ac.resource @r0 capacity 1 issue_width 1 ii 1
+        latency {kind = "fixed", ticks = 1 : i64}
+        lifecycle {reservation = "propose_commit", release = "balanced", cancellation = "explicit"}
+        ownership "exclusive" classes [] id "r0" path "r0"
+    ac.resource @r1 capacity 1 issue_width 1 ii 1
+        latency {kind = "fixed", ticks = 1 : i64}
+        lifecycle {reservation = "propose_commit", release = "balanced", cancellation = "explicit"}
+        ownership "exclusive" classes [] id "r1" path "r1"
+    ac.process @p kind "control" {
+      %state = arith.constant 0 : i32
+      %request = arith.constant true
+      // expected-error @+1 {{round_robin candidates must share at least one common resource}}
+      %g0, %g1, %next = ac.arbitrate round_robin state %state candidates [
+        %request uses [@r0], %request uses [@r1]
+      ] : (i32, i1, i1) -> (i1, i1, i32)
       ac.yield_sim
     }
     ac.return

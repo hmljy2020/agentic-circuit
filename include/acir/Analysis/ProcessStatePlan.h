@@ -150,7 +150,8 @@ enum class ProcessHelperRole {
   ScalarUnwrap,
   WakeQueueReadable,
   WakeQueueWritable,
-  QueueTryTransfer
+  QueueTryTransfer,
+  ArbitrateRoundRobin
 };
 enum class ProcessValueTypeMemberKind { Field, Element };
 enum class ProcessStorageSignedness { Signless, Signed, Unsigned };
@@ -611,6 +612,13 @@ public:
 private:
   ACIR_PROCESS_PIMPL(ProcessScalarUnwrapPayload);
 };
+class ProcessArbitrateRoundRobinPayload {
+public:
+  uint64_t candidates() const;
+
+private:
+  ACIR_PROCESS_PIMPL(ProcessArbitrateRoundRobinPayload);
+};
 
 class ProcessGeneratedCalleePayload {
 public:
@@ -643,6 +651,7 @@ public:
   const ProcessWakeNextDeltaPayload &wakeNextDelta() const;
   const ProcessScalarWrapPayload &scalarWrap() const;
   const ProcessScalarUnwrapPayload &scalarUnwrap() const;
+  const ProcessArbitrateRoundRobinPayload &arbitrateRoundRobin() const;
 
 private:
   ACIR_PROCESS_PIMPL(ProcessGeneratedCalleePayload);

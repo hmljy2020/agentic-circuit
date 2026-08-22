@@ -32,13 +32,30 @@ builtin.module attributes {ac.contract_epoch = "0.2"} {
         latency {kind = "fixed", ticks = 1 : i64}
         lifecycle {reservation = "propose_commit", release = "balanced", cancellation = "explicit"}
         ownership "exclusive" classes [] id "out1" path "out1"
+    ac.resource @rr_input0 capacity 1 issue_width 1 ii 1
+        latency {kind = "fixed", ticks = 1 : i64}
+        lifecycle {reservation = "propose_commit", release = "balanced", cancellation = "explicit"}
+        ownership "exclusive" classes [] id "rr_input0" path "rr_input0"
+    ac.resource @rr_input1 capacity 1 issue_width 1 ii 1
+        latency {kind = "fixed", ticks = 1 : i64}
+        lifecycle {reservation = "propose_commit", release = "balanced", cancellation = "explicit"}
+        ownership "exclusive" classes [] id "rr_input1" path "rr_input1"
+    ac.resource @rr_output capacity 1 issue_width 1 ii 1
+        latency {kind = "fixed", ticks = 1 : i64}
+        lifecycle {reservation = "propose_commit", release = "balanced", cancellation = "explicit"}
+        ownership "exclusive" classes [] id "rr_output" path "rr_output"
     ac.process @mover kind "workload" {
+      %state = arith.constant 0 : i32
       %r0 = arith.constant true
       %r1 = arith.constant true
       %g0, %g1 = ac.arbitrate greedy_fixed_priority candidates [
         %r0 uses [@input, @out0],
         %r1 uses [@input, @out1]
       ] : (i1, i1)
+      %rr0, %rr1, %next = ac.arbitrate round_robin state %state candidates [
+        %r0 uses [@rr_input0, @rr_output],
+        %r1 uses [@rr_input1, @rr_output]
+      ] : (i32, i1, i1) -> (i1, i1, i32)
       %f0 = ac.try_transfer @source to @d0 when %g0 : i32
       %f1 = ac.try_transfer @source to @d1 when %g1 : i32
       ac.yield_sim
@@ -53,4 +70,5 @@ builtin.module attributes {ac.contract_epoch = "0.2"} {
 // CHECK: acsim.process @mover
 // CHECK: arith.xori
 // CHECK: arith.andi
+// CHECK: acsim.invoke @acir_impl_arbitrate_round_robin_{{[0-9a-f]+}}
 // CHECK-COUNT-2: acsim.invoke @acir_impl_queue_try_transfer_{{[0-9a-f]+}}

@@ -217,7 +217,8 @@ llvm::StringRef spelling(ProcessHelperRole value) {
                                                   "scalar_unwrap",
                                                   "wake_queue_readable",
                                                   "wake_queue_writable",
-                                                  "queue_try_transfer"};
+                                                  "queue_try_transfer",
+                                                  "arbitrate_round_robin"};
   return names[static_cast<unsigned>(value)];
 }
 
@@ -386,6 +387,9 @@ Value json(const ProcessGeneratedCalleePayload &payload) {
     object["entry"] = payload.traceDecode().entry();
     object["result"] = payload.traceDecode().result();
     object["source"] = payload.traceDecode().source();
+    break;
+  case ProcessHelperRole::ArbitrateRoundRobin:
+    object["candidates"] = payload.arbitrateRoundRobin().candidates();
     break;
   case ProcessHelperRole::QueueTrySend:
     two("element", payload.queueTrySend().element(), "queue",
@@ -727,28 +731,54 @@ serializeProcessStatePlan(const ProcessStatePlanSet &plans,
                           const ProcessStateLimits &limits) {
   if (mlir::failed(verifyProcessStatePlan(plans, limits)))
     return llvm::createStringError("process-state plan verification failed");
-  Object report;
-  report["callees"] =
-      mapArray(plans.callees(), [](const auto &x) { return json(x); });
-  report["contract_epoch"] = "0.2";
-  report["processes"] =
-      mapArray(plans.processes(), [](const auto &x) { return json(x); });
-  report["schema"] = "acir-process-state-plan-0.2";
-  report["value_types"] =
-      mapArray(plans.valueTypes(), [](const auto &x) { return json(x); });
   bindings::JsonParseLimits jsonLimits;
   jsonLimits.maxInputBytes = limits.maxCanonicalReportBytes;
   jsonLimits.maxTotalStringBytes = limits.maxCanonicalReportBytes;
   jsonLimits.maxStructuralWork = limits.maxPlannedOperations;
-  auto canonical =
-      bindings::canonicalizeJson(Value(std::move(report)), jsonLimits);
-  if (!canonical)
-    return canonical.takeError();
-  if (canonical->size() > limits.maxCanonicalReportBytes)
+
+  // Preserve the exact canonical JSON bytes while canonicalizing one element
+  // at a time. A large static model otherwise constructs the full recursive
+  // JSON DOM and a second canonical copy concurrently, making peak memory
+  // proportional to a heavily duplicated report rather than its bounded
+  // serialized size.
+  std::string canonical =
+      "{\"callees\":[";
+  auto appendRange = [&](auto range, auto convert) -> llvm::Error {
+    bool first = true;
+    for (const auto &item : range) {
+      auto element = bindings::canonicalizeJson(convert(item), jsonLimits);
+      if (!element)
+        return element.takeError();
+      if (!first)
+        canonical.push_back(',');
+      first = false;
+      canonical += *element;
+      if (canonical.size() > limits.maxCanonicalReportBytes)
+        return llvm::createStringError(
+            "process-state plan capability maxCanonicalReportBytes exceeded "
+            "(actual>%llu)",
+            static_cast<unsigned long long>(limits.maxCanonicalReportBytes));
+    }
+    return llvm::Error::success();
+  };
+  if (llvm::Error error =
+          appendRange(plans.callees(), [](const auto &x) { return json(x); }))
+    return std::move(error);
+  canonical += "],\"contract_epoch\":\"0.2\",\"processes\":[";
+  if (llvm::Error error =
+          appendRange(plans.processes(), [](const auto &x) { return json(x); }))
+    return std::move(error);
+  canonical +=
+      "],\"schema\":\"acir-process-state-plan-0.2\",\"value_types\":[";
+  if (llvm::Error error =
+          appendRange(plans.valueTypes(), [](const auto &x) { return json(x); }))
+    return std::move(error);
+  canonical += "]}";
+  if (canonical.size() > limits.maxCanonicalReportBytes)
     return llvm::createStringError(
         "process-state plan capability maxCanonicalReportBytes exceeded "
         "(actual=%zu, limit=%llu)",
-        canonical->size(),
+        canonical.size(),
         static_cast<unsigned long long>(limits.maxCanonicalReportBytes));
   return canonical;
 }

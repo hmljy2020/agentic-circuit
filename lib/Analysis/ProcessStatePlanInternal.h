@@ -307,6 +307,9 @@ struct ProcessScalarUnwrapPayload::Impl {
   ProcessWrapperDirection direction = ProcessWrapperDirection::Unwrap;
   std::string scalar, valueType;
 };
+struct ProcessArbitrateRoundRobinPayload::Impl {
+  uint64_t candidates = 0;
+};
 struct ProcessGeneratedCalleePayload::Impl {
   ProcessHelperRole role = ProcessHelperRole::WakeNextDelta;
   std::optional<ProcessRecordCreatePayload> recordCreate;
@@ -337,6 +340,7 @@ struct ProcessGeneratedCalleePayload::Impl {
   std::optional<ProcessWakeNextDeltaPayload> wakeNextDelta;
   std::optional<ProcessScalarWrapPayload> scalarWrap;
   std::optional<ProcessScalarUnwrapPayload> scalarUnwrap;
+  std::optional<ProcessArbitrateRoundRobinPayload> arbitrateRoundRobin;
 };
 struct ProcessValueTypeMemberPlan::Impl {
   ProcessValueTypeMemberKind kind = ProcessValueTypeMemberKind::Field;

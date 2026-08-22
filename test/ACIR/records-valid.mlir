@@ -24,9 +24,9 @@ builtin.module attributes {ac.contract_epoch = "0.2"} {
   %tx = "ac.record.create"(%copy, %tag) <{field_names = ["request", "tag"]}> : (!ac.packet<@types::@Request>, i16) -> !ac.transaction<@types::@Dma>
 }
 
-// CHECK: "ac.record.create"
-// CHECK: "ac.record.get"
-// CHECK: "ac.record.with"
-// CHECK: "ac.packet.serialize"
-// CHECK: "ac.packet.deserialize"
+// CHECK: ac.record.create
+// CHECK: ac.record.get
+// CHECK: ac.record.with
+// CHECK: ac.packet.serialize
+// CHECK: ac.packet.deserialize
 // CHECK-SAME: !ac.packet<@types::@Request>

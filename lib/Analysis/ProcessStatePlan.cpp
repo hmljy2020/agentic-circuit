@@ -82,7 +82,8 @@ llvm::StringRef helperRoleSpelling(ProcessHelperRole role) {
                                                   "scalar_unwrap",
                                                   "wake_queue_readable",
                                                   "wake_queue_writable",
-                                                  "queue_try_transfer"};
+                                                  "queue_try_transfer",
+                                                  "arbitrate_round_robin"};
   return names[static_cast<unsigned>(role)];
 }
 
@@ -171,6 +172,16 @@ bool validCalleeSemantics(const ProcessGeneratedCalleePlan &callee) {
     return inputs.size() == 1 && results.size() == 1 &&
            inputs[0] == payload.traceDecode().entry() &&
            results[0] == payload.traceDecode().result();
+  case ProcessHelperRole::ArbitrateRoundRobin: {
+    uint64_t candidates = payload.arbitrateRoundRobin().candidates();
+    return candidates > 0 && inputs.size() == candidates + 1 &&
+           results.size() == candidates + 1 && inputs.back() == "mlir:i32" &&
+           results.back() == "mlir:i32" &&
+           llvm::all_of(llvm::ArrayRef(inputs).drop_back(),
+                        [](llvm::StringRef type) { return type == "mlir:i1"; }) &&
+           llvm::all_of(llvm::ArrayRef(results).drop_back(),
+                        [](llvm::StringRef type) { return type == "mlir:i1"; });
+  }
   case ProcessHelperRole::QueueTrySend:
     return inputs.size() == 2 && results.size() == 1 &&
            inputs[0] == ("queue-ref:" + payload.queueTrySend().queue()).str() &&
@@ -643,6 +654,65 @@ detail::PlanSetBuilder::buildProduction(mlir::ModuleOp module,
     callees.push_back(std::move(callee));
   }
 
+  // Explicit-state round-robin is a pure, topology-neutral helper shared by
+  // every arbiter with the same candidate count. Keeping it as one planned
+  // action prevents a linear Boolean selection network from being cloned into
+  // every process and every backend representation.
+  std::map<uint64_t, llvm::SmallVector<ProcessActionPlan>> roundRobinActions;
+  for (const PendingProcess &item : pending)
+    for (const auto &block : item.control->blocks)
+      for (const ProcessActionPlan &action : block->actions)
+        if (auto arbiter = mlir::dyn_cast_or_null<ac::ArbitrateOp>(
+                action.sourceOperation());
+            arbiter && arbiter.getPolicy() == "round_robin")
+          roundRobinActions[arbiter.getRequests().size()].push_back(action);
+  for (auto &[candidateCount, actions] : roundRobinActions) {
+    auto arm = std::make_shared<ProcessArbitrateRoundRobinPayload::Impl>();
+    arm->candidates = candidateCount;
+    auto payload = std::make_shared<ProcessGeneratedCalleePayload::Impl>();
+    payload->role = ProcessHelperRole::ArbitrateRoundRobin;
+    payload->arbitrateRoundRobin = ProcessArbitrateRoundRobinPayload(arm);
+    auto callee = std::make_shared<ProcessGeneratedCalleePlan::Impl>();
+    callee->effect = ProcessEffectKind::Pure;
+    callee->role = ProcessHelperRole::ArbitrateRoundRobin;
+    callee->payload = ProcessGeneratedCalleePayload(payload);
+    callee->inputTypeKeyStorage.assign(candidateCount, "mlir:i1");
+    callee->inputTypeKeyStorage.push_back("mlir:i32");
+    callee->resultTypeKeyStorage.assign(candidateCount, "mlir:i1");
+    callee->resultTypeKeyStorage.push_back("mlir:i32");
+    for (const std::string &value : callee->inputTypeKeyStorage)
+      callee->inputTypeKeys.push_back(value);
+    for (const std::string &value : callee->resultTypeKeyStorage)
+      callee->resultTypeKeys.push_back(value);
+    llvm::StringSet<> paths;
+    llvm::SmallPtrSet<mlir::Operation *, 4> sources;
+    for (const ProcessActionPlan &action : actions) {
+      sources.insert(action.sourceOperation());
+      paths.insert(action.occurrence().original().operationPath());
+    }
+    callee->sourceOperations.assign(sources.begin(), sources.end());
+    for (const auto &path : paths)
+      callee->sourcePathStorage.push_back(path.getKey().str());
+    llvm::sort(callee->sourcePathStorage);
+    for (const std::string &path : callee->sourcePathStorage)
+      callee->sourcePaths.push_back(path);
+    ProcessGeneratedCalleePlan value(callee);
+    auto canonical = canonicalGeneratedCalleeSpecialization(value);
+    if (!canonical) {
+      llvm::consumeError(canonical.takeError());
+      return mlir::failure();
+    }
+    callee->specializationBytes = std::move(*canonical);
+    callee->fingerprint =
+        bindings::sha256Fingerprint(callee->specializationBytes);
+    llvm::StringRef digest = llvm::StringRef(callee->fingerprint).drop_front(7);
+    callee->symbol =
+        ("@acir_impl_arbitrate_round_robin_" + digest).str();
+    callee->cpp =
+        ("acir::generated::impl_arbitrate_round_robin_" + digest).str();
+    callees.push_back(std::move(callee));
+  }
+
   // Record-like values and packet serialization are compiler-native pure
   // helpers.  They deliberately share the same closed callee machinery as
   // queue helpers instead of leaking ACIR operations into canonical ACSim.
@@ -1019,6 +1089,20 @@ detail::PlanSetBuilder::buildProduction(mlir::ModuleOp module,
     }
     for (auto &block : item.control->blocks) {
       for (const ProcessActionPlan &action : block->actions) {
+        if (auto arbiter = mlir::dyn_cast_or_null<ac::ArbitrateOp>(
+                action.sourceOperation());
+            arbiter && arbiter.getPolicy() == "round_robin") {
+          auto found = llvm::find_if(callees, [&](const auto &callee) {
+            return callee->role == ProcessHelperRole::ArbitrateRoundRobin &&
+                   callee->payload->arbitrateRoundRobin().candidates() ==
+                       arbiter.getRequests().size();
+          });
+          if (found == callees.end())
+            return mlir::failure();
+          std::const_pointer_cast<ProcessActionPlan::Impl>(action.impl_)
+              ->callee = (*found)->id;
+          continue;
+        }
         if (auto transfer = mlir::dyn_cast_or_null<ac::TryTransferOp>(
                 action.sourceOperation())) {
           std::string elementKey =
@@ -3467,7 +3551,8 @@ detail::PlanSetBuilder::structuralError(const ProcessStatePlanSet &plans) {
                       static_cast<unsigned>(p.wakeEventQueue.has_value()) +
                       static_cast<unsigned>(p.wakeNextDelta.has_value()) +
                       static_cast<unsigned>(p.scalarWrap.has_value()) +
-                      static_cast<unsigned>(p.scalarUnwrap.has_value());
+                      static_cast<unsigned>(p.scalarUnwrap.has_value()) +
+                      static_cast<unsigned>(p.arbitrateRoundRobin.has_value());
     if (active != 1)
       return false;
     auto present = [](const auto &arm) { return arm && arm->impl_; };
@@ -3535,6 +3620,9 @@ detail::PlanSetBuilder::structuralError(const ProcessStatePlanSet &plans) {
       return present(p.scalarWrap);
     case ProcessHelperRole::ScalarUnwrap:
       return present(p.scalarUnwrap);
+    case ProcessHelperRole::ArbitrateRoundRobin:
+      return present(p.arbitrateRoundRobin) &&
+             p.arbitrateRoundRobin->candidates() > 0;
     }
     return false;
   };
@@ -4415,7 +4503,8 @@ mlir::LogicalResult verifyProcessStatePlan(const ProcessStatePlanSet &plans,
     ProcessEffectKind expectedEffect =
         callee.role() <= ProcessHelperRole::TraceDecode ||
                 callee.role() == ProcessHelperRole::ScalarWrap ||
-                callee.role() == ProcessHelperRole::ScalarUnwrap
+                callee.role() == ProcessHelperRole::ScalarUnwrap ||
+                callee.role() == ProcessHelperRole::ArbitrateRoundRobin
             ? ProcessEffectKind::Pure
             : ProcessEffectKind::Stateful;
     if (callee.effect() != expectedEffect)

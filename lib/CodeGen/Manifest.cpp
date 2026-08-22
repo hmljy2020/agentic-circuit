@@ -352,7 +352,14 @@ Fingerprint computeFingerprint(llvm::StringRef content) {
 
 llvm::Expected<Fingerprint>
 fingerprintCanonicalJson(const llvm::json::Value &value) {
-  auto canonical = bindings::canonicalizeJson(value);
+  bindings::JsonParseLimits limits;
+  limits.maxInputBytes = 1U << 26;
+  limits.maxStructuralWork = 1U << 20;
+  limits.maxStringBytes = 1U << 24;
+  limits.maxTotalStringBytes = 1U << 26;
+  limits.maxArrayElements = 1U << 20;
+  limits.maxObjectMembers = 1U << 16;
+  auto canonical = bindings::canonicalizeJson(value, limits);
   if (!canonical)
     return canonical.takeError();
   return computeFingerprint(*canonical);

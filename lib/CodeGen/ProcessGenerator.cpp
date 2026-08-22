@@ -188,6 +188,34 @@ llvm::Error emitPacketHelper(std::ostringstream &output,
       return processError("packet.deserialize helper metadata is invalid");
     output << "  return gfsim::packetDeserializeBytes<"
            << implementation.helperResult << ">(arg0);\n";
+  } else if (implementation.helperRole == "arbitrate_round_robin") {
+    if (implementation.helperInputs.size() < 2 ||
+        implementation.helperInputs.back() != "std::int32_t" ||
+        !implementation.helperOffsets.empty())
+      return processError("round-robin helper metadata is invalid");
+    const size_t candidates = implementation.helperInputs.size() - 1;
+    for (size_t index = 0; index < candidates; ++index)
+      if (implementation.helperInputs[index] != "bool")
+        return processError("round-robin helper request type is invalid");
+    output << "  constexpr std::uint32_t count = " << candidates << ";\n"
+           << "  const std::uint32_t start = static_cast<std::uint32_t>(arg"
+           << candidates << ") % count;\n"
+           << "  const std::array<bool, count> requests{";
+    for (size_t index = 0; index < candidates; ++index)
+      output << (index ? ", " : "") << "arg" << index;
+    output << "};\n  std::array<bool, count> grants{};\n"
+              "  std::uint32_t next = start;\n"
+              "  for (std::uint32_t offset = 0; offset < count; ++offset) {\n"
+              "    const std::uint32_t candidate = (start + offset) % count;\n"
+              "    if (requests[candidate]) {\n"
+              "      grants[candidate] = true;\n"
+              "      next = (candidate + 1) % count;\n"
+              "      break;\n"
+              "    }\n"
+              "  }\n  return std::make_tuple(";
+    for (size_t index = 0; index < candidates; ++index)
+      output << (index ? ", " : "") << "grants[" << index << "]";
+    output << ", static_cast<std::int32_t>(next));\n";
   } else {
     return processError("generated packet helper has an unknown role");
   }
@@ -975,8 +1003,8 @@ generateProcessHeader(const ModelPlan &plan, const ProcessPlan &process) {
             "#include \"gfsim/packet.h\"\n";
   for (const std::string &header : headers)
     output << "#include \"" << header << "\"\n";
-  output << "\n#include <cmath>\n#include <cstdint>\n#include <string>\n"
-            "#include <stdexcept>\n#include <type_traits>\n\n"
+  output << "\n#include <array>\n#include <cmath>\n#include <cstdint>\n#include <string>\n"
+            "#include <stdexcept>\n#include <tuple>\n#include <type_traits>\n\n"
          << "namespace acir::generated {\n";
   output << "#ifndef ACIR_GENERATED_RUNTIME_ASSERT\n"
             "#define ACIR_GENERATED_RUNTIME_ASSERT\n"

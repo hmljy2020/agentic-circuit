@@ -284,8 +284,17 @@ class NoCFrontendTest(unittest.TestCase):
                 wait_for_tail_credit=True,
             )
         )
+        iq_rr = _elaborate(
+            _source(
+                "MeshNoC", 4, width=2, height=2,
+                flow_control="credit", router_pipeline="input_queued",
+                credit_delay=2, vc_alloc_delay=1, sw_alloc_delay=3,
+                wait_for_tail_credit=True, arbitration="round_robin",
+            )
+        )
         self.assertEqual((), credit.diagnostics)
         self.assertEqual((), iq.diagnostics)
+        self.assertEqual((), iq_rr.diagnostics)
         assert credit.document is not None and iq.document is not None
         credit_call = next(e for e in credit.document.entities if e.kind == "call")
         iq_call = next(e for e in iq.document.entities if e.kind == "call")
@@ -313,6 +322,12 @@ class NoCFrontendTest(unittest.TestCase):
         self.assertIn("arith.constant 101 : i32", iq.acir)
         self.assertIn("arith.constant 203 : i32", iq.acir)
         self._verify(iq.acir)
+        assert iq_rr.acir is not None
+        self.assertEqual(12, iq_rr.acir.count("ac.arbitrate round_robin"))
+        self.assertNotIn("%va_rr_blocked", iq_rr.acir)
+        self.assertNotIn("%va_rr_term", iq_rr.acir)
+        self.assertNotIn("%va_rr_selected", iq_rr.acir)
+        self._verify(iq_rr.acir)
 
         invalid = (
             _source("MeshNoC", 4, width=2, height=2, credit_delay=1),
@@ -404,7 +419,7 @@ class NoCFrontendTest(unittest.TestCase):
             )
         )
         self.assertIn("@node7_pipe_transit", iq_emitted)
-        self.assertIn("@node7_va_pin_transit", iq_emitted)
+        self.assertIn("@node7_va_pout_forward", iq_emitted)
         self.assertIn("@vc_capture", iq_emitted)
         self.assertIn("@credit_forward", iq_emitted)
         for mesh_direction in ("north", "east", "south", "west"):
