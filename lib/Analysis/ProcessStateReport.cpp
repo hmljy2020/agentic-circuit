@@ -218,7 +218,9 @@ llvm::StringRef spelling(ProcessHelperRole value) {
                                                   "wake_queue_readable",
                                                   "wake_queue_writable",
                                                   "queue_try_transfer",
-                                                  "arbitrate_round_robin"};
+                                                  "arbitrate_round_robin",
+                                                  "state_read",
+                                                  "state_write"};
   return names[static_cast<unsigned>(value)];
 }
 
@@ -410,6 +412,14 @@ Value json(const ProcessGeneratedCalleePayload &payload) {
     break;
   case ProcessHelperRole::QueueSpace:
     object["queue"] = payload.queueSpace().queue();
+    break;
+  case ProcessHelperRole::StateRead:
+    two("element", payload.queuePeek().element(), "state_array",
+        payload.queuePeek().queue());
+    break;
+  case ProcessHelperRole::StateWrite:
+    two("element", payload.queueTrySend().element(), "state_array",
+        payload.queueTrySend().queue());
     break;
   case ProcessHelperRole::EventSchedule:
     object["delay"] = payload.eventSchedule().delay();

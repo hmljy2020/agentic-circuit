@@ -500,6 +500,15 @@ bool SimSystem::step() {
       return false;
   }
 
+  for (ObjectId id : xferObjects) {
+    SimObject *object = lookup(id);
+    if (object && !object->validatePendingCommit())
+      return fail(object->runtimeFailureCode().empty()
+                      ? "invalid_pending_commit"
+                      : std::string(object->runtimeFailureCode()),
+                  "runtime object rejected pending state before Xfer");
+  }
+
   std::vector<ObjectId> committedSources;
   for (ObjectId id : xferObjects) {
     SimObject *object = lookup(id);

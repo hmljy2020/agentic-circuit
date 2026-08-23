@@ -1825,10 +1825,16 @@ LogicalResult verifyPlacementTarget(Operation *operation,
           "acsim.type placement target must have kind runtime_object");
     const bool queueLink =
         targetType.getCppName().starts_with("gfsim::QueueLink<");
+    const bool stateArray =
+        targetType.getCppName().starts_with("gfsim::StateArray<");
     if (queueLink && !staticArguments.empty())
       return operation->emitOpError(
           "compiler-native QueueLink requires an empty static argument list");
-    if (!queueLink && (staticArguments.empty() || staticArguments.size() > 2))
+    if (stateArray && staticArguments.size() != 3)
+      return operation->emitOpError(
+          "compiler-native StateArray requires entries, read ports, and write ports");
+    if (!queueLink && !stateArray &&
+        (staticArguments.empty() || staticArguments.size() > 2))
       return operation->emitOpError(
           "runtime_object static arguments require entry capacity and an "
           "optional byte capacity");

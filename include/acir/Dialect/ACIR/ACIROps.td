@@ -389,6 +389,24 @@ def ACIR_EventQueueOp : ACIR_OwnedStateOp<"event_queue"> {
   }];
 }
 
+// Compiler-native committed-snapshot state. Reads observe the state at the
+// beginning of the current epoch; guarded writes are proposals committed at
+// the Xfer barrier.
+def ACIR_StateArrayOp : ACIR_OwnedStateOp<"state_array"> {
+  let arguments = (ins SymbolNameAttr:$sym_name, StrAttr:$stable_id,
+                       StrAttr:$path, TypeAttr:$element, I64Attr:$entries,
+                       I64Attr:$read_ports, I64Attr:$write_ports,
+                       StrAttr:$ownership, StrAttr:$init,
+                       DefaultValuedAttr<I64Attr, "1">:$delay_ticks);
+  let hasVerifier = 1;
+  let assemblyFormat = [{
+    $sym_name `element` $element `entries` $entries
+    `read_ports` $read_ports `write_ports` $write_ports
+    `ownership` $ownership `init` $init
+    `id` $stable_id `path` $path attr-dict
+  }];
+}
+
 def ACIR_ResourceOp : ACIR_OwnedStateOp<"resource"> {
   let arguments = (ins SymbolNameAttr:$sym_name, StrAttr:$stable_id,
                        StrAttr:$path, I64Attr:$capacity,
@@ -533,6 +551,20 @@ def ACIR_TryEventOp : ACIR_RuntimeEffectOp<"try_event"> {
   let results = (outs AnyType:$value, I1:$ready);
   let hasVerifier = 1;
   let assemblyFormat = "$event_queue attr-dict `:` type($value)";
+}
+
+def ACIR_StateReadOp : ACIR_RuntimeEffectOp<"state_read"> {
+  let arguments = (ins I32:$index, I32:$port, FlatSymbolRefAttr:$array);
+  let results = (outs AnyType:$value);
+  let hasVerifier = 1;
+  let assemblyFormat = "$array `[` $index `]` `port` $port attr-dict `:` type($value)";
+}
+
+def ACIR_StateWriteOp : ACIR_RuntimeEffectOp<"state_write"> {
+  let arguments = (ins I32:$index, AnyType:$value, I1:$enable, I32:$port,
+                       FlatSymbolRefAttr:$array);
+  let hasVerifier = 1;
+  let assemblyFormat = "$array `[` $index `]` $value `when` $enable `port` $port attr-dict `:` type($value)";
 }
 
 def ACIR_WaitUntilOp : ACIR_RuntimeEffectOp<"wait_until"> {

@@ -64,6 +64,11 @@ struct EventQueueStateResource
   llvm::StringRef getName() final { return "ac.event_queue.state"; }
 };
 
+struct StateArrayStateResource
+    : public mlir::SideEffects::Resource::Base<StateArrayStateResource> {
+  llvm::StringRef getName() final { return "ac.state_array.state"; }
+};
+
 struct ReservationStateResource
     : public mlir::SideEffects::Resource::Base<ReservationStateResource> {
   llvm::StringRef getName() final { return "ac.resource.reservation"; }

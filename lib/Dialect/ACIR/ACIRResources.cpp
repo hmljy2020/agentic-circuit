@@ -304,6 +304,14 @@ void EventQueueOp::getEffects(
       EventQueueStateResource::get());
 }
 
+void StateArrayOp::getEffects(
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  effects.emplace_back(
+      MemoryEffects::Write::get(), ownerEffectReference(*this, getSymName()),
+      ownerEffectParameters(*this, getStableIdAttr(), getPathAttr()),
+      StateArrayStateResource::get());
+}
+
 void ResourceOp::getEffects(
     SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
   effects.emplace_back(
@@ -415,6 +423,23 @@ LogicalResult EventQueueOp::verify() {
     return emitOpError("event queue payload must be an exact !ac.event type");
   if (getOrdering() != "time_then_sequence")
     return emitOpError("ordering must be exactly 'time_then_sequence'");
+  return success();
+}
+
+LogicalResult StateArrayOp::verify() {
+  if (failed(verifyOwner(*this, getSymName(), getStableId(), getPath(),
+                         getDelayTicksAttr().getInt())))
+    return failure();
+  if (getEntries() <= 0)
+    return emitOpError("entry count must be positive");
+  if (getReadPorts() <= 0 || getWritePorts() <= 0)
+    return emitOpError("read and write port counts must be positive");
+  if (getOwnership() != "exclusive")
+    return emitOpError("state array ownership must be exactly 'exclusive'");
+  if (getInit() != "zero")
+    return emitOpError("state array init must be exactly 'zero'");
+  if (!isNormativePayload(getElement()))
+    return emitOpError("state array element must be a normative ACIR value type");
   return success();
 }
 

@@ -848,6 +848,24 @@ llvm::Error emitOperation(const ModelPlan &plan, const ProcessPlan &process,
           [&](const InvokePlan &call) -> llvm::Error {
             emitResultAssignment(output, call.results);
             llvm::StringRef calleeSymbol(call.callee);
+            if (calleeSymbol.starts_with("acir_impl_state_read")) {
+              if (call.arguments.size() != 3 || call.results.size() != 1)
+                return processError(
+                    "state read helper requires array, index, port, and one result");
+              output << call.arguments[0] << ".read(" << call.arguments[1]
+                     << ", " << call.arguments[2] << ");\n";
+              return llvm::Error::success();
+            }
+            if (calleeSymbol.starts_with("acir_impl_state_write")) {
+              if (call.arguments.size() != 5 || !call.results.empty())
+                return processError(
+                    "state write helper requires array, index, value, enable, port");
+              output << call.arguments[0] << ".proposeWrite("
+                     << call.arguments[1] << ", " << call.arguments[2]
+                     << ", " << call.arguments[3] << ", "
+                     << call.arguments[4] << ");\n";
+              return llvm::Error::success();
+            }
             if (calleeSymbol.starts_with("acir_impl_queue_try_send")) {
               if (call.arguments.size() != 2)
                 return processError(

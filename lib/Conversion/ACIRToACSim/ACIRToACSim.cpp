@@ -685,6 +685,7 @@ struct PlacementPlan {
   uint64_t fairnessCap = 1;
   ac::QueueOp queue;
   ac::EventQueueOp eventQueue;
+  ac::StateArrayOp stateArray;
   bool flowLink = false;
   std::string hostInput;
   std::string hostOutput;
@@ -1041,6 +1042,22 @@ std::string ACIRToACSimPass::moduleFingerprint(ac::ModuleOp module) {
       entry["delay_ticks"] = queue.getDelayTicks();
       definitions.emplace_back(("queue:" + queue.getSymName()).str(),
                                std::move(entry));
+      continue;
+    }
+    if (auto stateArray = dyn_cast<ac::StateArrayOp>(operation)) {
+      llvm::json::Object entry;
+      entry["kind"] = "runtime_state_array";
+      entry["name"] = stateArray.getSymName();
+      entry["stable_id"] = stateArray.getStableId();
+      entry["path"] = stateArray.getPath();
+      entry["element"] = typeSpelling(stateArray.getElement());
+      entry["entries"] = stateArray.getEntries();
+      entry["read_ports"] = stateArray.getReadPorts();
+      entry["write_ports"] = stateArray.getWritePorts();
+      entry["ownership"] = stateArray.getOwnership();
+      entry["init"] = stateArray.getInit();
+      definitions.emplace_back(
+          ("state_array:" + stateArray.getSymName()).str(), std::move(entry));
       continue;
     }
     if (auto domain = dyn_cast<ac::TimeDomainOp>(operation)) {
@@ -1456,6 +1473,74 @@ mlir::LogicalResult ACIRToACSimPass::planModule(ac::ModuleOp module,
       planned.placements.push_back(std::move(placement));
       continue;
     }
+    if (auto stateArray = dyn_cast<ac::StateArrayOp>(operation)) {
+      if (stateArray.getOwnership() != "exclusive" ||
+          stateArray.getInit() != "zero" || stateArray.getDelayTicks() != 1)
+        return lowerError(stateArray, "ACLOWER-UNSUPPORTED-CONSTRUCT",
+                          "native state arrays require exclusive ownership, "
+                          "zero init, and delay_ticks = 1");
+      auto elementCpp = nativeQueueCppType(stateArray.getElement(), stateArray);
+      if (!elementCpp)
+        return lowerError(stateArray, "ACLOWER-TYPE-MISMATCH",
+                          "native state array element has no closed C++ realization");
+      std::string elementSpelling;
+      llvm::raw_string_ostream(elementSpelling) << stateArray.getElement();
+      llvm::json::Object typeDescriptor;
+      typeDescriptor["contract_epoch"] = kEpoch;
+      typeDescriptor["kind"] = "runtime_object";
+      typeDescriptor["element"] = elementSpelling;
+      std::string typeFingerprint =
+          fingerprintJson(llvm::json::Value(std::move(typeDescriptor)));
+      std::string identity =
+          "acir_state_array_" +
+          llvm::StringRef(typeFingerprint).drop_front(7).str();
+      if (failed(typeSymbols.intern(
+              stateArray, identity, "runtime_object",
+              "gfsim::StateArray<" + *elementCpp + ">", typeFingerprint)))
+        return mlir::failure();
+      if (isa<ac::PacketType>(stateArray.getElement()) &&
+          !nativePacketValueIdentities.contains(stateArray.getElement())) {
+        llvm::json::Object valueDescriptor;
+        valueDescriptor["contract_epoch"] = kEpoch;
+        valueDescriptor["kind"] = "packet";
+        valueDescriptor["payload"] = elementSpelling;
+        std::string valueFingerprint =
+            fingerprintJson(llvm::json::Value(std::move(valueDescriptor)));
+        std::string valueIdentity =
+            "acir_packet_" +
+            llvm::StringRef(valueFingerprint).drop_front(7).str();
+        if (failed(typeSymbols.intern(stateArray, valueIdentity, "packet",
+                                      *elementCpp, valueFingerprint)))
+          return mlir::failure();
+        nativePacketValueIdentities.try_emplace(stateArray.getElement(),
+                                                valueIdentity);
+      }
+      PlacementPlan placement;
+      placement.kind = PlacementPlan::Kind::RuntimeObject;
+      placement.name = stateArray.getSymName().str();
+      placement.targetSymbol = identity;
+      placement.targetIsRuntimeObject = true;
+      placement.stateArray = stateArray;
+      placement.staticArgs = builder.getArrayAttr(
+          {builder.getI64IntegerAttr(stateArray.getEntries()),
+           builder.getI64IntegerAttr(stateArray.getReadPorts()),
+           builder.getI64IntegerAttr(stateArray.getWritePorts())});
+      llvm::json::Object specialization;
+      specialization["contract_epoch"] = kEpoch;
+      specialization["kind"] = "state_array";
+      specialization["type"] = typeFingerprint;
+      specialization["entries"] = stateArray.getEntries();
+      specialization["read_ports"] = stateArray.getReadPorts();
+      specialization["write_ports"] = stateArray.getWritePorts();
+      placement.specialization =
+          fingerprintJson(llvm::json::Value(std::move(specialization)));
+      placement.work = "gfsim::QueueRuntime::work";
+      placement.xfer = "gfsim::QueueRuntime::xfer";
+      placement.reset = "gfsim::QueueRuntime::reset";
+      placement.validate = "gfsim::QueueRuntime::validate";
+      planned.placements.push_back(std::move(placement));
+      continue;
+    }
     if (auto array = dyn_cast<ac::ArrayOp>(operation)) {
       PlacementPlan placement;
       placement.kind = PlacementPlan::Kind::Array;
@@ -1851,6 +1936,10 @@ mlir::LogicalResult ACIRToACSimPass::planModule(ac::ModuleOp module,
       else if (auto recv = dyn_cast<ac::TryEventOp>(operation)) {
         referencedQueues.insert(recv.getEventQueue());
         consumedEventQueues.insert(recv.getEventQueue());
+      } else if (auto read = dyn_cast<ac::StateReadOp>(operation)) {
+        referencedQueues.insert(read.getArray());
+      } else if (auto write = dyn_cast<ac::StateWriteOp>(operation)) {
+        referencedQueues.insert(write.getArray());
       } else if (auto await = dyn_cast<ac::AwaitEventOp>(operation)) {
         referencedQueues.insert(await.getEventQueue());
         consumedEventQueues.insert(await.getEventQueue());
@@ -2657,10 +2746,10 @@ void ACIRToACSimPass::emitProcessBody(
         return;
       Operation *queue =
           SymbolTable::lookupNearestSymbolFrom(operation, reference);
-      if (!isa_and_nonnull<ac::QueueOp, ac::EventQueueOp>(queue))
+      if (!isa_and_nonnull<ac::QueueOp, ac::EventQueueOp, ac::StateArrayOp>(queue))
         if (auto owner = operation->getParentOfType<ac::ModuleOp>())
           for (Operation &candidate : owner.getBody().front())
-            if (isa<ac::QueueOp, ac::EventQueueOp>(candidate) &&
+            if (isa<ac::QueueOp, ac::EventQueueOp, ac::StateArrayOp>(candidate) &&
                 candidate
                         .getAttrOfType<StringAttr>(
                             SymbolTable::getSymbolAttrName())
@@ -2669,9 +2758,13 @@ void ACIRToACSimPass::emitProcessBody(
               break;
             }
       assert(queue && "validated queue reference must resolve");
-      llvm::StringRef path = isa<ac::QueueOp>(queue)
-                                 ? cast<ac::QueueOp>(queue).getPath()
-                                 : cast<ac::EventQueueOp>(queue).getPath();
+      llvm::StringRef path;
+      if (auto typed = dyn_cast<ac::QueueOp>(queue))
+        path = typed.getPath();
+      else if (auto typed = dyn_cast<ac::EventQueueOp>(queue))
+        path = typed.getPath();
+      else
+        path = cast<ac::StateArrayOp>(queue).getPath();
       referencedQueues.emplace_back(path.str(), reference.getValue().str());
     };
     if (auto transfer = dyn_cast<ac::TryTransferOp>(operation)) {
@@ -2696,6 +2789,10 @@ void ACIRToACSimPass::emitProcessBody(
       reference = recv.getEventQueueAttr();
     else if (auto await = dyn_cast<ac::AwaitEventOp>(operation))
       reference = await.getEventQueueAttr();
+    else if (auto read = dyn_cast<ac::StateReadOp>(operation))
+      reference = read.getArrayAttr();
+    else if (auto write = dyn_cast<ac::StateWriteOp>(operation))
+      reference = write.getArrayAttr();
     addQueueReference(reference);
   });
   llvm::sort(referencedQueues);
@@ -2813,6 +2910,21 @@ void ACIRToACSimPass::emitProcessBody(
 
   llvm::SmallVector<llvm::StringMap<Value>> blockArguments(
       plan->blocks().size());
+  auto canonicalProcessValueType = [&](Type type) -> Type {
+    if (auto packetIdentity = nativePacketValueIdentities.find(type);
+        packetIdentity != nativePacketValueIdentities.end())
+      return acsim::ValueType::get(
+          context,
+          FlatSymbolRefAttr::get(
+              context, typeSymbols.symbolFor(packetIdentity->second)));
+    if (auto vectorIdentity = nativeVectorValueIdentities.find(type);
+        vectorIdentity != nativeVectorValueIdentities.end())
+      return acsim::ValueType::get(
+          context,
+          FlatSymbolRefAttr::get(
+              context, typeSymbols.symbolFor(vectorIdentity->second)));
+    return type;
+  };
   for (const ProcessPcPlan &pc : plan->pcs()) {
     ProcessBlockId entryId = pc.blocks().front();
     for (ProcessBlockId id : pc.blocks()) {
@@ -2822,7 +2934,8 @@ void ACIRToACSimPass::emitProcessBody(
         auto representative = valueRepresentatives.find(key);
         assert(representative != valueRepresentatives.end());
         Value argument = blocks[id.value()]->addArgument(
-            representative->second.type(), placement.process->getLoc());
+            canonicalProcessValueType(representative->second.type()),
+            placement.process->getLoc());
         blockArguments[id.value()][key] = argument;
       }
     }
@@ -3009,9 +3122,20 @@ void ACIRToACSimPass::emitProcessBody(
           operands.insert(operands.begin(),
                           queueArgumentsByPc[blockPlan.pc().value()].lookup(
                               recv.getEventQueue()));
+        else if (auto read =
+                     dyn_cast_or_null<ac::StateReadOp>(action.sourceOperation()))
+          operands.insert(operands.begin(),
+                          queueArgumentsByPc[blockPlan.pc().value()].lookup(
+                              read.getArray()));
+        else if (auto write = dyn_cast_or_null<ac::StateWriteOp>(
+                     action.sourceOperation()))
+          operands.insert(operands.begin(),
+                          queueArgumentsByPc[blockPlan.pc().value()].lookup(
+                              write.getArray()));
         llvm::SmallVector<Type> invokeResultTypes;
         bool isNativeQueueRead =
-            isa_and_nonnull<ac::TryRecvOp, ac::PeekOp, ac::TryEventOp>(
+            isa_and_nonnull<ac::TryRecvOp, ac::PeekOp, ac::TryEventOp,
+                            ac::StateReadOp>(
                 action.sourceOperation());
         for (Type resultType : action.resultTypes()) {
           auto packetIdentity = nativePacketValueIdentities.find(resultType);

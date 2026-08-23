@@ -83,7 +83,9 @@ llvm::StringRef helperRoleSpelling(ProcessHelperRole role) {
                                                   "wake_queue_readable",
                                                   "wake_queue_writable",
                                                   "queue_try_transfer",
-                                                  "arbitrate_round_robin"};
+                                                  "arbitrate_round_robin",
+                                                  "state_read",
+                                                  "state_write"};
   return names[static_cast<unsigned>(role)];
 }
 
@@ -124,6 +126,8 @@ bool validTypeKey(llvm::StringRef key) {
   if (key.starts_with("queue-ref:@"))
     return key.size() > 11;
   if (key.starts_with("event-queue-ref:@"))
+    return key.size() > 17;
+  if (key.starts_with("state-array-ref:@"))
     return key.size() > 17;
   if (key.consume_front("storage:value:") ||
       key.consume_front("storage:packet:"))
@@ -209,6 +213,20 @@ bool validCalleeSemantics(const ProcessGeneratedCalleePlan &callee) {
     return inputs.size() == 1 &&
            inputs[0] == ("queue-ref:" + payload.queueSpace().queue()).str() &&
            results.size() == 1 && results[0] == "mlir:i32";
+  case ProcessHelperRole::StateRead:
+    return inputs.size() == 3 &&
+           inputs[0] ==
+               ("state-array-ref:" + payload.queuePeek().queue()).str() &&
+           inputs[1] == "mlir:i32" && inputs[2] == "mlir:i32" &&
+           results.size() == 1 && results[0] == payload.queuePeek().element();
+  case ProcessHelperRole::StateWrite:
+    return inputs.size() == 5 &&
+           inputs[0] ==
+               ("state-array-ref:" + payload.queueTrySend().queue()).str() &&
+           inputs[1] == "mlir:i32" &&
+           inputs[2] == payload.queueTrySend().element() &&
+           inputs[3] == "mlir:i1" && inputs[4] == "mlir:i32" &&
+           results.empty();
   case ProcessHelperRole::EventSchedule:
     return inputs.size() == 3 && results.size() == 1 &&
            inputs[0] ==
@@ -514,6 +532,17 @@ detail::PlanSetBuilder::buildProduction(mlir::ModuleOp module,
                            ProcessHelperRole::EventTryRecv,
                            "mlir:" + typeSpelling(recv.getValue().getType())}]
               .push_back(action);
+        } else if (auto read = mlir::dyn_cast_or_null<ac::StateReadOp>(source)) {
+          queueActions[QueueCalleeKey{
+                           ProcessHelperRole::StateRead,
+                           "mlir:" + typeSpelling(read.getValue().getType())}]
+              .push_back(action);
+        } else if (auto write =
+                       mlir::dyn_cast_or_null<ac::StateWriteOp>(source)) {
+          queueActions[QueueCalleeKey{
+                           ProcessHelperRole::StateWrite,
+                           "mlir:" + typeSpelling(write.getValue().getType())}]
+              .push_back(action);
         }
       }
     }
@@ -521,9 +550,11 @@ detail::PlanSetBuilder::buildProduction(mlir::ModuleOp module,
   for (auto &[key, actions] : queueActions) {
     auto payload = std::make_shared<ProcessGeneratedCalleePayload::Impl>();
     payload->role = key.role;
-    if (key.role == ProcessHelperRole::QueueTrySend) {
+    if (key.role == ProcessHelperRole::QueueTrySend ||
+        key.role == ProcessHelperRole::StateWrite) {
       auto arm = std::make_shared<ProcessQueueTrySendPayload::Impl>();
-      arm->queue = "@queue";
+      arm->queue = key.role == ProcessHelperRole::StateWrite ? "@state"
+                                                             : "@queue";
       arm->element = key.element;
       payload->queueTrySend = ProcessQueueTrySendPayload(arm);
     } else if (key.role == ProcessHelperRole::QueueTryRecv) {
@@ -537,9 +568,11 @@ detail::PlanSetBuilder::buildProduction(mlir::ModuleOp module,
       arm->destination = "@destination";
       arm->element = key.element;
       payload->queueTryTransfer = ProcessQueueTryTransferPayload(arm);
-    } else if (key.role == ProcessHelperRole::QueuePeek) {
+    } else if (key.role == ProcessHelperRole::QueuePeek ||
+               key.role == ProcessHelperRole::StateRead) {
       auto arm = std::make_shared<ProcessQueuePeekPayload::Impl>();
-      arm->queue = "@queue";
+      arm->queue = key.role == ProcessHelperRole::StateRead ? "@state"
+                                                            : "@queue";
       arm->element = key.element;
       payload->queuePeek = ProcessQueuePeekPayload(arm);
     } else if (key.role == ProcessHelperRole::QueueSpace) {
@@ -564,18 +597,36 @@ detail::PlanSetBuilder::buildProduction(mlir::ModuleOp module,
     callee->payload = ProcessGeneratedCalleePayload(payload);
     const bool eventRole = key.role == ProcessHelperRole::EventSchedule ||
                            key.role == ProcessHelperRole::EventTryRecv;
-    callee->inputTypeKeyStorage = {eventRole ? "event-queue-ref:@event"
-                                             : "queue-ref:@queue"};
+    const bool stateRole = key.role == ProcessHelperRole::StateRead ||
+                           key.role == ProcessHelperRole::StateWrite;
+    callee->inputTypeKeyStorage = {
+        eventRole ? "event-queue-ref:@event"
+        : stateRole ? "state-array-ref:@state"
+                    : "queue-ref:@queue"};
     if (key.role == ProcessHelperRole::QueueTryTransfer)
       callee->inputTypeKeyStorage = {"queue-ref:@source",
                                      "queue-ref:@destination", "mlir:i1"};
     if (key.role == ProcessHelperRole::QueueTrySend ||
         key.role == ProcessHelperRole::EventSchedule)
       callee->inputTypeKeyStorage.push_back(key.element);
+    if (key.role == ProcessHelperRole::StateRead) {
+      callee->inputTypeKeyStorage.push_back("mlir:i32");
+      callee->inputTypeKeyStorage.push_back("mlir:i32");
+    }
+    if (key.role == ProcessHelperRole::StateWrite) {
+      callee->inputTypeKeyStorage.push_back("mlir:i32");
+      callee->inputTypeKeyStorage.push_back(key.element);
+      callee->inputTypeKeyStorage.push_back("mlir:i1");
+      callee->inputTypeKeyStorage.push_back("mlir:i32");
+    }
     if (key.role == ProcessHelperRole::EventSchedule)
       callee->inputTypeKeyStorage.push_back("mlir:i64");
     callee->resultTypeKeyStorage =
-        key.role == ProcessHelperRole::QueueTrySend ||
+        key.role == ProcessHelperRole::StateWrite
+            ? std::vector<std::string>{}
+        : key.role == ProcessHelperRole::StateRead
+            ? std::vector<std::string>{key.element}
+        : key.role == ProcessHelperRole::QueueTrySend ||
                 key.role == ProcessHelperRole::QueueTryTransfer ||
                 key.role == ProcessHelperRole::EventSchedule
             ? std::vector<std::string>{"mlir:i1"}
@@ -597,6 +648,10 @@ detail::PlanSetBuilder::buildProduction(mlir::ModuleOp module,
       if (auto transfer = mlir::dyn_cast<ac::TryTransferOp>(source)) {
         queues.push_back(transfer.getSourceAttr());
         queues.push_back(transfer.getDestinationAttr());
+      } else if (auto read = mlir::dyn_cast<ac::StateReadOp>(source)) {
+        queues.push_back(read.getArrayAttr());
+      } else if (auto write = mlir::dyn_cast<ac::StateWriteOp>(source)) {
+        queues.push_back(write.getArrayAttr());
       } else {
         mlir::FlatSymbolRefAttr queue =
             mlir::isa<ac::TrySendOp>(source)
@@ -1114,6 +1169,40 @@ detail::PlanSetBuilder::buildProduction(mlir::ModuleOp module,
                    callee->inputTypeKeys[1] == "queue-ref:@destination" &&
                    callee->inputTypeKeys[2] == "mlir:i1" &&
                    callee->payload->queueTryTransfer().element() == elementKey;
+          });
+          if (found == callees.end())
+            return mlir::failure();
+          std::const_pointer_cast<ProcessActionPlan::Impl>(action.impl_)
+              ->callee = (*found)->id;
+          continue;
+        }
+        if (auto read = mlir::dyn_cast_or_null<ac::StateReadOp>(
+                action.sourceOperation())) {
+          std::string elementKey =
+              "mlir:" + typeSpelling(read.getValue().getType());
+          auto found = llvm::find_if(callees, [&](const auto &callee) {
+            return callee->role == ProcessHelperRole::StateRead &&
+                   callee->inputTypeKeys.size() == 3 &&
+                   callee->inputTypeKeys[0] == "state-array-ref:@state" &&
+                   callee->resultTypeKeys.size() == 1 &&
+                   callee->resultTypeKeys[0] == elementKey;
+          });
+          if (found == callees.end())
+            return mlir::failure();
+          std::const_pointer_cast<ProcessActionPlan::Impl>(action.impl_)
+              ->callee = (*found)->id;
+          continue;
+        }
+        if (auto write = mlir::dyn_cast_or_null<ac::StateWriteOp>(
+                action.sourceOperation())) {
+          std::string elementKey =
+              "mlir:" + typeSpelling(write.getValue().getType());
+          auto found = llvm::find_if(callees, [&](const auto &callee) {
+            return callee->role == ProcessHelperRole::StateWrite &&
+                   callee->inputTypeKeys.size() == 5 &&
+                   callee->inputTypeKeys[0] == "state-array-ref:@state" &&
+                   callee->inputTypeKeys[2] == elementKey &&
+                   callee->resultTypeKeys.empty();
           });
           if (found == callees.end())
             return mlir::failure();
@@ -3583,6 +3672,10 @@ detail::PlanSetBuilder::structuralError(const ProcessStatePlanSet &plans) {
       return present(p.queuePeek);
     case ProcessHelperRole::QueueSpace:
       return present(p.queueSpace);
+    case ProcessHelperRole::StateRead:
+      return present(p.queuePeek);
+    case ProcessHelperRole::StateWrite:
+      return present(p.queueTrySend);
     case ProcessHelperRole::EventSchedule:
       return present(p.eventSchedule);
     case ProcessHelperRole::EventTryRecv:
@@ -4540,6 +4633,8 @@ mlir::LogicalResult verifyProcessStatePlan(const ProcessStatePlanSet &plans,
         callee.role() == ProcessHelperRole::QueueSpace ||
         callee.role() == ProcessHelperRole::EventSchedule ||
         callee.role() == ProcessHelperRole::EventTryRecv ||
+        callee.role() == ProcessHelperRole::StateRead ||
+        callee.role() == ProcessHelperRole::StateWrite ||
         callee.role() == ProcessHelperRole::Probe ||
         callee.role() == ProcessHelperRole::StatAdd;
     llvm::SmallPtrSet<mlir::Operation *, 8> uniqueDeclarations;

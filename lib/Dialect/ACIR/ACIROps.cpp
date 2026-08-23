@@ -1279,7 +1279,7 @@ LogicalResult verifyStaticArgumentSet(Operation *op, DictionaryAttr arguments,
 
 bool isStructuralGraphChild(Operation &child) {
   return isa<InstanceOp, ArrayOp, InstancesOp, ViewOp, QueueOp, EventQueueOp,
-             FlowExportOp, FlowImportOp, ResourceOp, AddressSpaceOp,
+             StateArrayOp, FlowExportOp, FlowImportOp, ResourceOp, AddressSpaceOp,
              AddressMapOp, TimeDomainOp, ProcessOp, RequireOp, EnsureOp, StatOp,
              ReturnOp>(child) ||
          child.getName().getStringRef() == "arith.constant";
@@ -1487,6 +1487,46 @@ verifyRuntimeReferences(ModuleOp module,
                              << "' may be consumed by only one process";
           result = failure();
         }
+      } else if (auto read = dyn_cast<StateReadOp>(operation)) {
+        auto target = dyn_cast_or_null<StateArrayOp>(lookupExpected(
+            read, read.getArray(), StateArrayOp::getOperationName()));
+        if (target && target.getElement() != read.getValue().getType()) {
+          read.emitOpError() << "result type " << read.getValue().getType()
+                             << " does not match state array element type "
+                             << target.getElement();
+          result = failure();
+        }
+        if (target) {
+          auto constant = read.getPort().getDefiningOp<arith::ConstantOp>();
+          auto value = constant ? dyn_cast<IntegerAttr>(constant.getValue())
+                                : IntegerAttr();
+          if (!value || value.getInt() < 0 ||
+              value.getInt() >= target.getReadPorts()) {
+            read.emitOpError(
+                "port must be a constant in declared read port range");
+            result = failure();
+          }
+        }
+      } else if (auto write = dyn_cast<StateWriteOp>(operation)) {
+        auto target = dyn_cast_or_null<StateArrayOp>(lookupExpected(
+            write, write.getArray(), StateArrayOp::getOperationName()));
+        if (target && target.getElement() != write.getValue().getType()) {
+          write.emitOpError() << "value type " << write.getValue().getType()
+                              << " does not match state array element type "
+                              << target.getElement();
+          result = failure();
+        }
+        if (target) {
+          auto constant = write.getPort().getDefiningOp<arith::ConstantOp>();
+          auto value = constant ? dyn_cast<IntegerAttr>(constant.getValue())
+                                : IntegerAttr();
+          if (!value || value.getInt() < 0 ||
+              value.getInt() >= target.getWritePorts()) {
+            write.emitOpError(
+                "port must be a constant in declared write port range");
+            result = failure();
+          }
+        }
       } else if (auto wait = dyn_cast<WaitForOp>(operation)) {
         (void)lookupExpected(wait, wait.getResource(),
                              ResourceOp::getOperationName());
@@ -1616,7 +1656,8 @@ LogicalResult verifyProcessOperations(ModuleOp module) {
       result =
           TypeSwitch<Operation *, LogicalResult>(operation)
               .Case<TrySendOp, TryRecvOp, TryTransferOp, ArbitrateOp, PeekOp,
-                    SpaceOp, ScheduleOp, TryEventOp, WaitUntilOp, WaitForOp,
+                    SpaceOp, ScheduleOp, TryEventOp, StateReadOp, StateWriteOp,
+                    WaitUntilOp, WaitForOp,
                     AwaitEventOp, AwaitQueueOp, YieldSimOp, TraceOpenOp,
                     TraceNextOp, TraceDecodeOp, TraceEofOp, TracePositionOp,
                     RequireOp, EnsureOp, AssertOp, ProbeOp, StatAddOp,
@@ -1838,6 +1879,10 @@ LogicalResult ModuleOp::verify() {
       localName = eventQueue.getSymNameAttr();
       stableId = eventQueue.getStableIdAttr();
       path = eventQueue.getPathAttr();
+    } else if (auto stateArray = dyn_cast<StateArrayOp>(child)) {
+      localName = stateArray.getSymNameAttr();
+      stableId = stateArray.getStableIdAttr();
+      path = stateArray.getPathAttr();
     } else if (auto resource = dyn_cast<ResourceOp>(child)) {
       localName = resource.getSymNameAttr();
       stableId = resource.getStableIdAttr();
@@ -1884,7 +1929,7 @@ LogicalResult ModuleOp::verify() {
   }
   for (Operation &child : entry) {
     LogicalResult local = TypeSwitch<Operation *, LogicalResult>(&child)
-                              .Case<QueueOp, EventQueueOp, ResourceOp,
+                              .Case<QueueOp, EventQueueOp, StateArrayOp, ResourceOp,
                                     AddressSpaceOp, AddressMapOp, TimeDomainOp>(
                                   [](auto op) { return op.verify(); })
                               .Default([](Operation *) { return success(); });
@@ -2655,7 +2700,8 @@ bool isAllowedProcessOperation(Operation *operation) {
     return true;
   return isa<RecordCreateOp, RecordGetOp, RecordWithOp, PacketSerializeOp,
              PacketDeserializeOp, TrySendOp, TryRecvOp, TryTransferOp, PeekOp,
-             SpaceOp, ScheduleOp, TryEventOp, WaitUntilOp, WaitForOp,
+             SpaceOp, ScheduleOp, TryEventOp, StateReadOp, StateWriteOp,
+             WaitUntilOp, WaitForOp,
              AwaitEventOp, AwaitQueueOp, YieldSimOp, TraceOpenOp, TraceNextOp,
              TraceDecodeOp, TraceEofOp, TracePositionOp, RequireOp, EnsureOp,
              AssertOp, ProbeOp, StatAddOp, InstrumentationOp, ArbitrateOp>(
@@ -3218,7 +3264,7 @@ LogicalResult ProcessOp::verify() {
   walkOperationsIterative(getBody(), [&](Operation *operation) {
     if (getKind() == "monitor" &&
         isa<TrySendOp, TryRecvOp, TryTransferOp, ScheduleOp, TryEventOp,
-            WaitForOp, AwaitEventOp>(operation)) {
+            StateWriteOp, WaitForOp, AwaitEventOp>(operation)) {
       operation->emitOpError(
           "monitor process cannot perform functional state effects");
       result = failure();
@@ -3492,6 +3538,8 @@ LogicalResult TryTransferOp::verify() {
 LogicalResult PeekOp::verify() { return requireProcess(*this); }
 LogicalResult SpaceOp::verify() { return requireProcess(*this); }
 LogicalResult TryEventOp::verify() { return requireProcess(*this); }
+LogicalResult StateReadOp::verify() { return requireProcess(*this); }
+LogicalResult StateWriteOp::verify() { return requireProcess(*this); }
 
 LogicalResult ScheduleOp::verify() {
   if (Operation *definition = getDelay().getDefiningOp();
@@ -3735,6 +3783,26 @@ void TryEventOp::getEffects(
             "event_queue", EventQueueStateResource::get());
   addEffect(effects, *this, MemoryEffects::Write::get(), getEventQueue(),
             "event_queue", EventQueueStateResource::get());
+}
+
+void StateReadOp::getEffects(
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  if (!isa_and_nonnull<StateArrayOp>(
+          resolvedRuntimeTarget(*this, getArray())))
+    return;
+  addEffect(effects, *this, MemoryEffects::Read::get(), getArray(),
+            "state_array", StateArrayStateResource::get());
+}
+
+void StateWriteOp::getEffects(
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  if (!isa_and_nonnull<StateArrayOp>(
+          resolvedRuntimeTarget(*this, getArray())))
+    return;
+  addEffect(effects, *this, MemoryEffects::Read::get(), getArray(),
+            "state_array", StateArrayStateResource::get());
+  addEffect(effects, *this, MemoryEffects::Write::get(), getArray(),
+            "state_array", StateArrayStateResource::get());
 }
 
 void WaitUntilOp::getEffects(

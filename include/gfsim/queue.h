@@ -253,6 +253,131 @@ private:
   SimSystem *system_ = nullptr;
 };
 
+// ── StateArray<T> ────────────────────────────────────────────────────
+
+/// Indexed committed-snapshot state with explicit per-epoch read and write
+/// ports. Writes are proposals and become visible only at the Xfer barrier.
+template <typename T> class StateArray final : public SimObject {
+public:
+  StateArray(std::string name, ObjectId id, SimObject *parent, size_t entries,
+             size_t readPorts, size_t writePorts)
+      : SimObject(ObjectKind::Memory, std::move(name), id, parent),
+        committed_(entries), readPortUsed_(readPorts, false),
+        writePortUsed_(writePorts, false) {}
+
+  T read(std::int32_t index, std::int32_t port) {
+    if (system_ && !system_->registerCommitParticipant(id())) {
+      setRuntimeFailureCode("state_array_participant_registration_failed");
+      return T{};
+    }
+    if (index < 0 || static_cast<size_t>(index) >= committed_.size()) {
+      setRuntimeFailureCode("state_array_index_out_of_bounds");
+      return T{};
+    }
+    if (port < 0 || static_cast<size_t>(port) >= readPortUsed_.size()) {
+      setRuntimeFailureCode("state_array_read_port_out_of_bounds");
+      return T{};
+    }
+    if (readPortUsed_[static_cast<size_t>(port)]) {
+      setRuntimeFailureCode("state_array_read_port_reused");
+      return T{};
+    }
+    readPortUsed_[static_cast<size_t>(port)] = true;
+    return committed_[static_cast<size_t>(index)];
+  }
+
+  void proposeWrite(std::int32_t index, T value, bool enable,
+                    std::int32_t port) {
+    if (!enable)
+      return;
+    if (system_ && !system_->registerCommitParticipant(id())) {
+      setRuntimeFailureCode("state_array_participant_registration_failed");
+      return;
+    }
+    if (index < 0 || static_cast<size_t>(index) >= committed_.size()) {
+      setRuntimeFailureCode("state_array_index_out_of_bounds");
+      return;
+    }
+    if (port < 0 || static_cast<size_t>(port) >= writePortUsed_.size()) {
+      setRuntimeFailureCode("state_array_write_port_out_of_bounds");
+      return;
+    }
+    const size_t portIndex = static_cast<size_t>(port);
+    const size_t elementIndex = static_cast<size_t>(index);
+    if (writePortUsed_[portIndex]) {
+      setRuntimeFailureCode("state_array_write_port_reused");
+      return;
+    }
+    if (std::any_of(proposals_.begin(), proposals_.end(),
+                    [&](const auto &proposal) {
+                      return proposal.first == elementIndex;
+                    })) {
+      setRuntimeFailureCode("state_array_write_conflict");
+      return;
+    }
+    writePortUsed_[portIndex] = true;
+    proposals_.emplace_back(elementIndex, std::move(value));
+  }
+
+  bool hasPendingCommit() const override { return !proposals_.empty(); }
+
+  void doXfer(Epoch epoch) override {
+    if (runtimeFailureCode().empty()) {
+      committedWrites_ += proposals_.size();
+      for (auto &proposal : proposals_)
+        committed_[proposal.first] = std::move(proposal.second);
+    }
+    if (!proposals_.empty())
+      lastUpdate_ = epoch;
+    proposals_.clear();
+    std::fill(readPortUsed_.begin(), readPortUsed_.end(), false);
+    std::fill(writePortUsed_.begin(), writePortUsed_.end(), false);
+  }
+
+  RuntimeObjectState runtimeState(Epoch epoch) const override {
+    RuntimeObjectState state = SimObject::runtimeState(epoch);
+    state.pendingOffers = proposals_.size();
+    state.quiescent = proposals_.empty();
+    if (!state.quiescent)
+      state.reason = "pending_commit";
+    return state;
+  }
+
+  void collectStatistics(std::vector<StatSnapshot> &out) const override {
+    out.push_back({.name = "state_array_entries",
+                   .objectPath = std::string(path()),
+                   .kind = StatisticKind::Gauge,
+                   .value = committed_.size(),
+                   .lastUpdate = lastUpdate_});
+    out.push_back({.name = "state_array_committed_writes",
+                   .objectPath = std::string(path()),
+                   .kind = StatisticKind::Counter,
+                   .value = committedWrites_,
+                   .lastUpdate = lastUpdate_});
+  }
+
+  void bindSystem(SimSystem *system) override { system_ = system; }
+
+  void reset() override {
+    std::fill(committed_.begin(), committed_.end(), T{});
+    proposals_.clear();
+    std::fill(readPortUsed_.begin(), readPortUsed_.end(), false);
+    std::fill(writePortUsed_.begin(), writePortUsed_.end(), false);
+    committedWrites_ = 0;
+    lastUpdate_ = {};
+    clearRuntimeFailureCode();
+  }
+
+private:
+  std::vector<T> committed_;
+  std::vector<bool> readPortUsed_;
+  std::vector<bool> writePortUsed_;
+  std::vector<std::pair<size_t, T>> proposals_;
+  uint64_t committedWrites_ = 0;
+  Epoch lastUpdate_{};
+  SimSystem *system_ = nullptr;
+};
+
 /// Standard-library finite FIFO component. The distinct name is the public
 /// component contract; SimQueue remains the underlying runtime primitive.
 template <typename T> class Queue final : public SimQueue<T> {

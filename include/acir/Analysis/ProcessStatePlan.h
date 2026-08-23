@@ -151,7 +151,9 @@ enum class ProcessHelperRole {
   WakeQueueReadable,
   WakeQueueWritable,
   QueueTryTransfer,
-  ArbitrateRoundRobin
+  ArbitrateRoundRobin,
+  StateRead,
+  StateWrite
 };
 enum class ProcessValueTypeMemberKind { Field, Element };
 enum class ProcessStorageSignedness { Signless, Signed, Unsigned };

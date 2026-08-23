@@ -68,6 +68,13 @@ public:
   /// True when the next Xfer call will publish a committed state change.
   virtual bool hasPendingCommit() const { return false; }
 
+  /// Validate all proposals before any runtime object commits. This hook is
+  /// deliberately read-only so one invalid participant aborts the entire
+  /// epoch instead of allowing an earlier object to commit partially.
+  virtual bool validatePendingCommit() const {
+    return runtimeFailureCode_.empty();
+  }
+
   // ── Wake conditions ─────────────────────────────────────────────────
 
   /// Returns true if this object has work to do at the given epoch.

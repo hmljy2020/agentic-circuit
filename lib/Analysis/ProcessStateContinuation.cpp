@@ -104,7 +104,8 @@ PlanSetBuilder::makePlannedAction(const ExpandedAction &expanded, uint32_t id) {
   }
   if (action->kind == ProcessActionKind::Original && action->sourceOperation) {
     if (isa<ac::TrySendOp, ac::TryRecvOp, ac::TryTransferOp, ac::PeekOp,
-            ac::SpaceOp, ac::ScheduleOp, ac::TryEventOp, ac::AssertOp,
+            ac::SpaceOp, ac::ScheduleOp, ac::TryEventOp, ac::StateReadOp,
+            ac::StateWriteOp, ac::AssertOp,
             ac::ArbitrateOp>(
             action->sourceOperation)) {
       action->emission = ProcessEmissionClass::Invoke;
@@ -508,7 +509,8 @@ PlanSetBuilder::planProcessContinuation(const ExpandedProcess &expanded,
       }
       if (act->kind == ProcessActionKind::Original && act->sourceOperation) {
       if (isa<ac::TrySendOp, ac::TryRecvOp, ac::TryTransferOp, ac::PeekOp,
-              ac::SpaceOp, ac::ScheduleOp, ac::TryEventOp, ac::AssertOp,
+              ac::SpaceOp, ac::ScheduleOp, ac::TryEventOp, ac::StateReadOp,
+              ac::StateWriteOp, ac::AssertOp,
               ac::ArbitrateOp>(
                 act->sourceOperation)) {
           act->emission = ProcessEmissionClass::Invoke;
