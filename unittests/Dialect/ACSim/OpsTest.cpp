@@ -449,14 +449,14 @@ TEST(ACSimOpsTest, GeneratedWrapperEndpointsReachChildRuntimeObjects) {
   ASSERT_TRUE(file);
   EXPECT_TRUE(mlir::succeeded(mlir::verify(*file)));
 
-  llvm::SmallVector<std::pair<int64_t, int64_t>> edges;
+  std::set<std::pair<int64_t, int64_t>> edges;
   file->walk([&](ActivateOp activate) {
-    edges.emplace_back(
+    edges.emplace(
         activate.getSource().getDefiningOp<DispatchOp>().getObjectId(),
         activate.getTarget().getDefiningOp<DispatchOp>().getObjectId());
   });
-  EXPECT_TRUE(llvm::is_contained(edges, std::pair<int64_t, int64_t>{0, 1}));
-  EXPECT_TRUE(llvm::is_contained(edges, std::pair<int64_t, int64_t>{0, 2}));
+  EXPECT_EQ(edges, (std::set<std::pair<int64_t, int64_t>>{
+                       {0, 0}, {0, 1}, {0, 2}, {1, 1}, {2, 2}}));
 }
 
 TEST(ACSimOpsTest, GeneratedModuleWrappersOwnChildrenButHaveNoRuntimeRows) {
@@ -1762,7 +1762,7 @@ TEST(ACSimOpsTest, CapabilityPreflightUsesExactPrivateLimits) {
              "dependency graph exceeds ACSim v0.2 capability 4");
 }
 
-TEST(ACSimOpsTest, CyclicSsaDependencyFailsExplicitlyWithoutRecursion) {
+TEST(ACSimOpsTest, ScalarSsaCyclesAreNotOwnershipDependencies) {
   mlir::MLIRContext context;
   loadTestDialects(context);
   auto file = parseValidModel(context);
@@ -1773,11 +1773,7 @@ TEST(ACSimOpsTest, CyclicSsaDependencyFailsExplicitlyWithoutRecursion) {
   ASSERT_GE(inlineOps.size(), 2u);
   inlineOps.front()->insertOperands(0, inlineOps[1].getResult());
 
-  std::string diagnostic =
-      expectDirectVerificationFailure(context, [&] { return model.verify(); });
-  EXPECT_TRUE(llvm::StringRef(diagnostic)
-                  .contains("typed SSA dependency graph contains a cycle"))
-      << diagnostic;
+  EXPECT_TRUE(mlir::succeeded(model.verify()));
 }
 
 TEST(ACSimOpsTest, CyclicProcessPcDependencyFailsExplicitly) {
@@ -1880,7 +1876,8 @@ TEST(ACSimOpsTest, DeepProcessPcChainUsesATopologicalWorklist) {
       builder, oldProcess.getLoc(), oldProcess.getCaptures(), "tick",
       oldProcess.getCaptureNamesAttr(), "pc0",
       mlir::ArrayAttr::get(&context, pcs), oldProcess.getLiveSlotsAttr(), depth,
-      oldProcess.getSpecializationFingerprint(), depth);
+      oldProcess.getSpecializationFingerprint(), mlir::DenseI64ArrayAttr{},
+      depth);
   for (unsigned index = 0; index != depth; ++index) {
     mlir::Region &state = process.getStates()[index];
     mlir::Block *block = &state.emplaceBlock();

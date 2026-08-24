@@ -69,6 +69,12 @@ namespace {
 
 constexpr StringLiteral kSourceMapAttrName = "acsim.source_map";
 
+bool canCarryRuntimeObjectIdentity(Type type) {
+  while (auto array = dyn_cast<ArrayType>(type))
+    type = array.getElementType();
+  return isa<OwnerType, RefType, PortType, ResourceType>(type);
+}
+
 bool isSha256(StringRef value) {
   if (!value.consume_front("sha256:") || value.size() != 64)
     return false;
@@ -2574,12 +2580,11 @@ LogicalResult verifyDispatchAndActivation(ModelOp model,
   uint64_t dependencyNodes = 0;
   auto collectIds = [&](Value rootValue, unsigned context,
                         Operation *reporter) -> FailureOr<std::set<int64_t>> {
-    // Only typed ownership/reference values can resolve to a runtime object.
-    // Scalar and packet operands (including loop-carried induction values)
-    // cannot acquire an owner through their def-use graph, so following them
-    // is both unnecessary and would mistake a bounded SSA phi backedge for an
-    // ownership cycle.
-    if (!isa<OwnerType, RefType>(rootValue.getType()))
+    // Ownership values and their typed endpoint projections can resolve to a
+    // runtime object. Scalar and packet operands (including loop-carried
+    // induction values) cannot, so following them would both waste work and
+    // mistake a bounded SSA phi backedge for an ownership cycle.
+    if (!canCarryRuntimeObjectIdentity(rootValue.getType()))
       return std::set<int64_t>{};
     struct Dependency {
       unsigned context;
