@@ -6,11 +6,17 @@ ulimit -v 1900000
 m1_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "${m1_root}/../../../.." && pwd)"
 build_root="${m1_root}/build"
-acir_opt="${repo_root}/build/dev-llvm22/bin/acir-opt"
-acir_cxxgen="${repo_root}/build/dev-llvm22/bin/acir-cxxgen"
-gfsim_tests="${repo_root}/build/dev-llvm22/bin/GfsimTests"
-gfsim_lib="${repo_root}/build/dev-llvm22/lib/gfsim/libgfsim.a"
-bindings_lib="${repo_root}/build/dev-llvm22/lib/Bindings/libACIRBindings.a"
+compiler_build="${ACIR_BUILD_PRESET:-dev-llvm22}"
+if [[ ! "${compiler_build}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  echo "invalid ACIR_BUILD_PRESET: ${compiler_build}" >&2
+  exit 2
+fi
+compiler_root="${repo_root}/build/${compiler_build}"
+acir_opt="${compiler_root}/bin/acir-opt"
+acir_cxxgen="${compiler_root}/bin/acir-cxxgen"
+gfsim_tests="${compiler_root}/bin/GfsimTests"
+gfsim_lib="${compiler_root}/lib/gfsim/libgfsim.a"
+bindings_lib="${compiler_root}/lib/Bindings/libACIRBindings.a"
 lit="/usr/lib/llvm-22/bin/lit"
 
 if [[ $# -ne 0 ]]; then
@@ -54,9 +60,12 @@ time_stage() {
 /usr/bin/time -f "generate\t%e\t%M" -o "${metrics}" -a \
   /usr/bin/python3 "${m1_root}/gen_model.py" > "${build_root}/model.mlir"
 time_stage verify "${acir_opt}" "${build_root}/model.mlir" -o /dev/null
+time_stage optimize "${acir_opt}" \
+  --pass-pipeline='builtin.module(canonicalize,cse)' \
+  "${build_root}/model.mlir" -o "${build_root}/model.optimized.mlir"
 time_stage freeze "${acir_opt}" --verify-each=false \
   --pass-pipeline='builtin.module(ac-freeze-topology)' \
-  "${build_root}/model.mlir" -o "${build_root}/model.frozen.mlir"
+  "${build_root}/model.optimized.mlir" -o "${build_root}/model.frozen.mlir"
 time_stage lower "${acir_opt}" --ac-lower-to-acsim \
   --ac-binding-profile=fast --ac-binding-target=x86_64-linux-gnu \
   "${build_root}/model.frozen.mlir" -o "${build_root}/model.acsim.mlir"
@@ -100,7 +109,7 @@ time_stage benchmark "${binary}" --benchmark
 
 time_stage runtime-state-array "${gfsim_tests}" \
   --gtest_filter='GfsimStateArrayTest.*'
-time_stage targeted-lit "${lit}" -j1 -sv "${repo_root}/build/dev-llvm22/test" \
+time_stage targeted-lit "${lit}" -j1 -sv "${compiler_root}/test" \
   --filter='(ACIR/state-array|Conversion/native-state-array|CodeGen/native-state-array)'
 
 generated_bytes="$(find "${generated}/include" "${generated}/src" -type f \
@@ -115,6 +124,8 @@ generated_lines="$(find "${generated}/include" "${generated}/src" -type f \
     "$(wc -l < "${build_root}/model.mlir")"
   printf 'frozen\t%s\t%s\n' "$(wc -c < "${build_root}/model.frozen.mlir")" \
     "$(wc -l < "${build_root}/model.frozen.mlir")"
+  printf 'optimized\t%s\t%s\n' "$(wc -c < "${build_root}/model.optimized.mlir")" \
+    "$(wc -l < "${build_root}/model.optimized.mlir")"
   printf 'acsim\t%s\t%s\n' "$(wc -c < "${build_root}/model.acsim.mlir")" \
     "$(wc -l < "${build_root}/model.acsim.mlir")"
   printf 'generated-cxx\t%s\t%s\n' "${generated_bytes}" "${generated_lines}"

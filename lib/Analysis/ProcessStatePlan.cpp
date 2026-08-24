@@ -376,13 +376,23 @@ detail::PlanSetBuilder::buildProduction(mlir::ModuleOp module,
     if (mlir::failed(expanded))
       return mlir::failure();
     auto control = planProcessContinuation(*expanded, limits);
-    if (mlir::failed(control))
+    if (mlir::failed(control)) {
+      process.emitOpError("failed to construct process continuation plan");
       return mlir::failure();
+    }
     control = planProcessWakes(std::move(*control), limits);
-    if (mlir::failed(control) ||
-        mlir::failed(planProcessLiveness(**control, limits)) ||
-        mlir::failed(planProcessCost(**control, limits)))
+    if (mlir::failed(control)) {
+      process.emitOpError("failed to construct process wake plan");
       return mlir::failure();
+    }
+    if (mlir::failed(planProcessLiveness(**control, limits))) {
+      process.emitOpError("failed to construct process liveness plan");
+      return mlir::failure();
+    }
+    if (mlir::failed(planProcessCost(**control, limits))) {
+      process.emitOpError("failed to compute bounded process cost");
+      return mlir::failure();
+    }
     pending.push_back({process, expanded->definitionKey, std::move(*control)});
   }
 
@@ -1380,6 +1390,7 @@ detail::PlanSetBuilder::buildProduction(mlir::ModuleOp module,
          largest >>= 1;)
       ++process->pcBitWidth;
     process->fairnessWork = item.control->fairnessWork;
+    process->hasBoundedLocalLoops = item.control->hasBoundedLocalLoops;
     set->processes.push_back(ProcessStatePlan(process));
   }
   ProcessStatePlanSet result(set);
@@ -4218,16 +4229,25 @@ mlir::LogicalResult verifyProcessStatePlan(const ProcessStatePlanSet &plans,
             return reject(
                 plans,
                 "process-state plan invariant violated: invalid action arm");
-          if (action.operands().size() != 2 ||
-              !llvm::all_of(action.operands(),
+          if (action.operands().size() != action.results().size() * 2 ||
+              !llvm::all_of(action.operands().take_front(2),
                             [](const auto &operand) {
                               return mlir::isa<mlir::IndexType>(operand.type());
                             }) ||
-              action.results().size() != 1 ||
+              action.results().empty() ||
               !mlir::isa<mlir::IndexType>(action.results()[0].type()))
             return reject(
                 plans,
                 "process-state plan invariant violated: invalid action arm");
+          size_t carried = action.results().size() - 1;
+          for (size_t i = 0; i < carried; ++i)
+            if (action.operands()[2 + i].type() !=
+                    action.results()[1 + i].type() ||
+                action.operands()[2 + carried + i].type() !=
+                    action.results()[1 + i].type())
+              return reject(plans,
+                            "process-state plan invariant violated: invalid "
+                            "loop-carried type");
         }
         ProcessOccurrenceKind expectedOccurrence =
             ProcessOccurrenceKind::Original;
@@ -4539,15 +4559,17 @@ mlir::LogicalResult verifyProcessStatePlan(const ProcessStatePlanSet &plans,
             ready.push_back(successor);
         }
       }
-      if (processed != pc.blocks().size())
+      if (processed != pc.blocks().size() && !plan.hasBoundedLocalLoops())
         invalidGraph = true;
       for (ProcessBlockId id : pc.blocks())
-        if (!distance[id.value()])
+        if (!distance[id.value()] && !plan.hasBoundedLocalLoops())
           invalidGraph = true;
       if (invalidGraph)
         return reject(plans,
                       "process-state plan invariant violated: cost mismatch");
-      expectedFairness = std::max(expectedFairness, pcWork);
+      expectedFairness = std::max(
+          expectedFairness,
+          plan.hasBoundedLocalLoops() ? plan.fairnessWork() : pcWork);
     }
     if (plan.fairnessWork() != expectedFairness || expectedFairness == 0)
       return reject(plans,

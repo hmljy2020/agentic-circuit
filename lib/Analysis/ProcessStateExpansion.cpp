@@ -162,20 +162,6 @@ PlanSetBuilder::expandProcess(ac::ProcessOp process,
     occurrence->syntheticLoop = ProcessSyntheticLoopOccurrence(loopImpl);
     return ProcessOccurrenceId(occurrence);
   };
-  auto makeSyntheticConstantOccurrence =
-      [&](scf::ForOp loop, const ExpansionContext &context, uint32_t ordinal) {
-        ProcessOccurrenceId anchor =
-            makeOriginalOccurrence(loop.getOperation(), context);
-        auto constant =
-            std::make_shared<ProcessSyntheticConstantOccurrence::Impl>();
-        constant->anchor = anchor;
-        constant->constant = ordinal;
-        auto occurrence = std::make_shared<ProcessOccurrenceId::Impl>();
-        occurrence->kind = ProcessOccurrenceKind::SyntheticConstant;
-        occurrence->syntheticConstant =
-            ProcessSyntheticConstantOccurrence(constant);
-        return ProcessOccurrenceId(occurrence);
-      };
   auto makeValueAtDefinition = [&](Value value,
                                    const ExpansionContext &context) {
     Operation *owner = value.getDefiningOp();
@@ -241,23 +227,6 @@ PlanSetBuilder::expandProcess(ac::ProcessOp process,
     maxValueLookupProbes = std::max(maxValueLookupProbes, probes);
     return defineValue(value, context);
   };
-  auto makeSyntheticValue = [&](scf::ForOp loop,
-                                const ExpansionContext &context,
-                                uint32_t ordinal) {
-    auto coordinateImpl = std::make_shared<ProcessValueCoordinate::Impl>();
-    coordinateImpl->kind = ProcessValueCoordinateKind::Result;
-    coordinateImpl->ownerPath = operationPaths.lookup(loop);
-    coordinateImpl->index = 0;
-    auto syntheticImpl = std::make_shared<ProcessSyntheticPlannedValue::Impl>();
-    syntheticImpl->occurrence =
-        makeSyntheticConstantOccurrence(loop, context, ordinal);
-    syntheticImpl->coordinate = ProcessValueCoordinate(coordinateImpl);
-    auto planned = std::make_shared<ProcessPlannedValue::Impl>();
-    planned->kind = ProcessPlannedValueKind::Synthetic;
-    planned->type = loop.getInductionVar().getType();
-    planned->synthetic = ProcessSyntheticPlannedValue(syntheticImpl);
-    return ProcessPlannedValue(planned);
-  };
   auto makeSyntheticLoopValue = [&](scf::ForOp loop,
                                     const ExpansionContext &context,
                                     ProcessLoopPhase phase, Type type,
@@ -295,8 +264,29 @@ PlanSetBuilder::expandProcess(ac::ProcessOp process,
       origin = cast<BlockArgument>(from).getOwner()->getParentOp();
     if (!reserveEdges(origin, 1))
       return;
-    expanded.forwarding.push_back(
-        {resolveValue(from, fromContext), defineValue(to, toContext)});
+    ProcessPlannedValue source = resolveValue(from, fromContext);
+    ProcessPlannedValue target = defineValue(to, toContext);
+    // A structural loop creates its increment action before its body is
+    // expanded.  Consequently a yielded func.call result may already appear
+    // as an operand when the call's return forwarding becomes known.  Rewrite
+    // those earlier uses to the actual producer now; relying only on the
+    // environment below affects subsequent uses and leaves an unmaterialized
+    // call-result coordinate on the loop backedge.
+    for (ExpandedAction &action : expanded.actions)
+      for (ProcessPlannedValue &operand : action.operands)
+        if (operand.impl_ == target.impl_)
+          operand = source;
+    for (ExpandedForwarding &forwarding : expanded.forwarding)
+      if (forwarding.from.impl_ == target.impl_)
+        forwarding.from = source;
+    expanded.forwarding.push_back({source, target});
+    // Forwarding is an SSA alias, not a runtime action.  Bind subsequent uses
+    // of the destination coordinate directly to the producer.  Previously
+    // these records were collected but never consumed, so effectful loop
+    // bodies were silently skipped when their induction/block operands could
+    // not be materialized by ACIR-to-ACSim.
+    valueEnvironment[to].insert_or_assign(
+        contextKey(toContext, toContext.iterations.size()), source);
   };
   auto addOriginalAction = [&](Operation *operation,
                                const ExpansionContext &context) {
@@ -364,62 +354,9 @@ PlanSetBuilder::expandProcess(ac::ProcessOp process,
     if (isa<func::ReturnOp, scf::YieldOp, scf::ConditionOp>(operation))
       continue;
     if (auto forOp = dyn_cast<scf::ForOp>(operation)) {
-      FailureOr<ac::StaticForTripCount> staticTrip =
-          ac::analyzeStaticFor(forOp);
-      if (succeeded(staticTrip)) {
-        auto yield = cast<scf::YieldOp>(forOp.getBody()->getTerminator());
-        if (staticTrip->tripCount == 0)
-          for (auto [init, result] :
-               llvm::zip(forOp.getInitArgs(), forOp.getResults()))
-            addForwarding(init, task.context, result, task.context);
-        for (uint64_t iteration = 0; iteration < staticTrip->tripCount;
-             ++iteration) {
-          ExpansionContext bodyContext = task.context;
-          bodyContext.iterations.push_back(iteration);
-          ProcessPlannedValue induction = makeSyntheticValue(
-              forOp, bodyContext, static_cast<uint32_t>(iteration));
-          ExpandedAction constant;
-          constant.kind = ProcessActionKind::Constant;
-          constant.operation = operation;
-          constant.operationPath = operationPaths.lookup(operation);
-          constant.callSites = task.context.callSites;
-          constant.iterationVector = bodyContext.iterations;
-          constant.occurrence = induction.synthetic().occurrence();
-          constant.results.push_back(induction);
-          if (!reserveNodes(operation, 1))
-            return failure();
-          expanded.actions.push_back(std::move(constant));
-          if (!reserveEdges(operation, 1))
-            return failure();
-          expanded.forwarding.push_back(
-              {induction, defineValue(forOp.getInductionVar(), bodyContext)});
-          if (iteration == 0)
-            for (auto [init, argument] :
-                 llvm::zip(forOp.getInitArgs(), forOp.getRegionIterArgs()))
-              addForwarding(init, task.context, argument, bodyContext);
-          if (iteration + 1 < staticTrip->tripCount) {
-            ExpansionContext nextContext = task.context;
-            nextContext.iterations.push_back(iteration + 1);
-            for (auto [yielded, argument] :
-                 llvm::zip(yield.getOperands(), forOp.getRegionIterArgs()))
-              addForwarding(yielded, bodyContext, argument, nextContext);
-          } else {
-            for (auto [yielded, result] :
-                 llvm::zip(yield.getOperands(), forOp.getResults()))
-              addForwarding(yielded, bodyContext, result, task.context);
-          }
-        }
-        for (uint64_t iteration = staticTrip->tripCount; iteration > 0;
-             --iteration) {
-          ExpansionContext bodyContext = task.context;
-          bodyContext.iterations.push_back(iteration - 1);
-          pushBlock(*forOp.getBody(), bodyContext);
-          if (budgetFailed)
-            return failure();
-        }
-        continue;
-      }
-
+      // Static loops remain structural: one initialize/header/body/latch/exit
+      // plan is shared by every iteration.  The bounded trip count is carried
+      // into ACSim as an explicit backedge descriptor.
       ProcessPlannedValue induction = makeSyntheticLoopValue(
           forOp, task.context, ProcessLoopPhase::Initialize,
           forOp.getInductionVar().getType(), 0);
@@ -429,6 +366,21 @@ PlanSetBuilder::expandProcess(ac::ProcessOp process,
       ProcessPlannedValue nextInduction = makeSyntheticLoopValue(
           forOp, task.context, ProcessLoopPhase::Increment,
           forOp.getInductionVar().getType(), 0);
+      llvm::SmallVector<ProcessPlannedValue> loopCarried;
+      llvm::SmallVector<ProcessPlannedValue> nextLoopCarried;
+      for (auto [argument, result] : llvm::zip_equal(
+               forOp.getRegionIterArgs(), forOp.getResults())) {
+        ProcessPlannedValue carried = defineValue(argument, task.context);
+        loopCarried.push_back(carried);
+        valueEnvironment[argument].insert_or_assign(
+            contextKey(task.context, task.context.iterations.size()), carried);
+        valueEnvironment[result].insert_or_assign(
+            contextKey(task.context, task.context.iterations.size()), carried);
+        nextLoopCarried.push_back(makeSyntheticLoopValue(
+            forOp, task.context, ProcessLoopPhase::Increment, carried.type(),
+            static_cast<uint32_t>(nextLoopCarried.size() + 1)));
+      }
+      auto yield = cast<scf::YieldOp>(forOp.getBody()->getTerminator());
       for (auto [kind, phase] : {std::pair{ProcessActionKind::ForInitialize,
                                            ProcessLoopPhase::Initialize},
                                  std::pair{ProcessActionKind::ForCondition,
@@ -450,8 +402,9 @@ PlanSetBuilder::expandProcess(ac::ProcessOp process,
           for (Value init : forOp.getInitArgs()) {
             ProcessPlannedValue initial = resolveValue(init, task.context);
             action.operands.push_back(initial);
-            action.results.push_back(initial);
           }
+          action.results.insert(action.results.end(), loopCarried.begin(),
+                                loopCarried.end());
         } else if (kind == ProcessActionKind::ForCondition) {
           action.operands = {induction,
                              resolveValue(forOp.getUpperBound(), task.context)};
@@ -460,7 +413,13 @@ PlanSetBuilder::expandProcess(ac::ProcessOp process,
         } else {
           action.operands = {induction,
                              resolveValue(forOp.getStep(), task.context)};
+          action.operands.insert(action.operands.end(), loopCarried.begin(),
+                                 loopCarried.end());
+          for (Value yielded : yield.getOperands())
+            action.operands.push_back(resolveValue(yielded, task.context));
           action.results = {nextInduction};
+          action.results.insert(action.results.end(), nextLoopCarried.begin(),
+                                nextLoopCarried.end());
           action.scalarOperation = makeScalar("arith.addi", false);
         }
         if (!reserveNodes(operation, 1))
@@ -471,20 +430,8 @@ PlanSetBuilder::expandProcess(ac::ProcessOp process,
         return failure();
       expanded.forwarding.push_back(
           {induction, defineValue(forOp.getInductionVar(), task.context)});
-      if (!reserveEdges(operation, 1))
-        return failure();
-      expanded.forwarding.push_back(
-          {nextInduction, resolveValue(forOp.getInductionVar(), task.context)});
-      auto yield = cast<scf::YieldOp>(forOp.getBody()->getTerminator());
-      for (auto [init, argument] :
-           llvm::zip(forOp.getInitArgs(), forOp.getRegionIterArgs()))
-        addForwarding(init, task.context, argument, task.context);
-      for (auto [yielded, argument] :
-           llvm::zip(yield.getOperands(), forOp.getRegionIterArgs()))
-        addForwarding(yielded, task.context, argument, task.context);
-      for (auto [yielded, result] :
-           llvm::zip(yield.getOperands(), forOp.getResults()))
-        addForwarding(yielded, task.context, result, task.context);
+      valueEnvironment[forOp.getInductionVar()].insert_or_assign(
+          contextKey(task.context, task.context.iterations.size()), induction);
       pushBlock(*forOp.getBody(), task.context);
       if (budgetFailed)
         return failure();

@@ -5,6 +5,7 @@
 #include "acir/Dialect/ACIR/GraphRegion.h"
 
 #include "mlir/Dialect/DLTI/DLTI.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/SymbolTable.h"
@@ -24,6 +25,76 @@ using namespace mlir;
 
 namespace acir::ac {
 namespace {
+
+/// Return the inclusive range selected by a statically-known port value.
+/// Besides scalar constants, structured ACIR permits an i32 index_cast of a
+/// bounded scf.for induction variable.  This preserves the physical
+/// one-port-per-entry mapping without forcing the frontend to unroll the loop.
+std::optional<std::pair<int64_t, int64_t>> staticPortRange(Value port) {
+  if (auto constant = port.getDefiningOp<arith::ConstantOp>())
+    if (auto value = dyn_cast<IntegerAttr>(constant.getValue()))
+      return std::pair<int64_t, int64_t>{value.getInt(), value.getInt()};
+
+  Value candidate = port;
+  if (auto cast = port.getDefiningOp<arith::IndexCastOp>())
+    candidate = cast.getIn();
+  auto argument = dyn_cast<BlockArgument>(candidate);
+  if (!argument)
+    return std::nullopt;
+  auto loop = dyn_cast_or_null<scf::ForOp>(
+      argument.getOwner()->getParentOp());
+  if (!loop || argument != loop.getInductionVar())
+    return std::nullopt;
+  auto trip = analyzeStaticFor(loop);
+  if (failed(trip) || trip->tripCount == 0)
+    return std::nullopt;
+  const int64_t last = trip->lowerBound +
+                       static_cast<int64_t>(trip->tripCount - 1) * trip->step;
+  return std::pair<int64_t, int64_t>{trip->lowerBound, last};
+}
+
+struct EraseDisabledStateWrite final : OpRewritePattern<StateWriteOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(StateWriteOp write,
+                                PatternRewriter &rewriter) const override {
+    Attribute enable;
+    if (!matchPattern(write.getEnable(), m_Constant(&enable)))
+      return failure();
+    auto boolean = dyn_cast<BoolAttr>(enable);
+    auto integer = dyn_cast<IntegerAttr>(enable);
+    if (!((boolean && !boolean.getValue()) ||
+          (integer && integer.getType().isInteger(1) &&
+           !integer.getValue().getBoolValue())))
+      return failure();
+    rewriter.eraseOp(write);
+    return success();
+  }
+};
+
+struct ReuseCommittedStateRead final : OpRewritePattern<StateReadOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(StateReadOp read,
+                                PatternRewriter &rewriter) const override {
+    // StateArray writes are proposals, so no operation in the same process
+    // block changes the committed snapshot observed by a later read.  Keep the
+    // match deliberately exact and block-local: different SSA addresses or
+    // ports must retain their runtime conflict/bounds checks.
+    for (Operation *previous = read->getPrevNode(); previous;
+         previous = previous->getPrevNode()) {
+      auto candidate = dyn_cast<StateReadOp>(previous);
+      if (!candidate || candidate.getArrayAttr() != read.getArrayAttr() ||
+          candidate.getIndex() != read.getIndex() ||
+          candidate.getPort() != read.getPort() ||
+          candidate.getValue().getType() != read.getValue().getType())
+        continue;
+      rewriter.replaceOp(read, candidate.getValue());
+      return success();
+    }
+    return failure();
+  }
+};
 
 thread_local detail::ProcessLivenessWork *processLivenessWorkCollector =
     nullptr;
@@ -1497,13 +1568,12 @@ verifyRuntimeReferences(ModuleOp module,
           result = failure();
         }
         if (target) {
-          auto constant = read.getPort().getDefiningOp<arith::ConstantOp>();
-          auto value = constant ? dyn_cast<IntegerAttr>(constant.getValue())
-                                : IntegerAttr();
-          if (!value || value.getInt() < 0 ||
-              value.getInt() >= target.getReadPorts()) {
+          auto range = staticPortRange(read.getPort());
+          if (!range || range->first < 0 ||
+              range->second >= target.getReadPorts()) {
             read.emitOpError(
-                "port must be a constant in declared read port range");
+                "port must be a constant in declared read port range or a "
+                "bounded loop induction port in that range");
             result = failure();
           }
         }
@@ -1517,13 +1587,12 @@ verifyRuntimeReferences(ModuleOp module,
           result = failure();
         }
         if (target) {
-          auto constant = write.getPort().getDefiningOp<arith::ConstantOp>();
-          auto value = constant ? dyn_cast<IntegerAttr>(constant.getValue())
-                                : IntegerAttr();
-          if (!value || value.getInt() < 0 ||
-              value.getInt() >= target.getWritePorts()) {
+          auto range = staticPortRange(write.getPort());
+          if (!range || range->first < 0 ||
+              range->second >= target.getWritePorts()) {
             write.emitOpError(
-                "port must be a constant in declared write port range");
+                "port must be a constant in declared write port range or a "
+                "bounded loop induction port in that range");
             result = failure();
           }
         }
@@ -3540,6 +3609,16 @@ LogicalResult SpaceOp::verify() { return requireProcess(*this); }
 LogicalResult TryEventOp::verify() { return requireProcess(*this); }
 LogicalResult StateReadOp::verify() { return requireProcess(*this); }
 LogicalResult StateWriteOp::verify() { return requireProcess(*this); }
+
+void StateReadOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                               MLIRContext *context) {
+  patterns.add<ReuseCommittedStateRead>(context);
+}
+
+void StateWriteOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                                MLIRContext *context) {
+  patterns.add<EraseDisabledStateWrite>(context);
+}
 
 LogicalResult ScheduleOp::verify() {
   if (Operation *definition = getDelay().getDefiningOp();

@@ -47,37 +47,43 @@ block argument 泄漏为裸 `!ac.packet`、导致 canonical ACSim 拒绝的问�
 ./examples/chao/superscalar/m1/run.sh
 ```
 
-最终一次完整执行退出码为 0：semantic 与 benchmark 均 PASS，StateArray runtime 3/3，定向 lit
-5/5。构建限制为 `ulimit -v 1900000`、单线程；实测最高 RSS 为 579,224 KB。
+最终一次完整执行退出码为 0：semantic 与 benchmark 均 PASS，StateArray runtime 5/5，定向 lit
+6/6。构建限制为 `ulimit -v 1900000`、单线程；实测最高 RSS 为 326,808 KB。
+全量 lit 为 117/125；其余 8 项均是当前并行改动区域的 activation-edge 精确依赖校验失败，
+因此全仓回归尚未收口，详见 `OPTIMIZATION_LOG.md`。
+独立 runtime 与 Compiler Driver 回归分别为 208/208、7/7。
 
 | 阶段 | 时间 / s | peak RSS / KB |
 |---|---:|---:|
-| ACIR verify | 0.34 | 66,740 |
-| freeze | 0.47 | 69,824 |
-| ACIR→ACSim | 4.07 | 505,268 |
-| C++ 生成、内部编译和链接 | 45.63 | 579,224 |
-| runner link | 3.26 | 327,680 |
-| 10,000 tick benchmark | 1.77 | 55,168 |
-| targeted lit | 11.44 | 250,576 |
+| ACIR verify | 0.02 | 63,488 |
+| canonicalize/CSE | 0.02 | 63,744 |
+| freeze | 0.03 | 64,308 |
+| ACIR→ACSim | 0.19 | 161,360 |
+| C++ 生成、内部编译和链接 | 8.66 | 298,436 |
+| runner link | 2.96 | 326,808 |
+| 10,000 tick benchmark | 0.38 | 54,528 |
+| targeted lit | 15.86 | 252,524 |
 
 | 产物 | 大小 | 行数 |
 |---|---:|---:|
-| ACIR | 234,043 B | 3,321 |
-| frozen ACIR | 793,682 B | 3,313 |
-| ACSim | 819,552 B | 4,455 |
-| generated C++ | 1,358,669 B | 28,627 |
+| 原始 ACIR | 85,692 B | 1,189 |
+| optimized ACIR | 61,099 B | 1,013 |
+| frozen ACIR | 254,117 B | 1,013 |
+| ACSim | 270,497 B | 1,188 |
+| generated C++ | 646,622 B | 16,443 |
 
-空载 10,000 tick 实测约 5,490 ticks/s。该数字是本固定展开调度器的仿真成本基线，不是 NPU
-指令吞吐。
+空载 10,000 tick 两次实测约 26,547～26,616 ticks/s。语义运行的 StateArray committed write
+总数为 250，其中 producer 为 32；迁移前 55 项 constant-true write × 29 ticks 推导为 1,595。该速度是调度器的
+仿真成本指标，不是 NPU 指令吞吐。
 
 ## ACIR 审视
 
 1. `StateArray` 是必要的通用 primitive：它使索引、端口、snapshot 和提交边界都可验证；用
    Queue 或任意 process 局部变量替代会丢失硬件状态意图。
-2. 当前 ACIR 仍将 8-entry window/ROB、16-entry producer map 和 9-entry reservation ring 完全
-   展开。仅一个小调度核就生成 3,321 行 ACIR 和 28,627 行 C++，lowering 4.07 s、仿真只有
-   约 5.5k ticks/s。后续优先研究 bounded-loop 专门 lowering、批量 StateArray read/write、
-   record 字段访问融合和增量 next-state，而不是继续复制表达式。
+2. bounded `scf.for` 和 `iter_args` 已能紧凑 lower；producer/ring、window oldest/first-free
+   以及 ROB/window next-state 均已改成动态索引的结构归约或 guarded commit。optimized ACIR
+   为 1,013 行、generated C++ 为 16,443 行，规模目标已经达到。循环内嵌套 pure
+   `func.call` 也已打通；resultful `scf.if` 仍需真正的 CFG merge/phi lowering。
 3. `ac.resource` 尚无 acquire/release/complete 的通用执行语义。本模型用 FU `inflight`、II 和
    completion reservation 显式状态实现，正确但冗长。候选方向应是可复用的 reservation-table/
    capacity 标准组件或更通用的端口化 resource 语义，不应新增 NPU 专用 op。

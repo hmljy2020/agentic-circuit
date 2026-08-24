@@ -19,6 +19,7 @@
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassRegistry.h"
+#include "mlir/Transforms/Passes.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/Errc.h"
@@ -298,6 +299,13 @@ llvm::Error runStage(CompilerStage stage, const CompilerRequest &request,
       return capture.takeFailure(stage);
     return llvm::Error::success();
   case CompilerStage::AcirFreeze:
+    // Simplify the pure SSA graph before freeze captures the process skeleton.
+    // MLIR's effect interfaces keep Queue/State/Event proposals ordered and
+    // distinct while repeated arithmetic and record reads are shared.  Doing
+    // this after freeze would correctly trip the skeleton integrity check.
+    if (mlir::failed(runPass(state, mlir::createCanonicalizerPass())) ||
+        mlir::failed(runPass(state, mlir::createCSEPass())))
+      return capture.takeFailure(stage);
     if (mlir::failed(runPass(state, createFreezeTopologyPass())))
       return capture.takeFailure(stage);
     state.frozenAcir = printModule(*state.module);

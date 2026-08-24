@@ -24,11 +24,14 @@
 #include "acir/Dialect/ACSim/ACSimOps.h"
 #include "acir/Dialect/ACSim/ACSimTypes.h"
 #include "acir/Transforms/ResolveBindings.h"
+#include "Dialect/ACIR/ProcessLowerability.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Index/IR/IndexDialect.h"
 #include "mlir/Dialect/Index/IR/IndexOps.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Diagnostics.h"
@@ -2333,7 +2336,7 @@ mlir::LogicalResult ACIRToACSimPass::plan(mlir::ModuleOp input) {
                         "v0.2 lowering stage");
     if (isa<ac::SystemOp, ac::TypeScopeOp, ac::TypeAliasOp, ac::StructOp,
             ac::EnumOp, ac::UnionOp, ac::PacketOp, ac::TransactionOp,
-            ac::InterfaceOp, ac::ProtocolOp>(operation))
+            ac::InterfaceOp, ac::ProtocolOp, func::FuncOp>(operation))
       continue; // Pure declarations are fully resolved before lowering.
     return lowerError(&operation, "ACLOWER-UNSUPPORTED-CONSTRUCT",
                       "top-level operation '" +
@@ -2802,15 +2805,40 @@ void ACIRToACSimPass::emitProcessBody(
     captures.push_back(owner);
     captureNames.push_back(builder.getStringAttr("queue_" + name));
   }
-  auto process = acsim::ProcessOp::create(
-      builder, placement.process->getLoc(), captures, placement.name,
-      builder.getArrayAttr(captureNames), plan->pcs().front().name(),
-      builder.getArrayAttr(pcs), builder.getArrayAttr(liveSlots),
-      placement.fairnessCap, placement.specialization, plan->pcs().size());
-
-  llvm::SmallVector<Block *> blocks(plan->blocks().size());
+  // Identify loop backedges from their explicit ForIncrement action, not from
+  // incidental block insertion order.  Branch reconvergence can point to an
+  // earlier-created block while still being acyclic, so treating every such
+  // edge as a loop both mislabels the CFG and loses the owning trip count.
+  llvm::SmallVector<int64_t> boundedBackedges;
+  llvm::SmallVector<llvm::SmallVector<unsigned>> processBlockOrders(
+      plan->pcs().size());
   for (const ProcessPcPlan &pc : plan->pcs()) {
-    Region &state = process.getStates()[pc.id().value()];
+    using EdgeIds = std::pair<unsigned, unsigned>;
+    std::map<EdgeIds, uint64_t> loopBackedges;
+    for (ProcessBlockId id : pc.blocks()) {
+      const ProcessBlockPlan &block = plan->blocks()[id.value()];
+      const ProcessControlEdgePlan &edge = block.edge();
+      if (edge.kind() != ProcessControlEdgeKind::LocalContinue)
+        continue;
+      for (const ProcessActionPlan &action : block.actions()) {
+        if (action.kind() != ProcessActionKind::ForIncrement)
+          continue;
+        auto loop = dyn_cast_or_null<scf::ForOp>(action.sourceOperation());
+        auto trip = loop ? ac::analyzeStaticFor(loop)
+                         : FailureOr<ac::StaticForTripCount>(failure());
+        if (failed(trip)) {
+          lowerError(placement.process, "ACLOWER-PROCESS-LOOP",
+                     "compact loop backedge lacks a static trip bound");
+          return;
+        }
+        // A zero-trip loop never takes its syntactic backedge.  The descriptor
+        // is a positive conservative bound consumed by the structural ACSim
+        // verifier, so one is the smallest valid bound in that case.
+        loopBackedges[{id.value(), edge.targetBlock().value()}] =
+            std::max<uint64_t>(1, trip->tripCount);
+      }
+    }
+
     llvm::SmallVector<llvm::SmallVector<ProcessBlockId>> successors(
         plan->blocks().size());
     llvm::SmallVector<unsigned> indegree(plan->blocks().size(), 0);
@@ -2818,7 +2846,8 @@ void ACIRToACSimPass::emitProcessBody(
       const ProcessControlEdgePlan &edge = plan->blocks()[id.value()].edge();
       auto addSuccessor = [&](ProcessBlockId successor) {
         successors[id.value()].push_back(successor);
-        ++indegree[successor.value()];
+        if (!loopBackedges.contains({id.value(), successor.value()}))
+          ++indegree[successor.value()];
       };
       if (edge.kind() == ProcessControlEdgeKind::Branch) {
         addSuccessor(edge.trueBlock());
@@ -2831,18 +2860,48 @@ void ACIRToACSimPass::emitProcessBody(
     for (ProcessBlockId id : pc.blocks())
       if (indegree[id.value()] == 0)
         ready.insert(id.value());
-    llvm::SmallVector<unsigned> blockOrder;
+    auto &blockOrder = processBlockOrders[pc.id().value()];
     while (!ready.empty()) {
       unsigned id = *ready.begin();
       ready.erase(ready.begin());
       blockOrder.push_back(id);
-      for (ProcessBlockId successor : successors[id])
+      for (ProcessBlockId successor : successors[id]) {
+        if (loopBackedges.contains({id, successor.value()}))
+          continue;
         if (--indegree[successor.value()] == 0)
           ready.insert(successor.value());
+      }
     }
-    assert(blockOrder.size() == pc.blocks().size() &&
-           "validated intra-PC graph must be acyclic");
-    for (unsigned id : blockOrder) {
+    if (blockOrder.size() != pc.blocks().size()) {
+      lowerError(placement.process, "ACLOWER-PROCESS-LOOP",
+                 "intra-tick CFG contains a cycle without an explicit bounded "
+                 "scf.for increment");
+      return;
+    }
+    llvm::DenseMap<uint32_t, uint32_t> localOrdinal;
+    for (auto [ordinal, id] : llvm::enumerate(blockOrder))
+      localOrdinal[id] = static_cast<uint32_t>(ordinal);
+    for (const auto &[edge, tripCount] : loopBackedges)
+      boundedBackedges.append(
+          {static_cast<int64_t>(pc.id().value()),
+           static_cast<int64_t>(localOrdinal.lookup(edge.first)),
+           static_cast<int64_t>(localOrdinal.lookup(edge.second)),
+           static_cast<int64_t>(tripCount)});
+  }
+  auto process = acsim::ProcessOp::create(
+      builder, placement.process->getLoc(), captures, placement.name,
+      builder.getArrayAttr(captureNames), plan->pcs().front().name(),
+      builder.getArrayAttr(pcs), builder.getArrayAttr(liveSlots),
+      placement.fairnessCap, placement.specialization,
+      boundedBackedges.empty()
+          ? DenseI64ArrayAttr()
+          : builder.getDenseI64ArrayAttr(boundedBackedges),
+      plan->pcs().size());
+
+  llvm::SmallVector<Block *> blocks(plan->blocks().size());
+  for (const ProcessPcPlan &pc : plan->pcs()) {
+    Region &state = process.getStates()[pc.id().value()];
+    for (unsigned id : processBlockOrders[pc.id().value()]) {
       Block *block = new Block();
       state.push_back(block);
       blocks[id] = block;
@@ -2872,20 +2931,23 @@ void ACIRToACSimPass::emitProcessBody(
         definitions.insert(plannedValueKey(replacement));
       }
     for (const ProcessActionPlan &action : blockPlan.actions()) {
-      for (const ProcessPlannedValue &operand : action.operands())
+      for (const ProcessPlannedValue &operand : action.operands()) {
         recordUse(blockPlan.id(), operand);
+      }
       for (const ProcessPlannedValue &result : action.results()) {
         recordValue(result);
         definitions.insert(plannedValueKey(result));
       }
     }
     const ProcessControlEdgePlan &edge = blockPlan.edge();
-    if (edge.kind() == ProcessControlEdgeKind::Branch)
+    if (edge.kind() == ProcessControlEdgeKind::Branch) {
       recordUse(blockPlan.id(), edge.condition());
+    }
     if (edge.kind() == ProcessControlEdgeKind::Suspend)
       for (const ProcessTransitionStorePlan &store :
-           plan->transitions()[edge.transition().value()].stores())
+           plan->transitions()[edge.transition().value()].stores()) {
         recordUse(blockPlan.id(), store.source());
+      }
     for (const std::string &definition : definitions)
       neededValues[blockPlan.id().value()].erase(definition);
   }
@@ -3013,18 +3075,20 @@ void ACIRToACSimPass::emitProcessBody(
                           ac::AwaitQueueOp, ac::YieldSimOp>(
               action.sourceOperation()))
         continue;
-      bool resultRequired =
-          action.emission() != ProcessEmissionClass::ForwardOnly;
-      for (const ProcessPlannedValue &result : action.results())
-        resultRequired |= requiredValues.contains(plannedValueKey(result));
-      if (!resultRequired) {
-        if (action.kind() == ProcessActionKind::ForInitialize &&
-            action.operands().size() == action.results().size())
+      if (action.kind() == ProcessActionKind::ForInitialize) {
+        if (action.operands().size() == action.results().size())
           for (auto [result, operand] :
                llvm::zip_equal(action.results(), action.operands()))
             if (auto found = values.find(plannedValueKey(operand));
                 found != values.end())
               values[plannedValueKey(result)] = found->second;
+        continue;
+      }
+      bool resultRequired =
+          action.emission() != ProcessEmissionClass::ForwardOnly;
+      for (const ProcessPlannedValue &result : action.results())
+        resultRequired |= requiredValues.contains(plannedValueKey(result));
+      if (!resultRequired) {
         continue;
       }
 
@@ -3159,21 +3223,40 @@ void ACIRToACSimPass::emitProcessBody(
                 ? action.scalarOp()->name()
                 : action.sourceOperation()->getName().getStringRef();
         OperationState state(placement.process->getLoc(), operationName);
-        state.addOperands(operands);
-        state.addTypes(action.resultTypes());
+        if (action.kind() == ProcessActionKind::ForIncrement) {
+          state.addOperands(llvm::ArrayRef(operands).take_front(2));
+          state.addTypes(action.resultTypes().front());
+        } else {
+          state.addOperands(operands);
+          state.addTypes(action.resultTypes());
+        }
         if (action.sourceOperation())
           state.addAttributes(action.sourceOperation()->getAttrs());
-        else if (action.scalarOp())
+        if (action.scalarOp())
           for (const ProcessScalarAttribute &attribute :
                action.scalarOp()->attributes())
             if (attribute.name() == "predicate")
-              state.addAttribute("predicate", builder.getI64IntegerAttr(2));
+              state.attributes.set("predicate", builder.getI64IntegerAttr(2));
         Operation *emitted = builder.create(state);
         results.append(emitted->getResults().begin(),
                        emitted->getResults().end());
+        if (action.kind() == ProcessActionKind::ForIncrement) {
+          size_t carriedCount = action.results().size() - 1;
+          ArrayRef<Value> yielded =
+              ArrayRef<Value>(operands).drop_front(2 + carriedCount);
+          results.append(yielded.begin(), yielded.end());
+        }
       }
       for (auto [planned, result] : llvm::zip_equal(action.results(), results))
         values[plannedValueKey(planned)] = result;
+      if (action.kind() == ProcessActionKind::ForIncrement &&
+          !action.results().empty() &&
+          action.operands().size() == action.results().size() * 2 &&
+          results.size() == action.results().size()) {
+        values[plannedValueKey(action.operands().front())] = results.front();
+        for (size_t i = 1; i < results.size(); ++i)
+          values[plannedValueKey(action.operands()[i + 1])] = results[i];
+      }
     }
 
     if (edge.kind() == ProcessControlEdgeKind::Branch) {

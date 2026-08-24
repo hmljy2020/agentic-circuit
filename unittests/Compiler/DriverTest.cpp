@@ -24,6 +24,25 @@ module attributes {ac.contract_epoch = "0.2"} {
 }
 )mlir";
 
+constexpr llvm::StringLiteral kRedundantPureAcir = R"mlir(
+module attributes {ac.contract_epoch = "0.2"} {
+  ac.system @main root @top as "root" tick 0 "cycle"
+      workload @top::@workload seed {kind = "fixed", value = 0 : i64}
+      instrumentation [] results {id = "default", format = "json"} selected true
+  ac.module @top() parameters {} graph {
+    ac.process @workload kind "workload" {
+      %one = arith.constant 1 : i32
+      %left = arith.addi %one, %one : i32
+      %right = arith.addi %one, %one : i32
+      %same = arith.cmpi eq, %left, %right : i32
+      ac.assert %same, "redundant pure graph remains equivalent"
+      ac.yield_sim
+    }
+    ac.return
+  }
+}
+)mlir";
+
 CompilerRequest validRequest() {
   CompilerRequest request;
   request.acirBytes = kValidAcir.str();
@@ -61,6 +80,23 @@ TEST(CompilerDriverTest, StandardPipelineProducesVerifiedStageArtifacts) {
     EXPECT_FALSE(artifact.bytes.empty());
     EXPECT_TRUE(codegen::isValidFingerprint(artifact.sha256));
   }
+}
+
+TEST(CompilerDriverTest, SimplifiesPureGraphBeforeFreezingSkeleton) {
+  CompilerRequest request = validRequest();
+  request.acirBytes = kRedundantPureAcir.str();
+  request.stopAfter = CompilerStage::AcirFreeze;
+  request.emits = {codegen::ArtifactKind::Acir};
+
+  auto result = runCompiler(request);
+  if (!result) {
+    ADD_FAILURE() << llvm::toString(result.takeError());
+    return;
+  }
+  ASSERT_EQ(result->artifacts.size(), 1u);
+  EXPECT_EQ(result->artifacts.front().logicalPath, "frozen.ac.mlir");
+  EXPECT_EQ(result->artifacts.front().bytes.find("arith.addi"),
+            std::string::npos);
 }
 
 TEST(CompilerDriverTest, ParseFailureReturnsStableStructuredDiagnostic) {

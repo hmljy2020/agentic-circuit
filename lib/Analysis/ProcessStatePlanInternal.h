@@ -209,6 +209,7 @@ struct ProcessStatePlan::Impl {
   std::vector<ProcessTransitionPlan> transitions;
   uint32_t pcBitWidth = 1;
   uint64_t fairnessWork = 1;
+  bool hasBoundedLocalLoops = false;
 };
 struct ProcessRecordFieldDescriptor::Impl {
   std::string name;
@@ -539,6 +540,8 @@ public:
     std::vector<std::shared_ptr<ProcessTransitionPlan::Impl>> transitions;
     std::vector<std::shared_ptr<ProcessLiveSlotPlan::Impl>> liveSlots;
     uint64_t fairnessWork = 0;
+    bool hasBoundedLocalLoops = false;
+    uint64_t boundedLocalWork = 0;
   };
   static mlir::FailureOr<ProcessStatePlanSet>
   buildProduction(mlir::ModuleOp module, const ProcessStateLimits &limits);

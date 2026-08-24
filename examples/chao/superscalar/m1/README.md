@@ -1,5 +1,7 @@
 # M1：Superscalar 调度核
 
+当前阶段的功能、优化与量化结果汇总见 [`STAGE_SUMMARY.md`](STAGE_SUMMARY.md)。
+
 M1 是 L0 token 级的第一个 NPU 架构原型。它不计算真实数值，但指令格式、寄存器依赖、
 调度状态、FU 占用、完成时间和退休顺序都由 ACIR 显式表达并进入生成的 C++ 仿真器。
 
@@ -40,7 +42,8 @@ reservation ring 的当前 slot 还必须等于 event queue 实际取出的数�
 ./examples/chao/superscalar/m1/run.sh
 ```
 
-脚本限制虚拟内存为 1.9 GB、所有构建和 lit 都单线程。它执行公开 ACIR 解析、freeze、
+脚本限制虚拟内存为 1.9 GB、所有构建和 lit 都单线程。它执行公开 ACIR 解析、纯 SSA
+canonicalize/CSE、freeze、
 ACIR→ACSim、C++ 生成/编译/链接、两次确定性语义运行、10,000 tick benchmark、StateArray
 runtime 测试和定向 lit。证据保存在 `m1/build/`。
 

@@ -557,6 +557,7 @@ def ACIR_StateReadOp : ACIR_RuntimeEffectOp<"state_read"> {
   let arguments = (ins I32:$index, I32:$port, FlatSymbolRefAttr:$array);
   let results = (outs AnyType:$value);
   let hasVerifier = 1;
+  let hasCanonicalizer = 1;
   let assemblyFormat = "$array `[` $index `]` `port` $port attr-dict `:` type($value)";
 }
 
@@ -564,6 +565,7 @@ def ACIR_StateWriteOp : ACIR_RuntimeEffectOp<"state_write"> {
   let arguments = (ins I32:$index, AnyType:$value, I1:$enable, I32:$port,
                        FlatSymbolRefAttr:$array);
   let hasVerifier = 1;
+  let hasCanonicalizer = 1;
   let assemblyFormat = "$array `[` $index `]` $value `when` $enable `port` $port attr-dict `:` type($value)";
 }
 

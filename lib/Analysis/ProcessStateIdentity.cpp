@@ -188,6 +188,7 @@ ARRAY_GET(ProcessStatePlan, ProcessWakePlan, wakes, wakes)
 ARRAY_GET(ProcessStatePlan, ProcessTransitionPlan, transitions, transitions)
 FIELD_GET(ProcessStatePlan, uint32_t, pcBitWidth, pcBitWidth)
 FIELD_GET(ProcessStatePlan, uint64_t, fairnessWork, fairnessWork)
+FIELD_GET(ProcessStatePlan, bool, hasBoundedLocalLoops, hasBoundedLocalLoops)
 STR_GET(ProcessRecordFieldDescriptor, name, name)
 STR_GET(ProcessRecordFieldDescriptor, typeKey, typeKey)
 ARRAY_GET(ProcessRecordCreatePayload, ProcessRecordFieldDescriptor, fields,

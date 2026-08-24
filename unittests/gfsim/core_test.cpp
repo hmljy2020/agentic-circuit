@@ -1272,6 +1272,20 @@ TEST(GfsimStateArrayTest, DisabledWritesConsumeNoPort) {
   EXPECT_EQ(state.read(0, 0), 2);
 }
 
+TEST(GfsimStateArrayTest, ReadPortMayFanOutAtOneCommittedAddress) {
+  StateArray<int32_t> state("state", 1, nullptr, 2, 1, 1);
+
+  state.proposeWrite(1, 42, true, 0);
+  ASSERT_TRUE(state.validatePendingCommit());
+  state.doXfer({1, 0});
+  EXPECT_EQ(state.read(1, 0), 42);
+  EXPECT_EQ(state.read(1, 0), 42);
+  EXPECT_TRUE(state.runtimeFailureCode().empty());
+
+  EXPECT_EQ(state.read(0, 0), 0);
+  EXPECT_EQ(state.runtimeFailureCode(), "state_array_read_port_reused");
+}
+
 TEST(GfsimStateArrayTest, RejectsPortReuseConflictAndBounds) {
   StateArray<int> reused("reused", 7, nullptr, 2, 1, 1);
   EXPECT_EQ(reused.read(0, 0), 0);
@@ -1285,12 +1299,32 @@ TEST(GfsimStateArrayTest, RejectsPortReuseConflictAndBounds) {
   EXPECT_EQ(conflict.runtimeFailureCode(), "state_array_write_conflict");
   EXPECT_FALSE(conflict.validatePendingCommit());
   conflict.doXfer({1, 0});
+  // A failed proposal set is rejected atomically: the first proposal must not
+  // leak into committed state before reset clears the diagnostic.
+  EXPECT_EQ(conflict.read(0, 0), 0);
   conflict.reset();
   EXPECT_EQ(conflict.read(0, 0), 0);
 
   StateArray<int> bounds("bounds", 9, nullptr, 1, 1, 1);
   EXPECT_EQ(bounds.read(1, 0), 0);
   EXPECT_EQ(bounds.runtimeFailureCode(), "state_array_index_out_of_bounds");
+}
+
+TEST(GfsimStateArrayTest, SparseBookkeepingResetsOnlyTouchedEpochState) {
+  StateArray<int> state("state", 7, nullptr, 1024, 8, 8);
+
+  state.proposeWrite(1000, 17, true, 7);
+  EXPECT_EQ(state.read(999, 6), 0);
+  ASSERT_TRUE(state.validatePendingCommit());
+  state.doXfer({1, 0});
+
+  // Reusing the same physical ports for different addresses is legal after
+  // the Xfer boundary, and an untouched entry remains at its zero init value.
+  EXPECT_EQ(state.read(1000, 6), 17);
+  state.proposeWrite(999, 23, true, 7);
+  ASSERT_TRUE(state.validatePendingCommit());
+  state.doXfer({2, 0});
+  EXPECT_EQ(state.read(999, 0), 23);
 }
 
 // ═══════════════════════════════════════════════════════════════════════

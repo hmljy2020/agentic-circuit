@@ -173,7 +173,7 @@ llvm::Error emitPacketHelper(std::ostringstream &output,
       return processError("record.create helper metadata is invalid");
     output << "  " << implementation.helperResult << " result{};\n";
     for (size_t index = 0; index < implementation.helperInputs.size(); ++index)
-      output << "  result = gfsim::packetFieldWith<"
+      output << "  gfsim::packetFieldSet<"
              << implementation.helperOffsets[index] << ", " << endian
              << ">(result, arg" << index << ");\n";
     output << "  return result;\n";
@@ -1088,7 +1088,7 @@ generateProcessSource(const ModelPlan &plan, const ProcessPlan &process) {
 
   std::ostringstream output;
   output << "#include \"generated/processes/" << process.className
-         << ".h\"\n\n#include <functional>\n#include <optional>\n\nnamespace "
+         << ".h\"\n\nnamespace "
             "acsim_generated {\n\n"
          << process.className << "::" << process.className
          << "(std::string name, gfsim::ObjectId id, gfsim::SimObject *parent";
@@ -1112,36 +1112,37 @@ generateProcessSource(const ModelPlan &plan, const ProcessPlan &process) {
       output << "    auto &arg" << index << " = *capture_" << capture.name
              << "_;\n";
     if (state.blocks.size() > 1) {
-      output << "    enum class Block_" << state.name << " {";
-      for (auto [index, block] : llvm::enumerate(state.blocks))
-        output << (index == 0 ? " " : ", ") << "b" << block.ordinal;
-      output << " };\n";
       for (const PcBlockPlan &block : state.blocks) {
         for (auto [index, argument] : llvm::enumerate(block.arguments)) {
           auto type = cppType(plan, argument.type);
           if (!type)
             return type.takeError();
           if (isReferenceType(argument.type))
-            output << "    std::optional<std::reference_wrapper<" << *type
-                   << ">> b" << block.ordinal << "_arg" << index << ";\n";
+            output << "    " << *type << " *b" << block.ordinal << "_arg"
+                   << index << " = nullptr;\n";
           else
-            output << "    std::optional<" << *type << "> b" << block.ordinal
-                   << "_arg" << index << ";\n";
+            output << "    " << *type << " b" << block.ordinal << "_arg"
+                   << index << "{};\n";
         }
       }
-      output << "    auto block_" << state.name << " = Block_" << state.name
-             << "::b0;\n    for (;;) {\n      switch (block_" << state.name
-             << ") {\n";
+      // Emit the intra-PC CFG as direct local jumps.  The former generic
+      // for/switch dispatcher revisited a switch on every structured-loop
+      // iteration.  Block-local braces preserve C++ initialization scopes,
+      // while typed locals declared above carry SSA values across edges.  Raw
+      // locals (and pointers for reference-like owners) let the C++ optimizer
+      // coalesce loop-carried copies; std::optional on every CFG value made
+      // large compact loops materially slower.
+      output << "    goto block_" << state.name << "_b0;\n";
       for (const PcBlockPlan &block : state.blocks) {
-        output << "      case Block_" << state.name << "::b" << block.ordinal
+        output << "    block_" << state.name << "_b" << block.ordinal
                << ": {\n";
         if (block.ordinal != 0)
           for (auto [index, argument] : llvm::enumerate(block.arguments)) {
             output << "        auto "
                    << (isReferenceType(argument.type) ? "&" : "")
-                   << argument.name << " = b" << block.ordinal << "_arg"
-                   << index
-                   << (isReferenceType(argument.type) ? "->get()" : ".value()")
+                   << argument.name << " = "
+                   << (isReferenceType(argument.type) ? "*" : "") << "b"
+                   << block.ordinal << "_arg" << index
                    << ";\n";
           }
         for (const ProcessOperationPlan &operation : block.operations)
@@ -1157,16 +1158,12 @@ generateProcessSource(const ModelPlan &plan, const ProcessPlan &process) {
                     output << "        b" << target.ordinal << "_arg" << index
                            << " = "
                            << (isReferenceType(target.arguments[index].type)
-                                   ? "std::ref("
+                                   ? "&"
                                    : "")
                            << argument
-                           << (isReferenceType(target.arguments[index].type)
-                                   ? ")"
-                                   : "")
                            << ";\n";
-                  output << "        block_" << state.name << " = Block_"
-                         << state.name << "::b" << target.ordinal
-                         << ";\n        continue;\n";
+                  output << "        goto block_" << state.name << "_b"
+                         << target.ordinal << ";\n";
                   return llvm::Error::success();
                 },
                 [&](const ConditionalBranchPlan &branch) -> llvm::Error {
@@ -1178,16 +1175,12 @@ generateProcessSource(const ModelPlan &plan, const ProcessPlan &process) {
                     output << "          b" << trueTarget.ordinal << "_arg"
                            << index << " = "
                            << (isReferenceType(trueTarget.arguments[index].type)
-                                   ? "std::ref("
+                                   ? "&"
                                    : "")
                            << argument
-                           << (isReferenceType(trueTarget.arguments[index].type)
-                                   ? ")"
-                                   : "")
                            << ";\n";
-                  output << "          block_" << state.name << " = Block_"
-                         << state.name << "::b" << trueTarget.ordinal
-                         << ";\n        } else {\n";
+                  output << "          goto block_" << state.name << "_b"
+                         << trueTarget.ordinal << ";\n        } else {\n";
                   const PcBlockPlan &falseTarget =
                       state.blocks.at(branch.falseBlock);
                   for (auto [index, argument] :
@@ -1196,16 +1189,12 @@ generateProcessSource(const ModelPlan &plan, const ProcessPlan &process) {
                         << "          b" << falseTarget.ordinal << "_arg"
                         << index << " = "
                         << (isReferenceType(falseTarget.arguments[index].type)
-                                ? "std::ref("
+                                ? "&"
                                 : "")
                         << argument
-                        << (isReferenceType(falseTarget.arguments[index].type)
-                                ? ")"
-                                : "")
                         << ";\n";
-                  output << "          block_" << state.name << " = Block_"
-                         << state.name << "::b" << falseTarget.ordinal
-                         << ";\n        }\n        continue;\n";
+                  output << "          goto block_" << state.name << "_b"
+                         << falseTarget.ordinal << ";\n        }\n";
                   return llvm::Error::success();
                 },
                 [&](const ContinuePlan &next) -> llvm::Error {
@@ -1236,9 +1225,8 @@ generateProcessSource(const ModelPlan &plan, const ProcessPlan &process) {
             block.terminator);
         if (terminatorError)
           return std::move(terminatorError);
-        output << "      }\n";
+        output << "    }\n";
       }
-      output << "      }\n    }\n";
     } else {
       for (const ProcessOperationPlan &operation : state.operations)
         if (auto error = emitOperation(plan, process, output, operation))

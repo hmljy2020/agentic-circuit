@@ -146,7 +146,7 @@ Field packetFieldGet(const PacketValue &packet) {
 }
 
 template <size_t Offset, bool BigEndian, typename PacketValue, typename Field>
-PacketValue packetFieldWith(PacketValue packet, const Field &value) {
+void packetFieldSet(PacketValue &packet, const Field &value) {
   static_assert(std::is_trivially_copyable_v<Field>);
   static_assert(Offset + sizeof(Field) <=
                 std::tuple_size_v<std::remove_cvref_t<decltype(packet.bytes)>>);
@@ -156,6 +156,11 @@ PacketValue packetFieldWith(PacketValue packet, const Field &value) {
                 (!BigEndian && std::endian::native == std::endian::big))
     std::reverse(bytes.begin(), bytes.end());
   std::copy(bytes.begin(), bytes.end(), packet.bytes.begin() + Offset);
+}
+
+template <size_t Offset, bool BigEndian, typename PacketValue, typename Field>
+PacketValue packetFieldWith(PacketValue packet, const Field &value) {
+  packetFieldSet<Offset, BigEndian>(packet, value);
   return packet;
 }
 

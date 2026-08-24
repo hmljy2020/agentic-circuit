@@ -23,6 +23,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <tuple>
 #include <utility>
 
 using namespace mlir;
@@ -1505,6 +1506,30 @@ LogicalResult verifyProcess(ProcessOp process, const ModelIndex &index) {
     return process.emitOpError(
         "the first ordered state region must be the entry PC");
 
+  using Backedge = std::tuple<unsigned, unsigned, unsigned>;
+  std::set<Backedge> declaredBackedges;
+  if (DenseI64ArrayAttr descriptors =
+          process.getBoundedLocalBackedgesAttr()) {
+    ArrayRef<int64_t> values = descriptors.asArrayRef();
+    if (values.size() % 4 != 0)
+      return process.emitOpError(
+          "bounded local backedges require exact pc/source/target/trip tuples");
+    for (size_t i = 0; i < values.size(); i += 4) {
+      if (values[i] < 0 || values[i + 1] < 0 || values[i + 2] < 0 ||
+          values[i + 3] <= 0 ||
+          static_cast<uint64_t>(values[i + 3]) > kMaxModelNodes)
+        return process.emitOpError(
+            "bounded local backedge tuple is outside static limits");
+      Backedge edge{static_cast<unsigned>(values[i]),
+                    static_cast<unsigned>(values[i + 1]),
+                    static_cast<unsigned>(values[i + 2])};
+      if (!declaredBackedges.insert(edge).second)
+        return process.emitOpError(
+            "bounded local backedge tuples must be unique");
+    }
+  }
+  std::set<Backedge> observedBackedges;
+
   if (process.getCaptureNames().size() != process.getCaptures().size())
     return process.emitOpError(
         "process captures must have one exact ordered name per operand");
@@ -1532,7 +1557,7 @@ LogicalResult verifyProcess(ProcessOp process, const ModelIndex &index) {
       return failure();
   }
 
-  for (Region &state : process.getStates()) {
+  for (auto [stateOrdinal, state] : llvm::enumerate(process.getStates())) {
     if (state.empty())
       return process.emitOpError("every PC requires a non-empty state region");
     Block &entry = state.front();
@@ -1563,12 +1588,21 @@ LogicalResult verifyProcess(ProcessOp process, const ModelIndex &index) {
         if (successor->getParent() != &state)
           return terminator->emitOpError("ordinary cf edges cannot cross "
                                          "process PC suspension boundaries");
-        if (blockOrdinals.lookup(successor) <= blockOrdinals.lookup(&block))
-          return terminator->emitOpError(
-              "intra-PC control flow must prove bounded acyclic progress");
+        if (blockOrdinals.lookup(successor) <= blockOrdinals.lookup(&block)) {
+          Backedge edge{static_cast<unsigned>(stateOrdinal),
+                        blockOrdinals.lookup(&block),
+                        blockOrdinals.lookup(successor)};
+          if (!declaredBackedges.contains(edge))
+            return terminator->emitOpError(
+                "intra-PC control flow must prove bounded acyclic progress");
+          observedBackedges.insert(edge);
+        }
       }
     }
   }
+  if (observedBackedges != declaredBackedges)
+    return process.emitOpError(
+        "bounded local backedge descriptors must exactly match CFG backedges");
 
   auto verifyTarget = [&](Operation *operation,
                           FlatSymbolRefAttr target) -> LogicalResult {
@@ -2540,6 +2574,13 @@ LogicalResult verifyDispatchAndActivation(ModelOp model,
   uint64_t dependencyNodes = 0;
   auto collectIds = [&](Value rootValue, unsigned context,
                         Operation *reporter) -> FailureOr<std::set<int64_t>> {
+    // Only typed ownership/reference values can resolve to a runtime object.
+    // Scalar and packet operands (including loop-carried induction values)
+    // cannot acquire an owner through their def-use graph, so following them
+    // is both unnecessary and would mistake a bounded SSA phi backedge for an
+    // ownership cycle.
+    if (!isa<OwnerType, RefType>(rootValue.getType()))
+      return std::set<int64_t>{};
     struct Dependency {
       unsigned context;
       Value value;

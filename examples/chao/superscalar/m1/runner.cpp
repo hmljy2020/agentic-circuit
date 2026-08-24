@@ -60,6 +60,8 @@ template <typename T> std::span<std::byte> asWritableBytes(T &value) {
 struct RunResult {
   std::vector<TraceEvent> trace;
   std::uint64_t ticks = 0;
+  std::uint64_t stateArrayWrites = 0;
+  std::uint64_t producerWrites = 0;
   double seconds = 0.0;
 };
 
@@ -127,6 +129,13 @@ RunResult runProgram(bool benchmark) {
   result.seconds =
       std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
           .count();
+  for (const gfsim::StatSnapshot &statistic : model.statistics()) {
+    if (statistic.name != "state_array_committed_writes")
+      continue;
+    result.stateArrayWrites += statistic.value;
+    if (statistic.objectPath.ends_with("producer"))
+      result.producerWrites += statistic.value;
+  }
   return result;
 }
 
@@ -195,6 +204,8 @@ bool validate(const RunResult &run, bool print) {
     std::cout << "instructions=" << kProgram.size()
               << " trace_events=" << run.trace.size()
               << " ticks=" << run.ticks
+              << " state_array_writes=" << run.stateArrayWrites
+              << " producer_writes=" << run.producerWrites
               << " semantic_passed=" << (ok ? "true" : "false") << '\n';
   }
   return ok;

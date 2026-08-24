@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Emit the M1 baseline ACIR.
+"""Emit the M1 scheduler ACIR.
 
-This is a static unroller, not a behavioral simulator: every decision remains
-visible as arith/record/state/event/queue operations in the emitted ACIR.
+The generator keeps bounded scans and reductions structural in ACIR.  It does
+not simulate the scheduler in Python: decisions remain visible as SCF,
+arithmetic, record, state, event, and queue operations.
 """
 
 from __future__ import annotations
@@ -34,6 +35,9 @@ class IR:
 
     def c64(self, value: int) -> str:
         return self.result(f"c64_{value}", f"arith.constant {value} : i64")
+
+    def cindex(self, value: int) -> str:
+        return self.result(f"ci{value}", f"arith.constant {value} : index")
 
     def cb(self, value: bool) -> str:
         return self.result("true" if value else "false",
@@ -82,19 +86,39 @@ class IR:
                            f'ac.record.create {operands} '
                            f'{{field_names = [{names}]}} : ({types}) -> {record_type}')
 
+    def for_iter(self, stem: str, lower: str, upper: str, step: str,
+                 carried: list[tuple[str, str]], body) -> list[str]:
+        """Emit one compact scf.for and return its loop-carried results."""
+        induction = self.value(f"{stem}_iv")
+        arguments = [self.value(f"{stem}_arg") for _ in carried]
+        results = [self.value(f"{stem}_result") for _ in carried]
+        result_prefix = ", ".join(results) + " = " if results else ""
+        iter_text = ""
+        result_text = ""
+        if carried:
+            iter_text = " iter_args(" + ", ".join(
+                f"{argument} = {initial}"
+                for argument, (_, initial) in zip(arguments, carried)) + ")"
+            result_text = " -> (" + ", ".join(ty for ty, _ in carried) + ")"
+        self.line(f"{result_prefix}scf.for {induction} = {lower} to {upper} "
+                  f"step {step}{iter_text}{result_text} {{")
+        self.indent += 2
+        yielded = body(induction, arguments)
+        if carried:
+            if len(yielded) != len(carried):
+                raise ValueError("scf.for body returned the wrong yield arity")
+            self.line("scf.yield " + ", ".join(yielded) + " : " +
+                      ", ".join(ty for ty, _ in carried))
+        else:
+            self.line("scf.yield")
+        self.indent -= 2
+        self.line("}")
+        return results
+
 
 def decl_packet(name: str, fields: list[str], size: int) -> str:
     body = ", ".join(f'{{name = "{field}", type = i32}}' for field in fields)
     return f"    ac.packet @{name} fields [{body}]\n"
-
-
-def select_entry(ir: IR, index: str, entries: list[dict[str, str]],
-                 field: str, constants: list[str], false_value: str) -> str:
-    value = false_value
-    for slot in range(len(entries)):
-        match = ir.cmp("eq", index, constants[slot])
-        value = ir.select(match, entries[slot][field], value)
-    return value
 
 
 def next_ring(ir: IR, value: str, increment: str, constants: list[str]) -> str:
@@ -153,11 +177,11 @@ def emit_model() -> str:
                 f"    ac.queue @in1 payload {instruction_t} entries 4 bytes 80 ordering \"fifo\" protocol @ready_valid ownership \"exclusive\" id \"in1\" path \"in1\" {{ac.host_input = \"lane1\"}}",
                 f"    ac.event_queue @completions payload !ac.event<{completion_t}> capacity 17 ordering \"time_then_sequence\" domain @core id \"completions\" path \"completions\"",
                 f"    ac.state_array @window element {window_t} entries 8 read_ports 8 write_ports 8 ownership \"exclusive\" init \"zero\" id \"window\" path \"window\"",
-                f"    ac.state_array @rob element {rob_t} entries 8 read_ports 8 write_ports 8 ownership \"exclusive\" init \"zero\" id \"rob\" path \"rob\"",
-                "    ac.state_array @producer element i32 entries 16 read_ports 16 write_ports 16 ownership \"exclusive\" init \"zero\" id \"producer\" path \"producer\"",
+                f"    ac.state_array @rob element {rob_t} entries 8 read_ports 10 write_ports 8 ownership \"exclusive\" init \"zero\" id \"rob\" path \"rob\"",
+                "    ac.state_array @producer element i32 entries 16 read_ports 8 write_ports 4 ownership \"exclusive\" init \"zero\" id \"producer\" path \"producer\"",
                 f"    ac.state_array @fu element {fu_t} entries 5 read_ports 5 write_ports 5 ownership \"exclusive\" init \"zero\" id \"fu\" path \"fu\"",
                 f"    ac.state_array @cube_pipeline element {cube_stage_t} entries 8 read_ports 8 write_ports 8 ownership \"exclusive\" init \"zero\" id \"cube_pipeline\" path \"cube_pipeline\"",
-                "    ac.state_array @completion_slots element i32 entries 9 read_ports 9 write_ports 9 ownership \"exclusive\" init \"zero\" id \"completion_slots\" path \"completion_slots\"",
+                "    ac.state_array @completion_slots element i32 entries 9 read_ports 12 write_ports 3 ownership \"exclusive\" init \"zero\" id \"completion_slots\" path \"completion_slots\"",
                 f"    ac.state_array @control element {control_t} entries 1 read_ports 1 write_ports 1 ownership \"exclusive\" init \"zero\" id \"control\" path \"control\""])
     for phase in ("dispatch", "issue", "complete", "retire"):
         for lane in range(2):
@@ -168,26 +192,27 @@ def emit_model() -> str:
     constants = [ir.c32(i) for i in range(33)]
     cfalse, ctrue = ir.cb(False), ir.cb(True)
     c64 = [ir.c64(i) for i in range(9)]
+    ci0, ci1, ci8 = ir.cindex(0), ir.cindex(1), ir.cindex(8)
 
     control = ir.result("control", f"ac.state_read @control[{constants[0]}] port {constants[0]} : {control_t}")
     ctrl = {field: ir.get(control, field, control_t) for field in
             ("tick", "rob_head", "rob_tail", "rob_count", "last_dispatch", "retired", "completion_cursor")}
 
-    producers = [ir.result("producer", f"ac.state_read @producer[{constants[i]}] port {constants[i]} : i32") for i in range(16)]
-    window: list[dict[str, str]] = []
-    for i in range(8):
-        record = ir.result("window", f"ac.state_read @window[{constants[i]}] port {constants[i]} : {window_t}")
+    def read_window(index: str, port: str) -> dict[str, str]:
+        record = ir.result(
+            "window", f"ac.state_read @window[{index}] port {port} : {window_t}")
         fields = {field: ir.get(record, field, window_t) for field in
                   ("valid", "sequence_id", "opcode", "rd", "dep1", "dep2", "rob_slot")}
         fields["record"] = record
-        window.append(fields)
-    rob: list[dict[str, str]] = []
-    for i in range(8):
-        record = ir.result("rob", f"ac.state_read @rob[{constants[i]}] port {constants[i]} : {rob_t}")
+        return fields
+
+    def read_rob(index: str, port: str) -> dict[str, str]:
+        record = ir.result(
+            "rob", f"ac.state_read @rob[{index}] port {port} : {rob_t}")
         fields = {field: ir.get(record, field, rob_t) for field in
                   ("valid", "completed", "sequence_id", "rd", "opcode")}
         fields["record"] = record
-        rob.append(fields)
+        return fields
     fus: list[dict[str, str]] = []
     for i in range(5):
         record = ir.result("fu", f"ac.state_read @fu[{constants[i]}] port {constants[i]} : {fu_t}")
@@ -252,39 +277,70 @@ def emit_model() -> str:
                               completion_slots[slot], count)
         return count
 
-    eligible0: list[str] = []
-    for entry in window:
+    def eligible(entry: dict[str, str], availability: list[str],
+                 prior_issue: str | None = None,
+                 prior_index: str | None = None) -> str:
         valid = ir.cmp("eq", entry["valid"], constants[1])
         deps = ir.and_(ir.cmp("eq", entry["dep1"], constants[0]),
                        ir.cmp("eq", entry["dep2"], constants[0]))
         op_ready = cfalse
         for opcode, units in ((0, [0]), (1, [1, 2]), (2, [3]), (3, [4])):
-            unit_ready = available[units[0]]
+            unit_ready = availability[units[0]]
             for unit in units[1:]:
-                unit_ready = ir.or_(unit_ready, available[unit])
+                unit_ready = ir.or_(unit_ready, availability[unit])
             op_ready = ir.or_(op_ready,
                               ir.and_(ir.cmp("eq", entry["opcode"], constants[opcode]), unit_ready))
-        completion_ready = ir.cmp("slt",
-                                  completion_count(completion_index(entry["opcode"])),
-                                  constants[2])
-        eligible0.append(ir.and_(valid, ir.and_(deps,
-                                                ir.and_(op_ready, completion_ready))))
+        candidate_completion_index = completion_index(entry["opcode"])
+        reserved = completion_count(candidate_completion_index)
+        if prior_issue is not None and prior_index is not None:
+            collides = ir.and_(prior_issue,
+                               ir.cmp("eq", candidate_completion_index,
+                                      prior_index))
+            reserved = ir.add(reserved, ir.zext(collides))
+        completion_ready = ir.cmp("slt", reserved, constants[2])
+        return ir.and_(valid, ir.and_(deps, ir.and_(op_ready,
+                                                    completion_ready)))
 
-    def oldest(eligible: list[str], exclude: str | None = None) -> tuple[str, str]:
-        found, best_seq, best_index = cfalse, constants[32], constants[0]
-        for i, candidate in enumerate(eligible):
-            allowed = candidate
-            if exclude is not None:
-                allowed = ir.and_(allowed, ir.not_(ir.cmp("eq", exclude, constants[i]), ctrue))
-            better = ir.and_(allowed, ir.or_(ir.not_(found, ctrue),
-                                             ir.cmp("slt", window[i]["sequence_id"], best_seq)))
-            best_seq = ir.select(better, window[i]["sequence_id"], best_seq)
-            best_index = ir.select(better, constants[i], best_index)
-            found = ir.or_(found, allowed)
-        return found, best_index
+    # One compact scan selects lane 0 and, independently, the first two free
+    # entries.  Winner fields travel with the reduction, so no indexed select
+    # tree is needed after the loop.
+    def issue0_body(iv: str, args: list[str]) -> list[str]:
+        (found, best_seq, best_index, best_opcode, best_rd, best_rob,
+         free_found0, free_idx0, free_found1, free_idx1) = args
+        index = ir.result("window_index", f"arith.index_cast {iv} : index to i32")
+        entry = read_window(index, index)
+        candidate = eligible(entry, available)
+        better = ir.and_(candidate,
+                         ir.or_(ir.not_(found, ctrue),
+                                ir.cmp("slt", entry["sequence_id"], best_seq)))
+        next_found = ir.or_(found, candidate)
+        next_seq = ir.select(better, entry["sequence_id"], best_seq)
+        next_index = ir.select(better, index, best_index)
+        next_opcode = ir.select(better, entry["opcode"], best_opcode)
+        next_rd = ir.select(better, entry["rd"], best_rd)
+        next_rob = ir.select(better, entry["rob_slot"], best_rob)
 
-    issue0, issue_idx0 = oldest(eligible0)
-    issue_op0 = select_entry(ir, issue_idx0, window, "opcode", constants, constants[0])
+        free = ir.cmp("eq", entry["valid"], constants[0])
+        choose0 = ir.and_(free, ir.not_(free_found0, ctrue))
+        choose1 = ir.and_(free, ir.and_(free_found0,
+                                       ir.not_(free_found1, ctrue)))
+        next_free_idx0 = ir.select(choose0, index, free_idx0)
+        next_free_idx1 = ir.select(choose1, index, free_idx1)
+        next_free_found0 = ir.or_(free_found0, free)
+        next_free_found1 = ir.or_(free_found1, choose1)
+        return [next_found, next_seq, next_index, next_opcode, next_rd,
+                next_rob, next_free_found0, next_free_idx0,
+                next_free_found1, next_free_idx1]
+
+    (issue0, issue_seq0, issue_idx0, issue_op0, issue_rd0, issue_rob0,
+     free_found0, free_idx0, free_found1, free_idx1) = ir.for_iter(
+        "issue0", ci0, ci8, ci1,
+        [("i1", cfalse), ("i32", constants[32]),
+         ("i32", constants[0]), ("i32", constants[0]),
+         ("i32", constants[0]), ("i32", constants[0]),
+         ("i1", cfalse), ("i32", constants[0]),
+         ("i1", cfalse), ("i32", constants[0])], issue0_body)
+
     vec0 = ir.cmp("eq", issue_op0, constants[1])
     issue_unit0 = constants[0]
     issue_unit0 = ir.select(ir.cmp("eq", issue_op0, constants[3]), constants[4], issue_unit0)
@@ -295,60 +351,51 @@ def emit_model() -> str:
     available1 = [ir.and_(available[fu], ir.not_(used0[fu], ctrue)) for fu in range(5)]
     completion_index0 = completion_index(issue_op0)
 
-    eligible1: list[str] = []
-    for entry in window:
-        valid = ir.cmp("eq", entry["valid"], constants[1])
-        deps = ir.and_(ir.cmp("eq", entry["dep1"], constants[0]),
-                       ir.cmp("eq", entry["dep2"], constants[0]))
-        op_ready = cfalse
-        for opcode, units in ((0, [0]), (1, [1, 2]), (2, [3]), (3, [4])):
-            unit_ready = available1[units[0]]
-            for unit in units[1:]:
-                unit_ready = ir.or_(unit_ready, available1[unit])
-            op_ready = ir.or_(op_ready,
-                              ir.and_(ir.cmp("eq", entry["opcode"], constants[opcode]), unit_ready))
-        candidate_completion_index = completion_index(entry["opcode"])
-        reserved = completion_count(candidate_completion_index)
-        collides0 = ir.and_(issue0, ir.cmp("eq", candidate_completion_index,
-                                          completion_index0))
-        reserved = ir.add(reserved, ir.zext(collides0))
-        completion_ready = ir.cmp("slt", reserved, constants[2])
-        eligible1.append(ir.and_(valid, ir.and_(deps,
-                                                ir.and_(op_ready, completion_ready))))
-    # The second lane excludes lane 0 only when lane 0 actually issued.
-    # Masking eligible0 itself keeps the priority helper simple and avoids
-    # accidentally suppressing window slot zero on an idle first lane.
-    eligible1 = [ir.and_(candidate,
-                         ir.not_(ir.and_(issue0,
-                                        ir.cmp("eq", issue_idx0, constants[i])),
-                                 ctrue))
-                 for i, candidate in enumerate(eligible1)]
-    issue1, issue_idx1 = oldest(eligible1)
-    issue_op1 = select_entry(ir, issue_idx1, window, "opcode", constants, constants[0])
+    def issue1_body(iv: str, args: list[str]) -> list[str]:
+        found, best_seq, best_index, best_opcode, best_rd, best_rob = args
+        index = ir.result("window_index", f"arith.index_cast {iv} : index to i32")
+        entry = read_window(index, index)
+        candidate = eligible(entry, available1, issue0, completion_index0)
+        is_lane0 = ir.and_(issue0, ir.cmp("eq", issue_idx0, index))
+        candidate = ir.and_(candidate, ir.not_(is_lane0, ctrue))
+        better = ir.and_(candidate,
+                         ir.or_(ir.not_(found, ctrue),
+                                ir.cmp("slt", entry["sequence_id"], best_seq)))
+        return [ir.or_(found, candidate),
+                ir.select(better, entry["sequence_id"], best_seq),
+                ir.select(better, index, best_index),
+                ir.select(better, entry["opcode"], best_opcode),
+                ir.select(better, entry["rd"], best_rd),
+                ir.select(better, entry["rob_slot"], best_rob)]
+
+    (issue1, issue_seq1, issue_idx1, issue_op1, issue_rd1,
+     issue_rob1) = ir.for_iter(
+        "issue1", ci0, ci8, ci1,
+        [("i1", cfalse), ("i32", constants[32]),
+         ("i32", constants[0]), ("i32", constants[0]),
+         ("i32", constants[0]), ("i32", constants[0])], issue1_body)
+
     issue_unit1 = constants[0]
     issue_unit1 = ir.select(ir.cmp("eq", issue_op1, constants[3]), constants[4], issue_unit1)
     issue_unit1 = ir.select(ir.cmp("eq", issue_op1, constants[2]), constants[3], issue_unit1)
     vec_unit1 = ir.select(available1[1], constants[1], constants[2])
     issue_unit1 = ir.select(ir.cmp("eq", issue_op1, constants[1]), vec_unit1, issue_unit1)
 
-    issue_info: list[dict[str, str]] = []
-    for found, index, opcode, unit in ((issue0, issue_idx0, issue_op0, issue_unit0),
-                                       (issue1, issue_idx1, issue_op1, issue_unit1)):
-        issue_info.append({"valid": found, "index": index, "opcode": opcode,
-                           "unit": unit,
-                           "sequence_id": select_entry(ir, index, window, "sequence_id", constants, constants[0]),
-                           "rob_slot": select_entry(ir, index, window, "rob_slot", constants, constants[0]),
-                           "rd": select_entry(ir, index, window, "rd", constants, constants[0])})
+    issue_info = [
+        {"valid": issue0, "index": issue_idx0, "opcode": issue_op0,
+         "unit": issue_unit0, "sequence_id": issue_seq0,
+         "rob_slot": issue_rob0, "rd": issue_rd0},
+        {"valid": issue1, "index": issue_idx1, "opcode": issue_op1,
+         "unit": issue_unit1, "sequence_id": issue_seq1,
+         "rob_slot": issue_rob1, "rd": issue_rd1}]
 
     # Retirement observes only the committed ROB-completed snapshot.
-    head_entry = {field: select_entry(ir, ctrl["rob_head"], rob, field, constants, constants[0])
-                  for field in ("valid", "completed", "sequence_id", "rd", "opcode")}
+    head_entry = read_rob(ctrl["rob_head"], constants[8])
     retire0 = ir.and_(ir.cmp("eq", head_entry["valid"], constants[1]),
                       ir.cmp("eq", head_entry["completed"], constants[1]))
     one_if_retire0 = ir.zext(retire0)
     head1_index = next_ring(ir, ctrl["rob_head"], one_if_retire0, constants)
-    head1_entry = {field: select_entry(ir, head1_index, rob, field, constants, constants[0])
-                   for field in ("valid", "completed", "sequence_id", "rd", "opcode")}
+    head1_entry = read_rob(head1_index, constants[9])
     retire1 = ir.and_(retire0,
                       ir.and_(ir.cmp("eq", head1_entry["valid"], constants[1]),
                               ir.cmp("eq", head1_entry["completed"], constants[1])))
@@ -356,19 +403,6 @@ def emit_model() -> str:
 
     # Dispatch requires committed free slots/ROB credits; a two-lane bundle is
     # accepted atomically when both heads are present.
-    free_flags = [ir.cmp("eq", entry["valid"], constants[0]) for entry in window]
-    free_found0, free_idx0 = cfalse, constants[0]
-    for i, free in enumerate(free_flags):
-        choose = ir.and_(free, ir.not_(free_found0, ctrue))
-        free_idx0 = ir.select(choose, constants[i], free_idx0)
-        free_found0 = ir.or_(free_found0, free)
-    free_found1, free_idx1 = cfalse, constants[0]
-    for i, free in enumerate(free_flags):
-        not_first = ir.not_(ir.cmp("eq", free_idx0, constants[i]), ctrue)
-        candidate = ir.and_(free, not_first)
-        choose = ir.and_(candidate, ir.not_(free_found1, ctrue))
-        free_idx1 = ir.select(choose, constants[i], free_idx1)
-        free_found1 = ir.or_(free_found1, candidate)
     rob_free1 = ir.cmp("slt", ctrl["rob_count"], constants[8])
     rob_free2 = ir.cmp("sle", ctrl["rob_count"], constants[6])
     both_inputs = ir.and_(in0_valid, in1_valid)
@@ -399,39 +433,42 @@ def emit_model() -> str:
         contract = ir.or_(ir.not_(valid, ctrue), valid_record)
         ir.line(f'ac.assert {contract}, "invalid M1 instruction packet"')
 
-    # Completion-cleared producer map, followed by lane0/lane1 rename writes.
-    producer_after_completion: list[str] = []
-    for reg in range(16):
-        tag = producers[reg]
+    # Read the rename table by architectural register number.  All reads see
+    # the same committed snapshot; completion clearing and older-lane rename
+    # forwarding are pure combinational transforms of that snapshot.
+    def completion_updates(reg: str, port: str) -> tuple[str, list[str]]:
+        tag = ir.result("producer", f"ac.state_read @producer[{reg}] port {port} : i32")
+        effects: list[str] = []
         for comp in completions:
             comp_tag = ir.add(comp["sequence_id"], constants[1])
             clear = ir.and_(comp["ready"],
-                            ir.and_(ir.cmp("eq", comp["rd"], constants[reg]),
+                            ir.and_(ir.cmp("eq", comp["rd"], reg),
                                     ir.cmp("eq", tag, comp_tag)))
+            effects.append(clear)
             tag = ir.select(clear, constants[0], tag)
-        producer_after_completion.append(tag)
+        return tag, effects
 
     dispatch_deps: list[dict[str, str]] = []
-    producer_final = list(producer_after_completion)
     for lane, dispatch in ((0, dispatch0), (1, dispatch1)):
         fields = inst_fields[lane]
         deps: dict[str, str] = {}
         for source in ("rs1", "rs2"):
-            tag = constants[0]
-            for reg in range(16):
-                tag = ir.select(ir.cmp("eq", fields[source], constants[reg]),
-                                producer_final[reg], tag)
+            source_port = constants[4 + lane * 2 + (0 if source == "rs1" else 1)]
+            tag, _ = completion_updates(fields[source], source_port)
+            # Lane 1 observes lane 0's rename when both instructions are
+            # dispatched together, just as the former statically expanded
+            # producer_final table did.
+            if lane == 1:
+                prior = inst_fields[0]
+                prior_writes_source = ir.and_(
+                    dispatch0,
+                    ir.and_(ir.cmp("ne", prior["rd"], constants[0]),
+                            ir.cmp("eq", fields[source], prior["rd"])))
+                prior_tag = ir.add(prior["sequence_id"], constants[1])
+                tag = ir.select(prior_writes_source, prior_tag, tag)
             tag = ir.select(ir.cmp("eq", fields[source], constants[0]), constants[0], tag)
             deps[source] = tag
         dispatch_deps.append(deps)
-        new_tag = ir.add(fields["sequence_id"], constants[1])
-        nonzero_rd = ir.cmp("ne", fields["rd"], constants[0])
-        for reg in range(1, 16):
-            write_reg = ir.and_(dispatch,
-                                ir.and_(nonzero_rd,
-                                        ir.cmp("eq", fields["rd"], constants[reg])))
-            producer_final[reg] = ir.select(write_reg, new_tag, producer_final[reg])
-    producer_final[0] = constants[0]
 
     # Side effects: consume accepted inputs, schedule issues, and publish trace.
     def guarded_recv(condition: str, queue: str, ty: str) -> None:
@@ -500,22 +537,27 @@ def emit_model() -> str:
     trace(retire1, "retire1", ctrl["tick"], head1_entry["sequence_id"], 3,
           head1_entry["opcode"], head1_entry["opcode"], 1)
 
-    # Commit one final value per state-array entry.
-    for i, entry in enumerate(window):
+    # Commit one final value per state-array entry.  The bounded loop is kept in
+    # ACIR and each induction value names the corresponding physical port.
+    def window_update_body(iv: str, args: list[str]) -> list[str]:
+        del args
+        index = ir.result("window_update_index",
+                          f"arith.index_cast {iv} : index to i32")
+        entry = read_window(index, index)
         dep1, dep2 = entry["dep1"], entry["dep2"]
         for comp in completions:
             tag = ir.add(comp["sequence_id"], constants[1])
             dep1 = ir.select(ir.and_(comp["ready"], ir.cmp("eq", dep1, tag)), constants[0], dep1)
             dep2 = ir.select(ir.and_(comp["ready"], ir.cmp("eq", dep2, tag)), constants[0], dep2)
-        issue_here = ir.or_(ir.and_(issue0, ir.cmp("eq", issue_idx0, constants[i])),
-                            ir.and_(issue1, ir.cmp("eq", issue_idx1, constants[i])))
+        issue_here = ir.or_(ir.and_(issue0, ir.cmp("eq", issue_idx0, index)),
+                            ir.and_(issue1, ir.cmp("eq", issue_idx1, index)))
         valid = ir.select(issue_here, constants[0], entry["valid"])
         values = {"valid": valid, "sequence_id": entry["sequence_id"],
                   "opcode": entry["opcode"], "rd": entry["rd"],
                   "dep1": dep1, "dep2": dep2, "rob_slot": entry["rob_slot"]}
         for lane, condition, slot, rob_slot in ((0, dispatch0, dispatch_slot0, rob_slot0),
                                                 (1, dispatch1, dispatch_slot1, rob_slot1)):
-            here = ir.and_(condition, ir.cmp("eq", slot, constants[i]))
+            here = ir.and_(condition, ir.cmp("eq", slot, index))
             fields = inst_fields[lane]
             replacements = {"valid": constants[1], "sequence_id": fields["sequence_id"],
                             "opcode": fields["opcode"], "rd": fields["rd"],
@@ -523,39 +565,80 @@ def emit_model() -> str:
                             "dep2": dispatch_deps[lane]["rs2"], "rob_slot": rob_slot}
             for field, replacement in replacements.items():
                 values[field] = ir.select(here, replacement, values[field])
-        record = entry["record"]
+        record = ir.create([(field, values[field]) for field in
+                            ("valid", "sequence_id", "opcode", "rd", "dep1", "dep2", "rob_slot")],
+                           window_t)
+        changed = cfalse
         for field in ("valid", "sequence_id", "opcode", "rd", "dep1", "dep2", "rob_slot"):
-            record = ir.with_(record, field, values[field], window_t)
-        ir.line(f"ac.state_write @window[{constants[i]}] {record} when {ctrue} port {constants[i]} : {window_t}")
+            changed = ir.or_(changed, ir.cmp("ne", values[field], entry[field]))
+        ir.line(f"ac.state_write @window[{index}] {record} when {changed} port {index} : {window_t}")
+        return []
 
-    for i, entry in enumerate(rob):
+    ir.for_iter("window_update", ci0, ci8, ci1, [], window_update_body)
+
+    def rob_update_body(iv: str, args: list[str]) -> list[str]:
+        del args
+        index = ir.result("rob_update_index",
+                          f"arith.index_cast {iv} : index to i32")
+        entry = read_rob(index, index)
         valid, completed = entry["valid"], entry["completed"]
         for comp in completions:
             matches = ir.and_(comp["ready"],
-                              ir.and_(ir.cmp("eq", comp["rob_slot"], constants[i]),
+                              ir.and_(ir.cmp("eq", comp["rob_slot"], index),
                                       ir.cmp("eq", comp["sequence_id"], entry["sequence_id"])))
             completed = ir.select(matches, constants[1], completed)
-        retire_here = ir.or_(ir.and_(retire0, ir.cmp("eq", ctrl["rob_head"], constants[i])),
-                             ir.and_(retire1, ir.cmp("eq", head1_index, constants[i])))
+        retire_here = ir.or_(ir.and_(retire0, ir.cmp("eq", ctrl["rob_head"], index)),
+                             ir.and_(retire1, ir.cmp("eq", head1_index, index)))
         valid = ir.select(retire_here, constants[0], valid)
         completed = ir.select(retire_here, constants[0], completed)
         values = {"valid": valid, "completed": completed,
                   "sequence_id": entry["sequence_id"], "rd": entry["rd"],
                   "opcode": entry["opcode"]}
         for lane, condition, slot in ((0, dispatch0, rob_slot0), (1, dispatch1, rob_slot1)):
-            here = ir.and_(condition, ir.cmp("eq", slot, constants[i]))
+            here = ir.and_(condition, ir.cmp("eq", slot, index))
             fields = inst_fields[lane]
             for field, replacement in (("valid", constants[1]), ("completed", constants[0]),
                                        ("sequence_id", fields["sequence_id"]),
                                        ("rd", fields["rd"]), ("opcode", fields["opcode"])):
                 values[field] = ir.select(here, replacement, values[field])
-        record = entry["record"]
+        record = ir.create([(field, values[field]) for field in
+                            ("valid", "completed", "sequence_id", "rd", "opcode")],
+                           rob_t)
+        changed = cfalse
         for field in ("valid", "completed", "sequence_id", "rd", "opcode"):
-            record = ir.with_(record, field, values[field], rob_t)
-        ir.line(f"ac.state_write @rob[{constants[i]}] {record} when {ctrue} port {constants[i]} : {rob_t}")
+            changed = ir.or_(changed, ir.cmp("ne", values[field], entry[field]))
+        ir.line(f"ac.state_write @rob[{index}] {record} when {changed} port {index} : {rob_t}")
+        return []
 
-    for i in range(16):
-        ir.line(f"ac.state_write @producer[{constants[i]}] {producer_final[i]} when {ctrue} port {constants[i]} : i32")
+    ir.for_iter("rob_update", ci0, ci8, ci1, [], rob_update_body)
+
+    # Sparse producer commit.  There are at most four candidate registers per
+    # tick (two completions and two dispatches).  Each candidate recomputes the
+    # final completion->lane0->lane1 value from the committed snapshot.  Only
+    # the first effective candidate for an address proposes that final value,
+    # which mechanically guarantees single-write-per-entry without scanning
+    # all sixteen architectural registers.
+    producer_candidates = [comp["rd"] for comp in completions]
+    producer_candidates.extend(inst_fields[lane]["rd"] for lane in range(2))
+    for candidate_slot, producer_reg in enumerate(producer_candidates):
+        producer_tag, effects = completion_updates(
+            producer_reg, constants[candidate_slot])
+        for lane, dispatch in ((0, dispatch0), (1, dispatch1)):
+            fields = inst_fields[lane]
+            write_reg = ir.and_(
+                dispatch,
+                ir.and_(ir.cmp("ne", fields["rd"], constants[0]),
+                        ir.cmp("eq", fields["rd"], producer_reg)))
+            effects.append(write_reg)
+            new_tag = ir.add(fields["sequence_id"], constants[1])
+            producer_tag = ir.select(write_reg, new_tag, producer_tag)
+        candidate_effect = effects[candidate_slot]
+        prior_effect = cfalse
+        for effect in effects[:candidate_slot]:
+            prior_effect = ir.or_(prior_effect, effect)
+        unique_effect = ir.and_(candidate_effect,
+                                ir.not_(prior_effect, ctrue))
+        ir.line(f"ac.state_write @producer[{producer_reg}] {producer_tag} when {unique_effect} port {constants[candidate_slot]} : i32")
 
     for fu in range(5):
         issue_for_fu = constants[0]
@@ -566,9 +649,10 @@ def emit_model() -> str:
             used = ir.or_(used, match)
         inflight = ir.add(adjusted_inflight[fu], issue_for_fu)
         next_issue = ir.select(used, ir.add(ctrl["tick"], constants[1]), fus[fu]["next_issue"])
-        record = ir.with_(fus[fu]["record"], "inflight", inflight, fu_t)
-        record = ir.with_(record, "next_issue", next_issue, fu_t)
-        ir.line(f"ac.state_write @fu[{constants[fu]}] {record} when {ctrue} port {constants[fu]} : {fu_t}")
+        record = ir.create([("inflight", inflight), ("next_issue", next_issue)], fu_t)
+        changed = ir.or_(ir.cmp("ne", inflight, fus[fu]["inflight"]),
+                         ir.cmp("ne", next_issue, fus[fu]["next_issue"]))
+        ir.line(f"ac.state_write @fu[{constants[fu]}] {record} when {changed} port {constants[fu]} : {fu_t}")
 
     completion_count_now = constants[0]
     for comp in completions:
@@ -577,13 +661,28 @@ def emit_model() -> str:
     ir.line(f'ac.assert {ir.cmp("eq", completion_count_now, expected_completion_count)}, "completion reservation must equal observed fixed-latency completions"')
     completion_targets = [completion_index(issue["opcode"])
                           for issue in issue_info]
-    for slot in range(9):
-        is_current = ir.cmp("eq", ctrl["completion_cursor"], constants[slot])
-        value = ir.select(is_current, constants[0], completion_slots[slot])
+    completion_candidates = [ctrl["completion_cursor"], *completion_targets]
+    for candidate_slot, completion_slot in enumerate(completion_candidates):
+        old_value = ir.result(
+            "completion_slot_sparse",
+            f"ac.state_read @completion_slots[{completion_slot}] port {constants[9 + candidate_slot]} : i32")
+        clear = ir.and_(ir.cmp("eq", completion_slot,
+                               ctrl["completion_cursor"]),
+                        ir.cmp("ne", old_value, constants[0]))
+        value = ir.select(clear, constants[0], old_value)
+        effects = [clear]
         for issue, target in zip(issue_info, completion_targets):
-            hits = ir.and_(issue["valid"], ir.cmp("eq", target, constants[slot]))
+            hits = ir.and_(issue["valid"],
+                           ir.cmp("eq", target, completion_slot))
+            effects.append(hits)
             value = ir.add(value, ir.zext(hits))
-        ir.line(f"ac.state_write @completion_slots[{constants[slot]}] {value} when {ctrue} port {constants[slot]} : i32")
+        candidate_effect = effects[candidate_slot]
+        prior_effect = cfalse
+        for effect in effects[:candidate_slot]:
+            prior_effect = ir.or_(prior_effect, effect)
+        unique_effect = ir.and_(candidate_effect,
+                                ir.not_(prior_effect, ctrue))
+        ir.line(f"ac.state_write @completion_slots[{completion_slot}] {value} when {unique_effect} port {constants[candidate_slot]} : i32")
 
     cube_issue = cfalse
     cube_issue_seq = constants[0]
@@ -595,10 +694,13 @@ def emit_model() -> str:
     for stage in range(8):
         valid = ir.zext(cube_issue) if stage == 0 else cube_pipeline[stage - 1]["valid"]
         sequence = cube_issue_seq if stage == 0 else cube_pipeline[stage - 1]["sequence_id"]
-        record = ir.with_(cube_pipeline[stage]["record"], "valid", valid,
-                          cube_stage_t)
-        record = ir.with_(record, "sequence_id", sequence, cube_stage_t)
-        ir.line(f"ac.state_write @cube_pipeline[{constants[stage]}] {record} when {ctrue} port {constants[stage]} : {cube_stage_t}")
+        record = ir.create([("valid", valid), ("sequence_id", sequence)],
+                           cube_stage_t)
+        changed = ir.or_(ir.cmp("ne", valid, cube_pipeline[stage]["valid"]),
+                         ir.and_(ir.cmp("ne", valid, constants[0]),
+                                 ir.cmp("ne", sequence,
+                                        cube_pipeline[stage]["sequence_id"])))
+        ir.line(f"ac.state_write @cube_pipeline[{constants[stage]}] {record} when {changed} port {constants[stage]} : {cube_stage_t}")
 
     next_head = next_ring(ir, ctrl["rob_head"], retire_count, constants)
     next_tail = next_ring(ir, ctrl["rob_tail"], dispatch_count, constants)
@@ -610,13 +712,12 @@ def emit_model() -> str:
     next_completion_cursor = ir.select(
         ir.cmp("eq", next_completion_cursor_sum, constants[9]), constants[0],
         next_completion_cursor_sum)
-    control_next = control
-    for field, value in (("tick", ir.add(ctrl["tick"], constants[1])),
-                         ("rob_head", next_head), ("rob_tail", next_tail),
-                         ("rob_count", next_count), ("last_dispatch", last_seq),
-                         ("retired", next_retired),
-                         ("completion_cursor", next_completion_cursor)):
-        control_next = ir.with_(control_next, field, value, control_t)
+    control_next = ir.create([
+        ("tick", ir.add(ctrl["tick"], constants[1])),
+        ("rob_head", next_head), ("rob_tail", next_tail),
+        ("rob_count", next_count), ("last_dispatch", last_seq),
+        ("retired", next_retired),
+        ("completion_cursor", next_completion_cursor)], control_t)
     ir.line(f"ac.state_write @control[{constants[0]}] {control_next} when {ctrue} port {constants[0]} : {control_t}")
     ir.line("ac.yield_sim")
 

@@ -262,11 +262,15 @@ public:
   StateArray(std::string name, ObjectId id, SimObject *parent, size_t entries,
              size_t readPorts, size_t writePorts)
       : SimObject(ObjectKind::Memory, std::move(name), id, parent),
-        committed_(entries), readPortUsed_(readPorts, false),
-        writePortUsed_(writePorts, false) {}
+        committed_(entries), readPortAddress_(readPorts),
+        writePortUsed_(writePorts, false), proposalSlotByEntry_(entries, -1) {
+    proposals_.reserve(writePorts);
+    touchedReadPorts_.reserve(readPorts);
+    touchedWritePorts_.reserve(writePorts);
+  }
 
   T read(std::int32_t index, std::int32_t port) {
-    if (system_ && !system_->registerCommitParticipant(id())) {
+    if (!ensureRegistered()) {
       setRuntimeFailureCode("state_array_participant_registration_failed");
       return T{};
     }
@@ -274,23 +278,32 @@ public:
       setRuntimeFailureCode("state_array_index_out_of_bounds");
       return T{};
     }
-    if (port < 0 || static_cast<size_t>(port) >= readPortUsed_.size()) {
+    if (port < 0 || static_cast<size_t>(port) >= readPortAddress_.size()) {
       setRuntimeFailureCode("state_array_read_port_out_of_bounds");
       return T{};
     }
-    if (readPortUsed_[static_cast<size_t>(port)]) {
+    const size_t portIndex = static_cast<size_t>(port);
+    const size_t elementIndex = static_cast<size_t>(index);
+    // A physical read port selects one address in an epoch, but its output may
+    // fan out to arbitrarily many consumers.  Repeating the same observation
+    // is therefore idempotent; selecting a different address remains a real
+    // port conflict.
+    if (readPortAddress_[portIndex] &&
+        *readPortAddress_[portIndex] != elementIndex) {
       setRuntimeFailureCode("state_array_read_port_reused");
       return T{};
     }
-    readPortUsed_[static_cast<size_t>(port)] = true;
-    return committed_[static_cast<size_t>(index)];
+    if (!readPortAddress_[portIndex])
+      touchedReadPorts_.push_back(portIndex);
+    readPortAddress_[portIndex] = elementIndex;
+    return committed_[elementIndex];
   }
 
   void proposeWrite(std::int32_t index, T value, bool enable,
                     std::int32_t port) {
     if (!enable)
       return;
-    if (system_ && !system_->registerCommitParticipant(id())) {
+    if (!ensureRegistered()) {
       setRuntimeFailureCode("state_array_participant_registration_failed");
       return;
     }
@@ -308,14 +321,14 @@ public:
       setRuntimeFailureCode("state_array_write_port_reused");
       return;
     }
-    if (std::any_of(proposals_.begin(), proposals_.end(),
-                    [&](const auto &proposal) {
-                      return proposal.first == elementIndex;
-                    })) {
+    if (proposalSlotByEntry_[elementIndex] >= 0) {
       setRuntimeFailureCode("state_array_write_conflict");
       return;
     }
     writePortUsed_[portIndex] = true;
+    touchedWritePorts_.push_back(portIndex);
+    proposalSlotByEntry_[elementIndex] =
+        static_cast<std::int32_t>(proposals_.size());
     proposals_.emplace_back(elementIndex, std::move(value));
   }
 
@@ -329,9 +342,16 @@ public:
     }
     if (!proposals_.empty())
       lastUpdate_ = epoch;
+    for (const auto &proposal : proposals_)
+      proposalSlotByEntry_[proposal.first] = -1;
     proposals_.clear();
-    std::fill(readPortUsed_.begin(), readPortUsed_.end(), false);
-    std::fill(writePortUsed_.begin(), writePortUsed_.end(), false);
+    for (size_t port : touchedReadPorts_)
+      readPortAddress_[port] = std::nullopt;
+    for (size_t port : touchedWritePorts_)
+      writePortUsed_[port] = false;
+    touchedReadPorts_.clear();
+    touchedWritePorts_.clear();
+    registeredEpoch_.reset();
   }
 
   RuntimeObjectState runtimeState(Epoch epoch) const override {
@@ -361,18 +381,38 @@ public:
   void reset() override {
     std::fill(committed_.begin(), committed_.end(), T{});
     proposals_.clear();
-    std::fill(readPortUsed_.begin(), readPortUsed_.end(), false);
+    std::fill(readPortAddress_.begin(), readPortAddress_.end(), std::nullopt);
     std::fill(writePortUsed_.begin(), writePortUsed_.end(), false);
+    std::fill(proposalSlotByEntry_.begin(), proposalSlotByEntry_.end(), -1);
+    touchedReadPorts_.clear();
+    touchedWritePorts_.clear();
+    registeredEpoch_.reset();
     committedWrites_ = 0;
     lastUpdate_ = {};
     clearRuntimeFailureCode();
   }
 
 private:
+  bool ensureRegistered() {
+    if (!system_)
+      return true;
+    Epoch epoch = system_->currentEpoch();
+    if (registeredEpoch_ && *registeredEpoch_ == epoch)
+      return true;
+    if (!system_->registerCommitParticipant(id()))
+      return false;
+    registeredEpoch_ = epoch;
+    return true;
+  }
+
   std::vector<T> committed_;
-  std::vector<bool> readPortUsed_;
+  std::vector<std::optional<size_t>> readPortAddress_;
   std::vector<bool> writePortUsed_;
   std::vector<std::pair<size_t, T>> proposals_;
+  std::vector<std::int32_t> proposalSlotByEntry_;
+  std::vector<size_t> touchedReadPorts_;
+  std::vector<size_t> touchedWritePorts_;
+  std::optional<Epoch> registeredEpoch_;
   uint64_t committedWrites_ = 0;
   Epoch lastUpdate_{};
   SimSystem *system_ = nullptr;

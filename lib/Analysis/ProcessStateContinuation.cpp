@@ -2,14 +2,17 @@
 
 #include "acir/Dialect/ACIR/ACIROps.h"
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Diagnostics.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/ErrorHandling.h"
 
+#include <array>
 #include <functional>
 #include <iomanip>
+#include <limits>
 #include <memory>
 #include <sstream>
 
@@ -135,7 +138,7 @@ PlanSetBuilder::makePlannedAction(const ExpandedAction &expanded, uint32_t id) {
 }
 
 struct StructuredNode {
-  enum class Kind { Action, If } kind = Kind::Action;
+  enum class Kind { Action, Branch, Jump } kind = Kind::Action;
   Operation *operation = nullptr;
   const ExpandedAction *action = nullptr;
   std::optional<ProcessPlannedValue> condition;
@@ -157,16 +160,68 @@ PlanSetBuilder::planStructuredIfContinuation(const ExpandedProcess &expanded,
   auto plan = std::make_unique<PlanSetBuilder::ControlPlan>();
   ac::ProcessOp process = expanded.process;
 
-  DenseMap<Operation *, const ExpandedAction *> actionsByOperation;
+  DenseMap<Operation *, SmallVector<const ExpandedAction *, 2>>
+      actionsByOperation;
+  DenseMap<Operation *, std::array<const ExpandedAction *, 3>> loopActions;
   DenseMap<Value, ProcessPlannedValue> values;
   for (const ExpandedAction &action : expanded.actions) {
-    if (!action.operation || !isNestedInProcess(action.operation, process) ||
-        actionsByOperation.contains(action.operation))
+    bool reachedThroughPureCall =
+        action.occurrence &&
+        action.occurrence->kind() == ProcessOccurrenceKind::Original &&
+        !action.occurrence->original().callSites().empty();
+    if (!action.operation ||
+        (!isNestedInProcess(action.operation, process) &&
+         !reachedThroughPureCall))
       return failure();
-    actionsByOperation[action.operation] = &action;
-    for (auto [result, planned] :
-         llvm::zip_equal(action.operation->getResults(), action.results))
-      values.try_emplace(result, planned);
+    if (action.kind == ProcessActionKind::ForInitialize ||
+        action.kind == ProcessActionKind::ForCondition ||
+        action.kind == ProcessActionKind::ForIncrement) {
+      unsigned phase = action.kind == ProcessActionKind::ForInitialize
+                           ? 0
+                       : action.kind == ProcessActionKind::ForCondition ? 1
+                                                                        : 2;
+      auto [found, inserted] = loopActions.try_emplace(
+          action.operation,
+          std::array<const ExpandedAction *, 3>{nullptr, nullptr, nullptr});
+      if (found->second[phase])
+        return failure();
+      found->second[phase] = &action;
+    } else {
+      actionsByOperation[action.operation].push_back(&action);
+    }
+    if (action.kind == ProcessActionKind::Original)
+      for (auto [result, planned] :
+           llvm::zip_equal(action.operation->getResults(), action.results))
+        values.try_emplace(result, planned);
+  }
+
+  // Calls are expansion-time aliases rather than runtime actions.  Retain the
+  // mapping from their SSA results (and callee block arguments) to the actual
+  // planned producer so a call result can directly control structured flow.
+  for (const ExpandedForwarding &forwarding : expanded.forwarding)
+    if (forwarding.to.kind() == ProcessPlannedValueKind::Original)
+      values.insert_or_assign(forwarding.to.original().value(),
+                              forwarding.from);
+
+  // Loop induction variables, region iter_args, and loop results are aliases
+  // of the synthetic values produced by the compact loop actions rather than
+  // results of an Original action.  Publish those aliases for structured
+  // branch conditions.  This is required when a loop reduction directly
+  // controls a following scf.if (for example an arbitration winner).
+  for (const auto &[operation, phases] : loopActions) {
+    auto loop = cast<scf::ForOp>(operation);
+    const ExpandedAction *initialize = phases[0];
+    if (!initialize || initialize->results.size() !=
+                           1 + loop.getNumRegionIterArgs())
+      return failure();
+    values.try_emplace(loop.getInductionVar(), initialize->results.front());
+    for (auto [index, pair] : llvm::enumerate(
+             llvm::zip_equal(loop.getRegionIterArgs(), loop.getResults()))) {
+      auto [argument, result] = pair;
+      ProcessPlannedValue carried = initialize->results[index + 1];
+      values.try_emplace(argument, carried);
+      values.try_emplace(result, carried);
+    }
   }
 
   std::vector<std::unique_ptr<StructuredNode>> nodes;
@@ -176,12 +231,46 @@ PlanSetBuilder::planStructuredIfContinuation(const ExpandedProcess &expanded,
     return nodes.back().get();
   };
   bool supported = true;
-  std::function<StructuredNode *(Block &, StructuredNode *)> buildSequence =
-      [&](Block &block, StructuredNode *continuation) -> StructuredNode * {
+  auto actionForContext = [&](Operation *operation,
+                              ArrayRef<Operation *> callContext)
+      -> const ExpandedAction * {
+    auto found = actionsByOperation.find(operation);
+    if (found == actionsByOperation.end())
+      return nullptr;
+    for (const ExpandedAction *action : found->second) {
+      auto callSites = action->occurrence->original().callSites();
+      if (callSites.size() == callContext.size() &&
+          llvm::all_of(llvm::zip_equal(callSites, callContext),
+                       [](auto pair) {
+                         return std::get<0>(pair).operation() ==
+                                std::get<1>(pair);
+                       }))
+        return action;
+    }
+    return nullptr;
+  };
+  std::function<StructuredNode *(Block &, StructuredNode *,
+                                 SmallVector<Operation *>)>
+      buildSequence =
+      [&](Block &block, StructuredNode *continuation,
+          SmallVector<Operation *> callContext) -> StructuredNode * {
     StructuredNode *head = continuation;
     for (Operation &operation : llvm::reverse(block)) {
-      if (isa<scf::YieldOp>(operation))
+      if (isa<scf::YieldOp, func::ReturnOp>(operation))
         continue;
+      if (auto call = dyn_cast<func::CallOp>(operation)) {
+        auto callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
+            call, call.getCalleeAttr());
+        if (!callee || !callee.getBody().hasOneBlock()) {
+          supported = false;
+          return head;
+        }
+        SmallVector<Operation *> calleeContext = callContext;
+        calleeContext.push_back(&operation);
+        head = buildSequence(callee.getBody().front(), head,
+                             std::move(calleeContext));
+        continue;
+      }
       if (auto ifOp = dyn_cast<scf::IfOp>(operation)) {
         if (ifOp.getNumResults() != 0) {
           supported = false;
@@ -193,32 +282,64 @@ PlanSetBuilder::planStructuredIfContinuation(const ExpandedProcess &expanded,
           return head;
         }
         StructuredNode *node = makeNode();
-        node->kind = StructuredNode::Kind::If;
+        node->kind = StructuredNode::Kind::Branch;
         node->operation = &operation;
         node->condition = condition->second;
         node->next = head;
-        node->thenNode = buildSequence(ifOp.getThenRegion().front(), head);
+        node->thenNode =
+            buildSequence(ifOp.getThenRegion().front(), head, callContext);
         node->elseNode =
             ifOp.getElseRegion().empty()
                 ? head
-                : buildSequence(ifOp.getElseRegion().front(), head);
+                : buildSequence(ifOp.getElseRegion().front(), head,
+                                callContext);
         head = node;
         continue;
       }
-      if (operation.getNumRegions() != 0 ||
-          isa<scf::ForOp, scf::WhileOp>(operation)) {
+      if (auto forOp = dyn_cast<scf::ForOp>(operation)) {
+        auto phases = loopActions.find(&operation);
+        if (phases == loopActions.end() || llvm::any_of(phases->second,
+                         [](const ExpandedAction *action) { return !action; })) {
+          supported = false;
+          return head;
+        }
+        // Build init -> header -> body -> latch -> header, with exit flowing
+        // to the already-built continuation.  All nodes remain in one PC.
+        StructuredNode *header = makeNode();
+        header->kind = StructuredNode::Kind::Branch;
+        header->operation = &operation;
+        header->action = phases->second[1];
+        header->condition = phases->second[1]->results.front();
+        header->elseNode = head;
+
+        StructuredNode *latch = makeNode();
+        latch->kind = StructuredNode::Kind::Jump;
+        latch->operation = &operation;
+        latch->action = phases->second[2];
+        latch->next = header;
+        header->thenNode = buildSequence(*forOp.getBody(), latch, callContext);
+
+        StructuredNode *initialize = makeNode();
+        initialize->kind = StructuredNode::Kind::Jump;
+        initialize->operation = &operation;
+        initialize->action = phases->second[0];
+        initialize->next = header;
+        head = initialize;
+        continue;
+      }
+      if (operation.getNumRegions() != 0 || isa<scf::WhileOp>(operation)) {
         supported = false;
         return head;
       }
-      auto found = actionsByOperation.find(&operation);
-      if (found == actionsByOperation.end()) {
+      const ExpandedAction *action = actionForContext(&operation, callContext);
+      if (!action) {
         supported = false;
         return head;
       }
       StructuredNode *node = makeNode();
       node->kind = StructuredNode::Kind::Action;
       node->operation = &operation;
-      node->action = found->second;
+      node->action = action;
       node->next = head;
       for (Value result : operation.getResults())
         definitionsByValue.try_emplace(result, node);
@@ -227,7 +348,8 @@ PlanSetBuilder::planStructuredIfContinuation(const ExpandedProcess &expanded,
     return head;
   };
 
-  StructuredNode *entryRoot = buildSequence(process.getBody().front(), nullptr);
+  StructuredNode *entryRoot =
+      buildSequence(process.getBody().front(), nullptr, {});
   if (!supported || !entryRoot)
     return failure();
 
@@ -313,7 +435,10 @@ PlanSetBuilder::planStructuredIfContinuation(const ExpandedProcess &expanded,
         return blockId;
       }
 
-      if (cursor->kind == StructuredNode::Kind::If) {
+      if (cursor->kind == StructuredNode::Kind::Branch) {
+        if (cursor->action)
+          block->actions.push_back(makePlannedAction(
+              *cursor->action, static_cast<uint32_t>(block->actions.size())));
         auto thenBlock = buildBlock(cursor->thenNode);
         auto elseBlock = buildBlock(cursor->elseNode);
         if (failed(thenBlock) || failed(elseBlock))
@@ -323,6 +448,19 @@ PlanSetBuilder::planStructuredIfContinuation(const ExpandedProcess &expanded,
         edge->condition = cursor->condition;
         edge->trueBlock = *thenBlock;
         edge->falseBlock = *elseBlock;
+        block->edge = ProcessControlEdgePlan(edge);
+        return blockId;
+      }
+
+      if (cursor->kind == StructuredNode::Kind::Jump) {
+        block->actions.push_back(makePlannedAction(
+            *cursor->action, static_cast<uint32_t>(block->actions.size())));
+        auto target = buildBlock(cursor->next);
+        if (failed(target))
+          return failure();
+        auto edge = std::make_shared<ProcessControlEdgePlan::Impl>();
+        edge->kind = ProcessControlEdgeKind::LocalContinue;
+        edge->targetBlock = *target;
         block->edge = ProcessControlEdgePlan(edge);
         return blockId;
       }
@@ -392,22 +530,45 @@ PlanSetBuilder::planStructuredIfContinuation(const ExpandedProcess &expanded,
   auto entry = createPc(entryRoot);
   if (failed(entry) || entry->value() != 0)
     return failure();
+  if (!loopActions.empty()) {
+    plan->hasBoundedLocalLoops = true;
+    // Start with every action and CFG edge once, then add the repeated loop
+    // body work.  The previous loop-only estimate undercounted large straight-
+    // line prefixes/suffixes (for example M1's scheduling decision logic) and
+    // could publish a fairness cap below the actual local execution path.
+    uint64_t boundedWork = expanded.actions.size() + plan->blocks.size();
+    process.walk([&](scf::ForOp loop) {
+      if (auto trip = ac::analyzeStaticFor(loop); succeeded(trip)) {
+        uint64_t bodyOps =
+            std::max<uint64_t>(1, std::distance(loop.getBody()->begin(),
+                                                loop.getBody()->end()) - 1);
+        uint64_t loopWork = 3 + trip->tripCount * bodyOps;
+        if (boundedWork <=
+            std::numeric_limits<uint64_t>::max() - loopWork)
+          boundedWork += loopWork;
+        else
+          boundedWork = std::numeric_limits<uint64_t>::max();
+      }
+    });
+    plan->boundedLocalWork = boundedWork;
+  }
   return plan;
 }
 
 FailureOr<std::unique_ptr<PlanSetBuilder::ControlPlan>>
 PlanSetBuilder::planProcessContinuation(const ExpandedProcess &expanded,
                                         const ProcessStateLimits &limits) {
-  bool hasStructuredIf = false;
+  bool hasStructuredControl = false;
   bool structuredSubset = true;
   ac::ProcessOp sourceProcess = expanded.process;
   sourceProcess.walk([&](Operation *operation) {
-    hasStructuredIf |= isa<scf::IfOp>(operation);
-    if (isa<scf::ForOp, scf::WhileOp>(operation) ||
-        operation->getName().getStringRef() == "func.call")
+    hasStructuredControl |= isa<scf::IfOp, scf::ForOp>(operation);
+    if (isa<scf::WhileOp>(operation))
       structuredSubset = false;
+    if (auto loop = dyn_cast<scf::ForOp>(operation))
+      structuredSubset &= succeeded(ac::analyzeStaticFor(loop));
   });
-  if (hasStructuredIf && structuredSubset)
+  if (hasStructuredControl && structuredSubset)
     return planStructuredIfContinuation(expanded, limits);
 
   auto plan = std::make_unique<ControlPlan>();

@@ -483,6 +483,7 @@ public:
   llvm::ArrayRef<ProcessTransitionPlan> transitions() const;
   uint32_t pcBitWidth() const;
   uint64_t fairnessWork() const;
+  bool hasBoundedLocalLoops() const;
 
 private:
   ACIR_PROCESS_PIMPL(ProcessStatePlan);

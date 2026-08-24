@@ -383,8 +383,8 @@ TEST(GeneratorTest, EmitsTypedLocalDispatchForMultiBlockProcess) {
   EXPECT_NE(header->content.find(
                 "#ifndef ACIR_GENERATED_WAKE_ACIR_IMPL_WAKE_NEXT_DELTA"),
             std::string::npos);
-  EXPECT_NE(source->content.find("enum class Block_entry"), std::string::npos);
-  EXPECT_NE(source->content.find("std::optional<"), std::string::npos);
+  EXPECT_NE(source->content.find("goto block_entry_b0"), std::string::npos);
+  EXPECT_EQ(source->content.find("std::optional<"), std::string::npos);
   EXPECT_NE(source->content.find("b1_arg0"), std::string::npos);
   EXPECT_NE(source->content.find("if ("), std::string::npos);
   EXPECT_NE(source->content.find("block1_value0 + block1_value0"),

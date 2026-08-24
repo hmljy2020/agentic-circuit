@@ -125,6 +125,13 @@ PlanSetBuilder::planProcessCost(ControlPlan &control,
           ready.push_back(successor);
       }
     }
+    if (processed != pc->blocks.size() && control.hasBoundedLocalLoops) {
+      if (control.boundedLocalWork == 0 ||
+          control.boundedLocalWork > limits.maxFairnessWork)
+        return failure();
+      fairness = std::max(fairness, control.boundedLocalWork);
+      continue;
+    }
     if (processed != pc->blocks.size() ||
         llvm::any_of(pc->blocks, [&](ProcessBlockId id) {
           return !distance[id.value()].has_value();

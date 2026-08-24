@@ -178,7 +178,8 @@ def ACSim_ProcessOp : ACSim_Op<"process", [
                        ArrayAttr:$capture_names,
                        FlatSymbolRefAttr:$entry_pc, ArrayAttr:$pcs,
                        ArrayAttr:$live_slots, I64Attr:$fairness_cap,
-                       StrAttr:$specialization_fingerprint);
+                       StrAttr:$specialization_fingerprint,
+                       OptionalAttr<DenseI64ArrayAttr>:$bounded_local_backedges);
   let regions = (region VariadicRegion<AnyRegion>:$states);
   let hasCustomAssemblyFormat = 1;
   let hasVerifier = 1;
