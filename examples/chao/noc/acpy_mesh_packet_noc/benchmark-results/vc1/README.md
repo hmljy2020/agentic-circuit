@@ -27,7 +27,7 @@ the likely cause of the different saturation points.
 Reproduce from the repository root with:
 
 ```sh
-examples/chao/acpy_mesh_packet_noc/run-booksim-comparison.sh
+examples/chao/noc/acpy_mesh_packet_noc/run-booksim-comparison.sh
 ```
 
 The BookSim path defaults to `/home/lc/NoC/booksim2/src/booksim` and can be

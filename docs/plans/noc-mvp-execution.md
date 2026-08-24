@@ -98,7 +98,7 @@ backpressure.  Python advances complete ticks rather than internal deltas.
 Final regression evidence for this extension: catalog 36 schemas; contracts
 21/21; Python frontend 79/79; CTest 12/12; lit 116/116; final focused CodeGen
 assertion 1/1; `git diff --check` clean. The durable 4x4 benchmark hashes are
-recorded beside the data in `examples/chao/acpy_mesh_packet_noc/benchmark-results/vc1-iq-4x4/README.md`.
+recorded beside the data in `examples/chao/noc/acpy_mesh_packet_noc/benchmark-results/vc1-iq-4x4/README.md`.
 
 ## Target acceptance commands
 
@@ -111,8 +111,8 @@ PYTHONPATH=src:build/dev-llvm22/python python -m unittest tests.contracts.test_c
 python scripts/generate-stdlib-catalog.py --check
 ulimit -v 1900000; cmake --build --preset dev-llvm22 --parallel 1
 ulimit -v 1900000; ctest --test-dir build/dev-llvm22 -j1 --output-on-failure
-./examples/chao/acpy_ring_noc/build-run.sh
-./examples/chao/acpy_mesh_noc/build-run.sh
+./examples/chao/noc/acpy_ring_noc/build-run.sh
+./examples/chao/noc/acpy_mesh_noc/build-run.sh
 git diff --check
 ```
 

@@ -116,8 +116,8 @@ then captures a complete message with
 multi-hop, Ring wrap-around, XY routing, contention, and FIFO backpressure:
 
 ```sh
-./examples/chao/acpy_ring_noc/build-run.sh
-./examples/chao/acpy_mesh_noc/build-run.sh
+./examples/chao/noc/acpy_ring_noc/build-run.sh
+./examples/chao/noc/acpy_mesh_noc/build-run.sh
 ```
 
 Both scripts keep generated files under ignored `build-noc` directories and run
@@ -132,7 +132,7 @@ message, or one whole Packet as one atomic Queue entry. A Packet NoC call sets
 field and the Packet is not rewritten. See the executable byte-host example:
 
 ```sh
-./examples/chao/acpy_mesh_packet_noc/build-run.sh
+./examples/chao/noc/acpy_mesh_packet_noc/build-run.sh
 ```
 
 Packet declarations support natural-layout scalar, fixed-vector, and nested

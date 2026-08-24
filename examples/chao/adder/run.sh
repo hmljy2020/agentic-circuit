@@ -48,8 +48,8 @@ while IFS= read -r object; do
   fi
 done < <(find "${out_root}/obj" -maxdepth 1 -type f -name '*.o' | sort)
 
-# model + 1 module + 4 processes (source, delay, alu, sink).
-if [[ ${#generated_objects[@]} -ne 6 ]]; then
+# C API + model + 1 module + 4 processes (source, delay, alu, sink).
+if [[ ${#generated_objects[@]} -ne 7 ]]; then
   echo "unexpected generated object set" >&2
   exit 1
 fi

@@ -95,7 +95,7 @@ happen before the result send, so a `try_send @result` that fails would drop
 the consumed pair. In this model `@result` never stays full — `@sink` drains it
 every tick and the ALU computes at most once per tick — so neither version
 triggers the loss; making the send truly lossless under output backpressure
-needs the `try_send` → `await_queue` park idiom from `examples/chao/router2x2`.
+needs the `try_send` → `await_queue` park idiom from `examples/chao/noc/acir/router2x2`.
 
 The register version is kept here because it is the only one that demonstrates
 cross-tick, process-local storage in ACIR v0.2; the peek-both form is the
@@ -163,5 +163,5 @@ build/dev-llvm22/bin/acir-cxxgen \
 
 `runner.cpp` links against the generated model objects, applies `maxTicks=12`,
 prints every statistic, and returns nonzero if any expected value does not
-match. Same discipline as `examples/chao/router2x2` and `fu_latency`: exact
+match. Same discipline as `examples/chao/noc/acir/router2x2` and `fu_latency`: exact
 values pinned from a deterministic run.

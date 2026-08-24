@@ -3,7 +3,7 @@ set -euo pipefail
 ulimit -v 1900000
 
 example_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="$(cd -- "${example_root}/../../.." && pwd)"
+repo_root="$(cd -- "${example_root}/../../../.." && pwd)"
 build_root="${example_root}/build-host"
 if [[ "${build_root}" != "${example_root}/build-host" || -L "${build_root}" ]]; then exit 1; fi
 if [[ -d "${build_root}" ]]; then rm -rf -- "${build_root}"; fi

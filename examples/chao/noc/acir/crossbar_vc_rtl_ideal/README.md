@@ -7,7 +7,7 @@ the capacity-1 `ac.resource` declarations are compile-time conflict tokens.
 Run it with:
 
 ```sh
-bash examples/chao/crossbar_vc_rtl_ideal/run.sh
+bash examples/chao/noc/acir/crossbar_vc_rtl_ideal/run.sh
 ```
 
 The script freezes ACIR, lowers ACSim, records the ModelPlan summary, generates

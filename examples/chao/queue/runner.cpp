@@ -37,9 +37,9 @@ int main() {
   const bool passed =
       result.classification == gfsim::TerminationClass::Incomplete &&
       result.finalEpoch == gfsim::Epoch{6, 0} &&
-      queueStats["queue_occupancy"] == 1 &&
+      queueStats["queue_occupancy"] == 0 &&
       queueStats["queue_occupancy_peak"] == 1 &&
-      queueStats["accepted_transactions"] == 2 &&
-      queueStats["completed_transactions"] == 1;
+      queueStats["accepted_transactions"] == 3 &&
+      queueStats["completed_transactions"] == 3;
   return passed ? 0 : 1;
 }

@@ -44,9 +44,9 @@ PYTHONPATH=src:build/dev-llvm22/python python -m unittest tests.contracts.test_c
 PYTHONPATH=src:build/dev-llvm22/python python -m unittest tests.python_frontend.test_noc tests.python_frontend.test_packet -q
 ulimit -v 1900000; cmake --build --preset dev-llvm22 --parallel 1
 ulimit -v 1900000; ctest --test-dir build/dev-llvm22 -j1 --output-on-failure
-examples/chao/acpy_mesh_noc/build-run.sh
-examples/chao/acpy_mesh_packet_noc/build-run.sh
-examples/chao/acpy_mesh_packet_noc/run-booksim-comparison.sh
+examples/chao/noc/acpy_mesh_noc/build-run.sh
+examples/chao/noc/acpy_mesh_packet_noc/build-run.sh
+examples/chao/noc/acpy_mesh_packet_noc/run-booksim-comparison.sh
 git diff --check
 ```
 

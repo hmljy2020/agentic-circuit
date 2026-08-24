@@ -17,7 +17,7 @@ weakened to manufacture a pass.
 | 2 | DONE | Typed process Packet operations and Queue/Flow | Constructor/get/with/serialize/deserialize/typed Queue test passes in the Packet suite. `232ce4d`. |
 | 3 | DONE | Packet-capable RingNoC/MeshNoC route field | Packet Ring and Mesh route through a named top-level i32 field; invalid field rejected; frontend 77/77 passes; catalog check passes. `232ce4d`. |
 | 4 | DONE | Strict ABI 3 byte host ingress/egress | Exact input/output size APIs and strict Python ABI 3 exercised by the executable; `CodeGenTests` 1/1 passes in 97.84 s. `232ce4d`. |
-| 5 | DONE | 2x2 Packet Mesh executable example and docs | `examples/chao/acpy_mesh_packet_noc/build-run.sh` passes every stage; `ticks=8 delivered=4 packet_bytes=8`. `232ce4d`. |
+| 5 | DONE | 2x2 Packet Mesh executable example and docs | `examples/chao/noc/acpy_mesh_packet_noc/build-run.sh` passes every stage; `ticks=8 delivered=4 packet_bytes=8`. `232ce4d`. |
 | 6 | DONE | Serial directed and full regression | contracts 21/21; frontend 77/77; lit 116/116; CTest 12/12; targeted native Packet lit 1/1; `git diff --cached --check` passes. `232ce4d`. |
 
 ## Fixed boundary

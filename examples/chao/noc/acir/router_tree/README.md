@@ -13,7 +13,7 @@ runtime.
 Run the sequential, memory-limited end-to-end build from the repository root:
 
 ```sh
-bash examples/chao/router_tree/build-run.sh
+bash examples/chao/noc/acir/router_tree/build-run.sh
 ```
 
 The workload is intentionally cyclic. A successful run reaches the 32-tick

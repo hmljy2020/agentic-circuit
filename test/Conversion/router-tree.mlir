@@ -1,4 +1,4 @@
-// RUN: %acir_opt_public --verify-each=false --pass-pipeline='builtin.module(ac-verify-model,ac-canonicalize-model,ac-freeze-topology)' %source_root/examples/chao/router_tree/model.mlir -o %t.frozen
+// RUN: %acir_opt_public --verify-each=false --pass-pipeline='builtin.module(ac-verify-model,ac-canonicalize-model,ac-freeze-topology)' %source_root/examples/chao/noc/acir/router_tree/model.mlir -o %t.frozen
 // RUN: %acir_opt_public --ac-lower-to-acsim --ac-binding-profile=fast --ac-binding-target=x86_64-linux-gnu %t.frozen | %FileCheck %s
 
 // The seven homogeneous native queues share one closed runtime type.

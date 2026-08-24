@@ -3,7 +3,7 @@ set -euo pipefail
 ulimit -v 1900000
 
 example_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="$(cd -- "${example_root}/../../.." && pwd)"
+repo_root="$(cd -- "${example_root}/../../../.." && pwd)"
 result_root="${example_root}/benchmark-results/vc1"
 build_root="${example_root}/build-packet"
 library="${build_root}/generated/bin/libmodel.so"

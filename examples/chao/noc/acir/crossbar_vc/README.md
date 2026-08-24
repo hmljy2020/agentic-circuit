@@ -107,7 +107,7 @@ obvious from the source.
 The process-state expansion unrolls static `scf.for` bodies but drops
 side-effecting proposal ops (`ac.try_send`) from the unrolled body. The
 scheduler and the scenario producers therefore use **explicit straight-line
-code and `scf.if` guards only** (see `examples/chao/router2x2/README.md` §1 for
+code and `scf.if` guards only** (see `examples/chao/noc/acir/router2x2/README.md` §1 for
 the toolchain investigation). Unrolling also keeps the grant's send-then-recv
 pair inside one epoch, preserving atomicity.
 
@@ -202,15 +202,15 @@ the two sink drains (10 + 10). The B-phase never grants — test 10.
 ## Build and run
 
 ```sh
-bash examples/chao/crossbar_vc/run.sh       # primary model (runs twice, diffs)
-bash examples/chao/crossbar_vc/run.sh --rtl-ideal # arbiter + atomic transfer
-bash examples/chao/crossbar_vc/scenarios/run_all.sh   # all six scenarios
+bash examples/chao/noc/acir/crossbar_vc/run.sh       # primary model (runs twice, diffs)
+bash examples/chao/noc/acir/crossbar_vc/run.sh --rtl-ideal # arbiter + atomic transfer
+bash examples/chao/noc/acir/crossbar_vc/scenarios/run_all.sh   # all six scenarios
 ```
 
 Both scripts set `ulimit -v 1900000` (this machine's DRAM budget), guard their
 build directories against symlink tricks, and rebuild from scratch. `run.sh`
 keeps the frozen ACIR, lowered ACSim, generated C++, and object files under
-`examples/chao/crossbar_vc/build-model/` (or `build-rtl-ideal/`), then links
+`examples/chao/noc/acir/crossbar_vc/build-model/` (or `build-rtl-ideal/`), then links
 `bin/crossbar-demo` and executes it twice, diffing the two runs byte-for-byte
 (test 8). It also guards the
 generated object set: model + 1 module + 5 processes = 7 objects.
@@ -220,17 +220,17 @@ generated object set: model + 1 module + 5 processes = 7 objects.
 ```sh
 build/dev-llvm22/bin/acir-opt --verify-each=false \
   --pass-pipeline='builtin.module(ac-freeze-topology)' \
-  examples/chao/crossbar_vc/model.mlir \
-  -o examples/chao/crossbar_vc/build/model.frozen.mlir
+  examples/chao/noc/acir/crossbar_vc/model.mlir \
+  -o examples/chao/noc/acir/crossbar_vc/build/model.frozen.mlir
 
 build/dev-llvm22/bin/acir-opt --ac-lower-to-acsim \
   --ac-binding-profile=fast --ac-binding-target=x86_64-linux-gnu \
-  examples/chao/crossbar_vc/build/model.frozen.mlir \
-  -o examples/chao/crossbar_vc/build/model.acsim.mlir
+  examples/chao/noc/acir/crossbar_vc/build/model.frozen.mlir \
+  -o examples/chao/noc/acir/crossbar_vc/build/model.acsim.mlir
 
 build/dev-llvm22/bin/acir-cxxgen \
-  examples/chao/crossbar_vc/build/model.acsim.mlir \
-  --stop-after=link --output-root=examples/chao/crossbar_vc/build/generated \
+  examples/chao/noc/acir/crossbar_vc/build/model.acsim.mlir \
+  --stop-after=link --output-root=examples/chao/noc/acir/crossbar_vc/build/generated \
   --project-name=chao-crossbar-vc --project-identity=project.chao.crossbar_vc \
   --system-name=crossbar_vc_demo --system-identity=system.crossbar_vc_demo \
   --profile=fast --compiler=/usr/bin/c++ --standard-library=libstdc++ \

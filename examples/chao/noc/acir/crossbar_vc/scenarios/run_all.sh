@@ -5,7 +5,7 @@ ulimit -v 1900000
 
 scenario_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 example_root="$(cd -- "${scenario_root}/.." && pwd)"
-repo_root="$(cd -- "${example_root}/../../.." && pwd)"
+repo_root="$(cd -- "${example_root}/../../../../.." && pwd)"
 
 run_scenario() {
   local name="$1" system="$2" objects="$3"

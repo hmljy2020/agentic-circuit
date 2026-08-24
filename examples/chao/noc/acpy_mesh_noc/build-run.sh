@@ -41,7 +41,7 @@ print_timing_summary() {
 }
 
 example_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="$(cd -- "${example_root}/../../.." && pwd)"
+repo_root="$(cd -- "${example_root}/../../../.." && pwd)"
 build_root="${example_root}/build-noc"
 if [[ "${build_root}" != "${example_root}/build-noc" || -L "${build_root}" ]]; then
   echo "unsafe build directory: ${build_root}" >&2

@@ -140,7 +140,7 @@ helper、数组或通用仲裁循环。生成的 C++ 是直接的 `bool` 局部�
 ModelPlan、C++、对象文件和可执行文件：
 
 ```sh
-bash examples/chao/crossbar_vc/run.sh --rtl-ideal
+bash examples/chao/noc/acir/crossbar_vc/run.sh --rtl-ideal
 ```
 
 所有生成物均写入被忽略的 `build-rtl-ideal/`。

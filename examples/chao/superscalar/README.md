@@ -255,7 +255,7 @@ credit、层次化参数组件和批量事件；避免 `ac.npu_scheduler`、`ac.
 | 里程碑 | 状态 | 主要产物 | 完成证据 | 复盘链接 |
 |---|:---:|---|---|---|
 | M0 语义与测量 | DONE | 三个自包含语义模型与测量脚本 | 3/3 runtime、19/19 targeted lit | [M0 报告](m0/REPORT.md) |
-| M1 调度核 | DONE | 2-wide token 调度核、StateArray、周期 golden | 16 instructions / 64 traces、3/3 runtime、5/5 lit | [M1 报告](m1/REPORT.md) |
+| M1 调度核 | DONE | 2-wide token 调度核、StateArray、周期 golden | 16 instructions / 64 traces、4/4 runtime、6/6 lit | [M1 报告](m1/REPORT.md) |
 | M2 TileReg | TODO | — | — | — |
 | M3 本地存储与互连 | TODO | — | — | — |
 | M4 复杂 DMA | TODO | — | — | — |

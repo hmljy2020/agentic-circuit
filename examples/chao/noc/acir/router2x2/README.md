@@ -46,7 +46,7 @@ arithmetic do not. This was verified at `acir-opt` level for the unused-result
 form, the used-result form, and the blocking `try_send`/`await_queue` idiom —
 in every case the acsim IR contained only the constants and the wake invoke,
 never `impl_queue_try_send`. The workaround used here (and in
-`examples/chao/router_tree`) is to **manually unroll**: eight explicit
+`examples/chao/noc/acir/router_tree`) is to **manually unroll**: eight explicit
 `ac.try_send`s, which do emit eight `impl_queue_try_send` invokes in the acsim
 IR (visible in `model.acsim.mlir`). This is a real toolchain gap worth fixing
 upstream; the traffic matrix here is static anyway, so the constants are folded
@@ -96,10 +96,10 @@ run: execute `bin/router2x2-demo` twice and the output is byte-identical.
 ## Build and run
 
 ```sh
-examples/chao/router2x2/build-run.sh
+examples/chao/noc/acir/router2x2/build-run.sh
 ```
 
-The script rebuilds `examples/chao/router2x2/build` and keeps the frozen ACIR,
+The script rebuilds `examples/chao/noc/acir/router2x2/build` and keeps the frozen ACIR,
 lowered ACSim, generated C++, object files, and `bin/router2x2-demo` there
 after the run. `model.frozen.mlir` and `model.acsim.mlir` at the example root
 remain checked-in snapshots for inspection (the `acsim.process` blocks for
@@ -114,17 +114,17 @@ The stages used to produce them were:
 ```sh
 build/dev-llvm22/bin/acir-opt --verify-each=false \
   --pass-pipeline='builtin.module(ac-freeze-topology)' \
-  examples/chao/router2x2/model.mlir \
-  -o examples/chao/router2x2/build/model.frozen.mlir
+  examples/chao/noc/acir/router2x2/model.mlir \
+  -o examples/chao/noc/acir/router2x2/build/model.frozen.mlir
 
 build/dev-llvm22/bin/acir-opt --ac-lower-to-acsim \
   --ac-binding-profile=fast --ac-binding-target=x86_64-linux-gnu \
-  examples/chao/router2x2/build/model.frozen.mlir \
-  -o examples/chao/router2x2/build/model.acsim.mlir
+  examples/chao/noc/acir/router2x2/build/model.frozen.mlir \
+  -o examples/chao/noc/acir/router2x2/build/model.acsim.mlir
 
 build/dev-llvm22/bin/acir-cxxgen \
-  examples/chao/router2x2/build/model.acsim.mlir \
-  --stop-after=link --output-root=examples/chao/router2x2/build/generated \
+  examples/chao/noc/acir/router2x2/build/model.acsim.mlir \
+  --stop-after=link --output-root=examples/chao/noc/acir/router2x2/build/generated \
   --project-name=chao-router2x2 --project-identity=project.chao.router2x2 \
   --system-name=router2x2_demo --system-identity=system.router2x2-demo \
   --profile=fast --compiler=/usr/bin/c++ --standard-library=libstdc++ \

@@ -101,7 +101,7 @@ builtin.module attributes {ac.contract_epoch = "0.2"} {
 
     // Single arbiter: polls both inputs each tick, fixed priority in0 > in1.
     // Routes the drained flit to the output named by its dst field. The
-    // recv-then-send ordering (proven in examples/chao/router_tree) means an
+    // recv-then-send ordering (proven in examples/chao/noc/acir/router_tree) means an
     // output that cannot accept parks the already-consumed flit and retries
     // the send on wake; the input is never re-read and the flit is never lost.
     ac.process @arbiter kind "control" {
