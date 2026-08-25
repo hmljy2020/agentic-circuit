@@ -61,8 +61,8 @@ P0 基线
 | --- | --- | --- | --- | --- | --- |
 | P0 | 固定当前构建和测试基线 | baseline 记录 | 无 | A/D 只读 | `完成` |
 | P1 | 审计当前 ACIR 对 v0.3 contract 的支持 | capability-gap matrix | P0 | B 只读 | `完成` |
-| P2 | 建立与 ACIR 文本解耦的语义中间层 | typed semantic graph | P1 contract 结论 | A | `进行中` |
-| P3 | 贯通最小无状态程序 | source→compute→observe ACIR | P2；相关 B contract | A；必要时 B 对齐 | `待开始` |
+| P2 | 建立与 ACIR 文本解耦的语义中间层 | typed semantic graph | P1 contract 结论 | A | `完成` |
+| P3 | 贯通最小无状态程序 | source→compute→observe ACIR | P2；相关 B contract | A；必要时 B 对齐 | `进行中` |
 | P4 | 支持静态拓扑、多端口和线性 Queue | route/fork/merge/scope | P3；相关 B contract | A；必要时 B 对齐 | `待开始` |
 | P5 | 支持 forward reference 和反馈图 | deferred/cyclic Queue | P4；graph-region contract | A；必要时 B 对齐 | `待开始` |
 | P6 | 支持通用状态积木 | reorder/pool/table | P5；相关 B contract | A；必要时 B 对齐 | `待开始` |
@@ -133,17 +133,17 @@ P0 基线
 
 ### 任务
 
-- [ ] `P2.1` 定义 `Program`、`Scope` 和 hierarchy identity。
-- [ ] `P2.2` 定义 `BlockInstance` 和 named `PortGroup`。
-- [ ] `P2.3` 定义 `QueueValue`、producer/use 和 source location。
-- [ ] `P2.4` 定义 `QueueConstraint` 与 unresolved/frozen 状态。
-- [ ] `P2.5` 定义 payload type、struct、array 和 enum 表达。
-- [ ] `P2.6` 定义 typed `FieldDescriptor` 与 policy。
-- [ ] `P2.7` 定义 `VarRegion` 和 canonical Var operations。
-- [ ] `P2.8` 定义 `DeferredEdge`，但暂不完成 cyclic lowering。
-- [ ] `P2.9` 建立 BlockSpec 驱动的 primitive call binding 接口。
-- [ ] `P2.10` 建立 deterministic semantic snapshot/golden 格式。
-- [ ] `P2.11` 升级或替换 epoch 0.1 `AcpyDocument`，不保留静默兼容 shim。
+- [x] `P2.1` 定义 `Program`、`Scope` 和 hierarchy identity。
+- [x] `P2.2` 定义 `BlockInstance` 和 named `PortGroup`。
+- [x] `P2.3` 定义 `QueueValue`、producer/use 和 source location。
+- [x] `P2.4` 定义 `QueueConstraint` 与 unresolved/frozen 状态。
+- [x] `P2.5` 定义 payload type、struct、array 和 enum 表达。
+- [x] `P2.6` 定义 typed `FieldDescriptor` 与 policy。
+- [x] `P2.7` 定义 `VarRegion` 和 canonical Var operations。
+- [x] `P2.8` 定义 `DeferredEdge`，但暂不完成 cyclic lowering。
+- [x] `P2.9` 建立 BlockSpec 驱动的 primitive call binding 接口。
+- [x] `P2.10` 建立 deterministic semantic snapshot/golden 格式。
+- [x] `P2.11` 以显式 v0.3 schema/epoch 隔离 epoch 0.1 `AcpyDocument`，不提供静默兼容 shim。
 
 ### 完成条件
 
@@ -400,10 +400,10 @@ DavinciOO ACPy
 ## 18. 当前关注点
 
 ```text
-当前阶段：P2 ACPy v0.3 语义中间层
-已完成：P0 建立基线；P1 ACIR 能力缺口审计
-当前 contract blocker：P3 native gate 需要 B1+B2+B3；不影响 P2
-当前 downstream blocker：CodeGen/Phase5 E2E 的生成 C++ 链接找不到 `-lLLVM`；不影响 P2
+当前阶段：P3 最小无状态纵向链路
+已完成：P0 建立基线；P1 ACIR 能力缺口审计；P2 ACPy v0.3 语义中间层
+当前 contract blocker：P3 native gate 需要 B1+B2+B3；A 类 capture/elaboration 可先实施
+当前 downstream blocker：CodeGen/Phase5 E2E 的生成 C++ 链接找不到 `-lLLVM`；不影响 P3 前端实施
 ```
 
 ## 19. 变更记录
@@ -413,6 +413,7 @@ DavinciOO ACPy
 | 2026-08-25 | 创建初始实施计划 | 建立可跟进、可调整的 ACPy→ACIR 工作路线 | P0–P10 |
 | 2026-08-25 | P0 完成，P1 开始 | 前端 56/56 通过；记录完整 CTest 的既有 CodeGen/Phase5 环境失败 | P0–P1 |
 | 2026-08-25 | P1 完成，P2 开始 | 确认 graph/record 基础可复用，Queue SSA/types/13 primitives 均需 v0.3 contract | P1–P3 |
+| 2026-08-25 | P2 完成，P3 开始 | typed semantic graph、BlockSpec、Var/deferred 与 canonical snapshot 已实现；前端 68/68 通过 | P2–P3 |
 
 后续每次改变阶段顺序、完成条件或 contract dependency 时，都在此增加一行；普通
 任务状态变化只更新阶段表和 checkbox，不需要增加变更记录。
