@@ -1067,6 +1067,10 @@ class SemanticBuilder:
     def root_scope(self) -> str:
         return "s0"
 
+    @property
+    def next_region_id(self) -> str:
+        return f"vr{len(self._regions)}"
+
     def add_declaration(self, declaration: PayloadDeclaration) -> None:
         self._declarations.append(declaration)
 
