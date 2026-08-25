@@ -35,6 +35,14 @@ class Static(Generic[T]):
     """Mark an elaboration-time specialization parameter."""
 
 
+# The lower-case spelling marks the same closed elaboration-time category in
+# the v0.3 surface while preserving the established v0.2 annotation identity.
+const = Static
+
+# ACPy spells its boolean scalar as i1; the v0.2 Queue surface exposed u1.
+i1 = u1
+
+
 class Flow(Generic[T, P]):
     """Describe a typed logical dataflow edge using protocol ``P``."""
 

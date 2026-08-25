@@ -6,6 +6,7 @@ from dataclasses import FrozenInstanceError
 
 
 PUBLIC = {
+    "config",
     "system",
     "module",
     "extern_module",
@@ -34,6 +35,9 @@ PUBLIC = {
     "observe",
     "expect",
     "atomic",
+    "compute",
+    "const",
+    "i1",
     "u1",
     "u2",
     "u4",
@@ -126,6 +130,7 @@ class PublicApiTest(unittest.TestCase):
                 object(), predicate=lambda value: True, message="expected"
             ),
             lambda: api.atomic(),
+            lambda: api.compute(object(), object()),
         )
         for operation in operations:
             with self.subTest(operation=operation):

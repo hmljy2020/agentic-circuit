@@ -9,6 +9,7 @@ from typing import Never
 __path__ = extend_path(__path__, __name__)
 
 from ._definitions import (
+    config,
     extern_module,
     generated_module,
     interface,
@@ -26,6 +27,8 @@ from ._types import (
     Flow,
     ResourceRef,
     Static,
+    const,
+    i1,
     s8,
     s16,
     s32,
@@ -41,6 +44,7 @@ from ._types import (
 
 
 __all__ = (
+    "config",
     "system",
     "module",
     "extern_module",
@@ -69,6 +73,9 @@ __all__ = (
     "observe",
     "expect",
     "atomic",
+    "compute",
+    "const",
+    "i1",
     "u1",
     "u2",
     "u4",
@@ -113,7 +120,9 @@ def view(value: object, *selectors: object) -> Never:
     return _not_implemented("view")
 
 
-def source(payload: object, *, depth: int = 1, latency: int = 1) -> Never:
+def source(
+    payload: object, *, depth: int = 1, latency: int = 1, rate: int = 1
+) -> Never:
     return _not_implemented("source")
 
 
@@ -131,3 +140,6 @@ def expect(value: object, *, predicate: object, message: str) -> Never:
 
 def atomic() -> Never:
     return _not_implemented("atomic")
+
+def compute(input: object, transform: object, **options: object) -> Never:
+    return _not_implemented("compute")

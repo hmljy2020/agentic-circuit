@@ -9,6 +9,7 @@ from typing import Callable, Literal, TypeAlias, TypeVar, overload
 
 
 DefinitionKind: TypeAlias = Literal[
+    "config",
     "system",
     "module",
     "extern_module",
@@ -105,6 +106,10 @@ def _decorate(
 
 def system(function: F | None = None, **options: object):
     return _decorate("system", function, **options)
+
+
+def config(function: F | None = None, **options: object):
+    return _decorate("config", function, **options)
 
 
 def module(function: F | None = None, **options: object):
