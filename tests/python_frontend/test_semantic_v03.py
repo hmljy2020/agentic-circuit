@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+
+
+FIXTURES = Path(__file__).resolve().parent / "fixtures" / "acpy_v03"
 
 
 class SemanticV03CoreTest(unittest.TestCase):
@@ -285,6 +289,94 @@ class SemanticV03IntermediateTest(unittest.TestCase):
         catalog = BlockCatalog(())
         with self.assertRaisesRegex(SemanticError, "outside the official catalog"):
             catalog.lookup("private.decode")
+
+
+class SemanticV03ArtifactTest(unittest.TestCase):
+    def _program(self):
+        from agentic_circuit._semantic_v03 import (
+            NamedType,
+            PortGroup,
+            QueueConstraint,
+            SemanticBuilder,
+            VarOperation,
+            VarRegion,
+            VarValue,
+            davincioo_core_catalog,
+        )
+
+        payload = NamedType("struct", "Token")
+        constraint = QueueConstraint(payload, 1, 1, 1, "core")
+        builder = SemanticBuilder("minimal", "minimal")
+        source_queue = builder.add_queue(constraint)
+        result_queue = builder.add_queue(constraint)
+        region = VarRegion(
+            "vr0",
+            (VarValue("v0", payload),),
+            (VarOperation("vo0", "yield", ("v0",), ()),),
+            ("v0",),
+        )
+        builder.add_region(region)
+        catalog = davincioo_core_catalog()
+        builder.add_block(
+            "source",
+            "s0",
+            (),
+            (PortGroup("output", "produce", (source_queue,)),),
+            catalog=catalog,
+        )
+        builder.add_block(
+            "compute",
+            "s0",
+            (PortGroup("input", "consume", (source_queue,)),),
+            (PortGroup("output", "produce", (result_queue,)),),
+            regions=("vr0",),
+            catalog=catalog,
+        )
+        builder.add_block(
+            "observe",
+            "s0",
+            (PortGroup("input", "observe", (result_queue,)),),
+            (),
+            catalog=catalog,
+        )
+        return builder.freeze()
+
+    def test_core_catalog_is_the_frozen_thirteen_op_set(self) -> None:
+        from agentic_circuit._semantic_v03 import davincioo_core_catalog
+
+        self.assertEqual(
+            (
+                "compute",
+                "engine",
+                "fork",
+                "issue",
+                "merge",
+                "observe",
+                "pool",
+                "queue",
+                "reorder",
+                "route",
+                "sink",
+                "source",
+                "table",
+            ),
+            tuple(spec.opcode for spec in davincioo_core_catalog().specs),
+        )
+
+    def test_builder_matches_canonical_semantic_golden(self) -> None:
+        from agentic_circuit._semantic_v03 import SemanticArtifact
+
+        artifact = SemanticArtifact.from_program(self._program())
+        self.assertEqual(
+            (FIXTURES / "minimal.semantic.json").read_bytes().rstrip(b"\n"),
+            artifact.data,
+        )
+        self.assertTrue(artifact.sha256.startswith("sha256:"))
+
+    def test_equivalent_builders_are_byte_identical(self) -> None:
+        self.assertEqual(
+            self._program().canonical_bytes(), self._program().canonical_bytes()
+        )
 
 
 if __name__ == "__main__":

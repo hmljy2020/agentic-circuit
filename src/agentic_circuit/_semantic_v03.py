@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal, TypeAlias
 
-from ._canonical_json import JsonValue, canonical_json_bytes
+from ._canonical_json import JsonValue, canonical_json_bytes, sha256_bytes
 from ._diagnostics import SourceSpan
 
 
@@ -765,6 +765,147 @@ class BlockCatalog:
         )
 
 
+def davincioo_core_catalog() -> BlockCatalog:
+    """Return the frozen 13-op v0.3 semantic catalog.
+
+    Static parameter details are refined by the versioned BlockSpec source once
+    the shared B6 contract lands.  Port group names, effects and minimum arity
+    are already part of the frozen frontend contract.
+    """
+
+    consume_one = lambda name: PortSpec(name, "consume", "fixed", 1)
+    observe_one = lambda name: PortSpec(name, "observe", "fixed", 1)
+    produce_one = lambda name: PortSpec(name, "produce", "fixed", 1)
+    consume_many = lambda name, minimum=1: PortSpec(
+        name, "consume", "variadic", minimum
+    )
+    produce_many = lambda name, minimum=1: PortSpec(
+        name, "produce", "variadic", minimum
+    )
+    same = lambda *groups: (PayloadRelation(tuple(groups)),)
+
+    specs = (
+        BlockSpec(
+            "compute",
+            (consume_one("input"),),
+            (produce_one("output"),),
+            (),
+            (),
+            False,
+        ),
+        BlockSpec(
+            "engine",
+            (consume_one("input"),),
+            (produce_one("completed"),),
+            (),
+            same("input", "completed"),
+            True,
+        ),
+        BlockSpec(
+            "fork",
+            (consume_one("input"),),
+            (produce_many("outputs"),),
+            (),
+            same("input", "outputs"),
+            False,
+        ),
+        BlockSpec(
+            "issue",
+            (
+                consume_many("enqueue"),
+                consume_many("wakeup"),
+                consume_many("recheck_response"),
+            ),
+            (produce_many("issued"), produce_many("recheck_request")),
+            (),
+            same("enqueue", "issued"),
+            True,
+        ),
+        BlockSpec(
+            "merge",
+            (consume_many("inputs"),),
+            (produce_one("output"),),
+            (),
+            same("inputs", "output"),
+            False,
+        ),
+        BlockSpec(
+            "observe",
+            (observe_one("input"),),
+            (),
+            (),
+            (),
+            False,
+            "observation",
+        ),
+        BlockSpec(
+            "pool",
+            (consume_many("acquire"), consume_many("release")),
+            (produce_many("acquired"),),
+            (),
+            same("acquire", "acquired"),
+            True,
+        ),
+        BlockSpec(
+            "queue",
+            (consume_one("input"),),
+            (produce_one("output"),),
+            (),
+            same("input", "output"),
+            True,
+        ),
+        BlockSpec(
+            "reorder",
+            (consume_one("enqueue"), consume_one("completed")),
+            (produce_one("admitted"), produce_one("retired")),
+            (),
+            same("enqueue", "completed", "admitted", "retired"),
+            True,
+        ),
+        BlockSpec(
+            "route",
+            (consume_one("input"),),
+            (produce_many("outputs"),),
+            (),
+            same("input", "outputs"),
+            False,
+        ),
+        BlockSpec(
+            "sink",
+            (consume_one("input"),),
+            (),
+            (),
+            (),
+            True,
+        ),
+        BlockSpec(
+            "source",
+            (),
+            (produce_one("output"),),
+            (),
+            (),
+            True,
+        ),
+        BlockSpec(
+            "table",
+            (
+                consume_many("access", 0),
+                consume_many("update", 0),
+                consume_many("query", 0),
+            ),
+            (
+                produce_many("accessed", 0),
+                produce_many("updated", 0),
+                produce_many("response", 0),
+            ),
+            (),
+            (),
+            True,
+        ),
+    )
+    return BlockCatalog(specs)
+
+
 @dataclass(frozen=True, slots=True)
 class SemanticProgram:
     system: str
@@ -879,6 +1020,155 @@ class SemanticProgram:
 
     def canonical_bytes(self) -> bytes:
         return canonical_json_bytes(self.to_json())
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticArtifact:
+    data: bytes
+    sha256: str
+
+    @staticmethod
+    def from_program(program: SemanticProgram) -> SemanticArtifact:
+        program.verify(require_frozen_queues=True)
+        data = program.canonical_bytes()
+        return SemanticArtifact(data, sha256_bytes(data))
+
+
+@dataclass(slots=True)
+class _ScopeDraft:
+    id: str
+    name: str
+    parent: str | None
+    blocks: list[str]
+    children: list[str]
+    inputs: list[str]
+    outputs: list[str]
+    source: SourceSpan | None
+
+
+class SemanticBuilder:
+    """Source-ordered allocator for deterministic ACPy v0.3 graphs."""
+
+    def __init__(self, system: str, root_name: str, source: SourceSpan | None = None):
+        if not system or not root_name:
+            raise SemanticError(
+                "ACPY03-PROGRAM-001", "builder requires system and root name"
+            )
+        self._system = system
+        self._declarations: list[PayloadDeclaration] = []
+        self._queues: list[QueueValue] = []
+        self._blocks: list[BlockInstance] = []
+        self._regions: list[VarRegion] = []
+        self._scopes: list[_ScopeDraft] = [
+            _ScopeDraft("s0", root_name, None, [], [], [], [], source)
+        ]
+
+    @property
+    def root_scope(self) -> str:
+        return "s0"
+
+    def add_declaration(self, declaration: PayloadDeclaration) -> None:
+        self._declarations.append(declaration)
+
+    def add_queue(
+        self, constraint: QueueConstraint, source: SourceSpan | None = None
+    ) -> str:
+        identity = f"q{len(self._queues)}"
+        self._queues.append(QueueValue(identity, constraint, source))
+        return identity
+
+    def add_scope(
+        self,
+        name: str,
+        parent: str,
+        source: SourceSpan | None = None,
+    ) -> str:
+        parent_scope = self._scope(parent)
+        identity = f"s{len(self._scopes)}"
+        self._scopes.append(
+            _ScopeDraft(identity, name, parent, [], [], [], [], source)
+        )
+        parent_scope.children.append(identity)
+        return identity
+
+    def set_scope_io(
+        self, scope: str, inputs: tuple[str, ...], outputs: tuple[str, ...]
+    ) -> None:
+        draft = self._scope(scope)
+        draft.inputs[:] = inputs
+        draft.outputs[:] = outputs
+
+    def add_region(self, region: VarRegion) -> str:
+        identity = f"vr{len(self._regions)}"
+        if region.id != identity:
+            raise SemanticError(
+                "ACPY03-VAR-001", "Var region ids must be dense and ordered"
+            )
+        region.verify()
+        self._regions.append(region)
+        return identity
+
+    def add_block(
+        self,
+        opcode: str,
+        scope: str,
+        inputs: tuple[PortGroup, ...],
+        results: tuple[PortGroup, ...],
+        *,
+        regions: tuple[str, ...] = (),
+        parameters: tuple[SemanticParameter, ...] = (),
+        source: SourceSpan | None = None,
+        catalog: BlockCatalog | None = None,
+    ) -> str:
+        draft = self._scope(scope)
+        identity = f"b{len(self._blocks)}"
+        block = BlockInstance(
+            identity,
+            opcode,
+            scope,
+            inputs,
+            results,
+            regions,
+            parameters,
+            source,
+        )
+        if catalog is not None:
+            catalog.lookup(opcode).verify_instance(block, tuple(self._queues))
+        self._blocks.append(block)
+        draft.blocks.append(identity)
+        return identity
+
+    def freeze(self) -> SemanticProgram:
+        scopes = tuple(
+            Scope(
+                draft.id,
+                draft.name,
+                draft.parent,
+                tuple(draft.blocks),
+                tuple(draft.children),
+                tuple(draft.inputs),
+                tuple(draft.outputs),
+                draft.source,
+            )
+            for draft in self._scopes
+        )
+        program = SemanticProgram(
+            self._system,
+            self.root_scope,
+            tuple(self._declarations),
+            tuple(self._queues),
+            tuple(self._blocks),
+            scopes,
+            tuple(self._regions),
+        )
+        program.verify()
+        return program
+
+    def _scope(self, identity: str) -> _ScopeDraft:
+        for scope in self._scopes:
+            if scope.id == identity:
+                return scope
+        raise SemanticError("ACPY03-SCOPE-002", "scope does not resolve")
 
 
 def _require_dense_ids(prefix: str, values: tuple[str, ...]) -> None:
