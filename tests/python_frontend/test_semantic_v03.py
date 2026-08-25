@@ -181,5 +181,111 @@ class SemanticV03CoreTest(unittest.TestCase):
         self.assertEqual("oldest", policy.to_json()["kind"])
 
 
+class SemanticV03IntermediateTest(unittest.TestCase):
+    def test_var_region_is_closed_and_dominance_checked(self) -> None:
+        from agentic_circuit._semantic_v03 import (
+            NamedType,
+            SemanticError,
+            VarOperation,
+            VarRegion,
+            VarValue,
+        )
+
+        payload = NamedType("struct", "PTOInst")
+        valid = VarRegion(
+            "vr0",
+            (VarValue("v0", payload),),
+            (
+                VarOperation("vo0", "update", ("v0",), (VarValue("v1", payload),)),
+                VarOperation("vo1", "yield", ("v1",), ()),
+            ),
+            ("v1",),
+        )
+        valid.verify()
+
+        invalid = VarRegion(
+            "vr0",
+            (VarValue("v0", payload),),
+            (
+                VarOperation("vo0", "update", ("v2",), (VarValue("v1", payload),)),
+                VarOperation("vo1", "yield", ("v1",), ()),
+            ),
+            ("v1",),
+        )
+        with self.assertRaisesRegex(SemanticError, "does not dominate"):
+            invalid.verify()
+
+    def test_deferred_edge_is_exactly_once_and_elaboration_only(self) -> None:
+        from agentic_circuit._semantic_v03 import DeferredEdge, NamedType, SemanticError
+
+        edge = DeferredEdge("d0", "q0", NamedType("struct", "PTOInst"))
+        with self.assertRaisesRegex(SemanticError, "unbound"):
+            edge.require_bound()
+
+        bound = edge.bind("q1")
+        self.assertEqual("q1", bound.require_bound())
+        with self.assertRaisesRegex(SemanticError, "exactly once"):
+            bound.bind("q2")
+
+    def test_block_spec_checks_named_groups_arity_parameters_and_payload(self) -> None:
+        from agentic_circuit._semantic_v03 import (
+            BlockInstance,
+            BlockSpec,
+            NamedType,
+            ParameterSpec,
+            PayloadRelation,
+            PortGroup,
+            PortSpec,
+            QueueConstraint,
+            QueueValue,
+            SemanticError,
+            SemanticParameter,
+        )
+
+        payload = NamedType("struct", "PTOInst")
+        queues = tuple(
+            QueueValue(
+                f"q{index}",
+                QueueConstraint(payload, 1, 1, 1, "core"),
+            )
+            for index in range(2)
+        )
+        spec = BlockSpec(
+            "queue",
+            (PortSpec("input", "consume", "fixed", 1),),
+            (PortSpec("output", "produce", "fixed", 1),),
+            (ParameterSpec("enabled", "bool"),),
+            (PayloadRelation(("input", "output")),),
+            True,
+        )
+        valid = BlockInstance(
+            "b0",
+            "queue",
+            "s0",
+            (PortGroup("input", "consume", ("q0",)),),
+            (PortGroup("output", "produce", ("q1",)),),
+            parameters=(SemanticParameter("enabled", True),),
+        )
+        spec.verify_instance(valid, queues)
+
+        wrong_group = BlockInstance(
+            "b0",
+            "queue",
+            "s0",
+            (PortGroup("wrong", "consume", ("q0",)),),
+            (PortGroup("output", "produce", ("q1",)),),
+            parameters=(SemanticParameter("enabled", True),),
+        )
+        with self.assertRaisesRegex(SemanticError, "port groups"):
+            spec.verify_instance(wrong_group, queues)
+
+    def test_catalog_rejects_private_opcode(self) -> None:
+        from agentic_circuit._semantic_v03 import BlockCatalog, SemanticError
+
+        catalog = BlockCatalog(())
+        with self.assertRaisesRegex(SemanticError, "outside the official catalog"):
+            catalog.lookup("private.decode")
+
+
 if __name__ == "__main__":
     unittest.main()
