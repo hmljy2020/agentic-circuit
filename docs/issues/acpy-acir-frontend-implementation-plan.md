@@ -167,16 +167,16 @@ def minimal(cfg: ac.const[Config]) -> None:
 
 ### 任务
 
-- [ ] `P3.1` 支持 `@ac.config`、`@ac.struct`、`@ac.system` capture。
-- [ ] `P3.2` 支持 closed `ac.const` binding。
-- [ ] `P3.3` 支持 qualified `ac.source/ac.compute/ac.observe` 调用。
-- [ ] `P3.4` 支持最小 Queue payload/type propagation。
-- [ ] `P3.5` 捕获 pure compute helper/lambda。
-- [ ] `P3.6` lower compute body 为 canonical Var region。
+- [x] `P3.1` 支持 `@ac.config`、`@ac.struct`、`@ac.system` capture。
+- [x] `P3.2` 支持 closed `ac.const` binding。
+- [x] `P3.3` 支持 qualified `ac.source/ac.compute/ac.observe` 调用。
+- [x] `P3.4` 支持最小 Queue payload/type propagation。
+- [x] `P3.5` 捕获 pure compute helper/lambda。
+- [x] `P3.6` lower compute body 为 canonical Var region。
 - [ ] `P3.7` 发射 source、compute、observe frozen ACIR。
-- [ ] `P3.8` 增加合法与非法 ACPy fixtures。
+- [x] `P3.8` 增加合法与非法 ACPy fixtures。
 - [ ] `P3.9` 增加 semantic、ACIR golden 和 native round-trip 测试。
-- [ ] `P3.10` 增加 repeated-root determinism 测试。
+- [x] `P3.10` 增加 repeated-root determinism 测试。
 
 ### 完成条件
 
@@ -402,7 +402,8 @@ DavinciOO ACPy
 ```text
 当前阶段：P3 最小无状态纵向链路
 已完成：P0 建立基线；P1 ACIR 能力缺口审计；P2 ACPy v0.3 语义中间层
-当前 contract blocker：P3 native gate 需要 B1+B2+B3；A 类 capture/elaboration 可先实施
+当前已完成：P3.1–P3.6、P3.8、P3.10；最小语义链路和 semantic golden 已通过
+当前 contract blocker：P3.7/P3.9 native gate 需要获批的 B1+B2+B3 shared contract patch
 当前 downstream blocker：CodeGen/Phase5 E2E 的生成 C++ 链接找不到 `-lLLVM`；不影响 P3 前端实施
 ```
 
