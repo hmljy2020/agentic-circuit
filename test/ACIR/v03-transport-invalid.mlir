@@ -11,8 +11,8 @@
 //--- fork-non-queue.mlir
 builtin.module attributes {ac.contract_epoch = "0.3"} {
   ac.module @m() parameters {} graph {
-    %source = ac.source "input" : !ac.queue<i1, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>
-    %bad = ac.fork %source : (!ac.queue<i1, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>) -> (i32)
+    %source = ac.v03.source "input" : !ac.queue_v03<i1, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>
+    %bad = ac.v03.fork %source : (!ac.queue_v03<i1, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>) -> (i32)
     ac.return
   }
 }
@@ -21,8 +21,8 @@ builtin.module attributes {ac.contract_epoch = "0.3"} {
 //--- merge-non-queue.mlir
 builtin.module attributes {ac.contract_epoch = "0.3"} {
   ac.module @m() parameters {} graph {
-    %source = ac.source "input" : !ac.queue<i1, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>
-    %bad = ac.merge (%source) policy (#ac.policy<kind = round_robin>) : (!ac.queue<i1, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>) -> i32
+    %source = ac.v03.source "input" : !ac.queue_v03<i1, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>
+    %bad = ac.v03.merge (%source) policy (#ac.policy<kind = round_robin>) : (!ac.queue_v03<i1, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>) -> i32
     ac.return
   }
 }
@@ -36,8 +36,8 @@ builtin.module attributes {ac.contract_epoch = "0.3"} {
     !ac.struct<@types::@Packet> = {abi_alignment = 1 : i64, endianness = "little", preferred_alignment = 1 : i64, size = 1 : i64}
   >}
   ac.module @m() parameters {} graph {
-    %source = ac.source "input" : !ac.queue<!ac.struct<@types::@Packet>, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>
-    %bad = ac.route %source by (#ac.field<root = !ac.struct<@types::@Packet>, path = ["kind"], leaf = i1>) : (!ac.queue<!ac.struct<@types::@Packet>, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>) -> (!ac.queue<!ac.struct<@types::@Packet>, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>)
+    %source = ac.v03.source "input" : !ac.queue_v03<!ac.struct<@types::@Packet>, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>
+    %bad = ac.v03.route %source by (#ac.field<root = !ac.struct<@types::@Packet>, path = ["kind"], leaf = i1>) : (!ac.queue_v03<!ac.struct<@types::@Packet>, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>) -> (!ac.queue_v03<!ac.struct<@types::@Packet>, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>)
     ac.return
   }
 }
@@ -46,8 +46,8 @@ builtin.module attributes {ac.contract_epoch = "0.3"} {
 //--- queue-payload.mlir
 builtin.module attributes {ac.contract_epoch = "0.3"} {
   ac.module @m() parameters {} graph {
-    %source = ac.source "input" : !ac.queue<i1, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>
-    %bad = ac.queue %source : !ac.queue<i1, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>> -> !ac.queue<i32, #ac.queue_contract<depth = 2, latency = 1, rate = 1, domain = @core, ordering = fifo>>
+    %source = ac.v03.source "input" : !ac.queue_v03<i1, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>
+    %bad = ac.queue %source : !ac.queue_v03<i1, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>> -> !ac.queue_v03<i32, #ac.queue_contract<depth = 2, latency = 1, rate = 1, domain = @core, ordering = fifo>>
     ac.return
   }
 }
@@ -55,9 +55,9 @@ builtin.module attributes {ac.contract_epoch = "0.3"} {
 
 //--- queue-epoch.mlir
 builtin.module attributes {ac.contract_epoch = "0.1"} {
-  ac.module @m(!ac.queue<i1, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>) parameters {} graph {
-  ^bb0(%source : !ac.queue<i1, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>):
-    %bad = ac.queue %source : !ac.queue<i1, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>> -> !ac.queue<i1, #ac.queue_contract<depth = 2, latency = 1, rate = 1, domain = @core, ordering = fifo>>
+  ac.module @m(!ac.queue_v03<i1, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>) parameters {} graph {
+  ^bb0(%source : !ac.queue_v03<i1, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>):
+    %bad = ac.queue %source : !ac.queue_v03<i1, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>> -> !ac.queue_v03<i1, #ac.queue_contract<depth = 2, latency = 1, rate = 1, domain = @core, ordering = fifo>>
     ac.return
   }
 }
@@ -67,8 +67,8 @@ builtin.module attributes {ac.contract_epoch = "0.1"} {
 // A fork broadcasts one payload identity; changing a branch payload is not a cast.
 builtin.module attributes {ac.contract_epoch = "0.3"} {
   ac.module @m() parameters {} graph {
-    %source = ac.source "input" : !ac.queue<i1, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>
-    %bad = ac.fork %source : (!ac.queue<i1, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>) -> (!ac.queue<i32, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>)
+    %source = ac.v03.source "input" : !ac.queue_v03<i1, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>
+    %bad = ac.v03.fork %source : (!ac.queue_v03<i1, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>) -> (!ac.queue_v03<i32, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>)
     ac.return
   }
 }
@@ -78,9 +78,9 @@ builtin.module attributes {ac.contract_epoch = "0.3"} {
 // A variadic merge arbitrates equivalent tokens; heterogeneous payloads are illegal.
 builtin.module attributes {ac.contract_epoch = "0.3"} {
   ac.module @m() parameters {} graph {
-    %left = ac.source "left" : !ac.queue<i1, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>
-    %right = ac.source "right" : !ac.queue<i32, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>
-    %bad = ac.merge (%left, %right) policy (#ac.policy<kind = round_robin>) : (!ac.queue<i1, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>, !ac.queue<i32, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>) -> !ac.queue<i1, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>
+    %left = ac.v03.source "left" : !ac.queue_v03<i1, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>
+    %right = ac.v03.source "right" : !ac.queue_v03<i32, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>
+    %bad = ac.v03.merge (%left, %right) policy (#ac.policy<kind = round_robin>) : (!ac.queue_v03<i1, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>, !ac.queue_v03<i32, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>) -> !ac.queue_v03<i1, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>
     ac.return
   }
 }
@@ -95,8 +95,8 @@ builtin.module attributes {ac.contract_epoch = "0.3"} {
     !ac.struct<@types::@Packet> = {abi_alignment = 1 : i64, endianness = "little", preferred_alignment = 1 : i64, size = 1 : i64}
   >}
   ac.module @m() parameters {} graph {
-    %source = ac.source "input" : !ac.queue<!ac.struct<@types::@Packet>, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>
-    %bad:2 = ac.route %source by (#ac.field<root = !ac.struct<@types::@Packet>, path = ["missing"], leaf = i1>) : (!ac.queue<!ac.struct<@types::@Packet>, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>) -> (!ac.queue<!ac.struct<@types::@Packet>, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>, !ac.queue<!ac.struct<@types::@Packet>, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>)
+    %source = ac.v03.source "input" : !ac.queue_v03<!ac.struct<@types::@Packet>, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>
+    %bad:2 = ac.v03.route %source by (#ac.field<root = !ac.struct<@types::@Packet>, path = ["missing"], leaf = i1>) : (!ac.queue_v03<!ac.struct<@types::@Packet>, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>) -> (!ac.queue_v03<!ac.struct<@types::@Packet>, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>, !ac.queue_v03<!ac.struct<@types::@Packet>, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>)
     ac.return
   }
 }

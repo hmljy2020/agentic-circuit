@@ -1158,8 +1158,8 @@ namespace {
 
 LogicalResult requireV03(Operation *operation) {
   auto file = operation->getParentOfType<mlir::ModuleOp>();
-  auto epoch =
-      file ? file->getAttrOfType<StringAttr>("ac.contract_epoch") : StringAttr();
+  auto epoch = file ? file->getAttrOfType<StringAttr>("ac.contract_epoch")
+                    : StringAttr();
   if (epoch && epoch.getValue() == "0.3")
     return success();
   return operation->emitOpError(
@@ -1189,8 +1189,8 @@ LogicalResult verifySameVarElement(Operation *operation, ValueRange values,
   for (Value value : values)
     if (varElement(value) != expected)
       return operation->emitOpError()
-             << context << " expects !ac.var<" << expected
-             << "> but received " << value.getType();
+             << context << " expects !ac.var<" << expected << "> but received "
+             << value.getType();
   return success();
 }
 
@@ -1300,8 +1300,7 @@ LogicalResult VarGenericBinaryOp::verify() {
   if (!llvm::is_contained(
           ArrayRef<StringRef>{"add", "sub", "mul", "and", "or", "xor"},
           getKind()))
-    return emitOpError() << "unsupported binary operator '" << getKind()
-                         << "'";
+    return emitOpError() << "unsupported binary operator '" << getKind() << "'";
   Type expected = varElement(getResult());
   return verifySameVarElement(*this, ValueRange{getLhs(), getRhs()}, expected,
                               "var.binary operand");
@@ -1330,9 +1329,9 @@ LogicalResult VarSelectOp::verify() {
   if (!conditionType || conditionType.getWidth() != 1)
     return emitOpError("var.select condition must be !ac.var<i1>");
   Type resultType = varElement(getResult());
-  return verifySameVarElement(
-      *this, ValueRange{getTrueValue(), getFalseValue()}, resultType,
-      "var.select branch");
+  return verifySameVarElement(*this,
+                              ValueRange{getTrueValue(), getFalseValue()},
+                              resultType, "var.select branch");
 }
 
 LogicalResult VarCastOp::verify() {
@@ -1513,9 +1512,9 @@ LogicalResult RouteV03Op::verify() {
     return emitOpError("direct-index selector must be a bounded integer field");
   uint64_t cardinality = uint64_t{1} << integer.getWidth();
   if (getOutputs().size() != cardinality)
-    return emitOpError()
-           << "direct-index route requires " << cardinality
-           << " outputs for selector width " << integer.getWidth();
+    return emitOpError() << "direct-index route requires " << cardinality
+                         << " outputs for selector width "
+                         << integer.getWidth();
   return verifyQueuePayloads(*this, payload, getOutputs().getTypes(),
                              "route output");
 }
@@ -1543,6 +1542,142 @@ LogicalResult MergeV03Op::verify() {
   Type payload = output.getElementType();
   return verifyQueuePayloads(*this, payload, getInputs().getTypes(),
                              "merge input");
+}
+
+LogicalResult IssueV03Op::verify() {
+  if (failed(requireV03(*this)) || failed(requireDirectGraphChild(*this)))
+    return failure();
+  if (getEnqueue().empty())
+    return emitOpError("requires at least one enqueue/issued engine lane");
+  if (getEnqueue().size() != getIssued().size())
+    return emitOpError("enqueue and issued lane counts must match");
+  if (getRecheckResponse().size() != getRecheckRequest().size())
+    return emitOpError(
+        "recheck_response and recheck_request lane counts must match");
+  if (getEntries() <= 0 || getWidth() <= 0 || getWidth() > getEntries() ||
+      static_cast<uint64_t>(getWidth()) > getIssued().size())
+    return emitOpError(
+        "entries/width must be positive and width cannot exceed entries or "
+        "engine lane count");
+  if (!llvm::is_contained(
+          ArrayRef<StringRef>{"oldest_ready", "round_robin", "priority"},
+          getPolicy()))
+    return emitOpError("unsupported issue policy");
+  auto enqueue = cast<QueueValueType>(getEnqueue().front().getType());
+  if (failed(verifyQueuePayloads(*this, enqueue.getElementType(),
+                                 getEnqueue().getTypes(), "issue enqueue")) ||
+      failed(verifyQueuePayloads(*this, enqueue.getElementType(),
+                                 getIssued().getTypes(), "issue issued")))
+    return failure();
+  bool hasDependencyKey = static_cast<bool>(getDependencyKeyAttr());
+  bool hasDependencyReady = static_cast<bool>(getDependencyReadyAttr());
+  bool hasWakeupKey = static_cast<bool>(getWakeupKeyAttr());
+  if ((hasDependencyKey || hasDependencyReady || hasWakeupKey) &&
+      !(hasDependencyKey && hasDependencyReady && hasWakeupKey))
+    return emitOpError("dependency_key, dependency_ready, and wakeup_key "
+                       "must be present together");
+  if (!getWakeup().empty() && !hasDependencyKey)
+    return emitOpError("wakeup lanes require dependency field descriptors");
+  if (hasDependencyKey) {
+    FieldAttr dependencyKey = getDependencyKeyAttr();
+    FieldAttr dependencyReady = getDependencyReadyAttr();
+    FieldAttr wakeupKey = getWakeupKeyAttr();
+    Type payload = enqueue.getElementType();
+    if (dependencyKey.getRoot() != payload ||
+        dependencyReady.getRoot() != payload)
+      return emitOpError(
+          "dependency descriptors must root at the enqueue payload");
+    FailureOr<Type> dependencyKeyLeaf = resolveFieldLeaf(*this, dependencyKey);
+    FailureOr<Type> dependencyReadyLeaf =
+        resolveFieldLeaf(*this, dependencyReady);
+    FailureOr<Type> wakeupKeyLeaf = resolveFieldLeaf(*this, wakeupKey);
+    if (failed(dependencyKeyLeaf) || failed(dependencyReadyLeaf) ||
+        failed(wakeupKeyLeaf) ||
+        *dependencyKeyLeaf != dependencyKey.getLeaf() ||
+        *dependencyReadyLeaf != dependencyReady.getLeaf() ||
+        *wakeupKeyLeaf != wakeupKey.getLeaf())
+      return emitOpError("dependency field paths must resolve exactly");
+    if (!dependencyReady.getLeaf().isInteger(1))
+      return emitOpError("dependency_ready must select an i1 field");
+    if (dependencyKey.getLeaf() != wakeupKey.getLeaf())
+      return emitOpError("dependency_key and wakeup_key leaf types must match");
+    for (Value wakeup : getWakeup())
+      if (cast<QueueValueType>(wakeup.getType()).getElementType() !=
+          wakeupKey.getRoot())
+        return emitOpError("wakeup_key root must match every wakeup payload");
+  }
+  if (!getRecheckResponse().empty()) {
+    auto response =
+        cast<QueueValueType>(getRecheckResponse().front().getType());
+    if (failed(verifyQueuePayloads(*this, response.getElementType(),
+                                   getRecheckResponse().getTypes(),
+                                   "issue recheck response")) ||
+        failed(verifyQueuePayloads(*this, response.getElementType(),
+                                   getRecheckRequest().getTypes(),
+                                   "issue recheck request")))
+      return failure();
+  }
+  return success();
+}
+
+LogicalResult EngineV03Op::verify() {
+  if (failed(requireV03(*this)) || failed(requireDirectGraphChild(*this)))
+    return failure();
+  if (getIssued().empty() || getIssued().size() != getCompleted().size())
+    return emitOpError(
+        "requires equal non-empty per-lane issued/completed groups");
+  if (getInflight() <= 0 || getInitiationInterval() <= 0 || getKind().empty())
+    return emitOpError(
+        "inflight, initiation_interval, and kind must be positive/non-empty");
+  FieldAttr latency = getLatencyBy();
+  auto firstIssued = cast<QueueValueType>(getIssued().front().getType());
+  if (latency.getRoot() != firstIssued.getElementType())
+    return emitOpError("latency_by root must match issued payload");
+  FailureOr<Type> latencyLeaf = resolveFieldLeaf(*this, latency);
+  if (failed(latencyLeaf) || *latencyLeaf != latency.getLeaf() ||
+      !isa<IntegerType>(latency.getLeaf()))
+    return emitOpError(
+        "latency_by must resolve exactly to an integer scalar field");
+  for (auto [issued, completed] : llvm::zip(getIssued(), getCompleted())) {
+    auto issuedType = cast<QueueValueType>(issued.getType());
+    auto completedType = cast<QueueValueType>(completed.getType());
+    if (issuedType.getElementType() != completedType.getElementType())
+      return emitOpError(
+          "each completed lane must preserve its issued payload type");
+  }
+  return success();
+}
+
+LogicalResult ReorderV03Op::verify() {
+  if (failed(requireV03(*this)) || failed(requireDirectGraphChild(*this)))
+    return failure();
+  if (getCompleted().empty())
+    return emitOpError("requires at least one completion lane");
+  if (getEntries() <= 0 || getWidth() <= 0 || getWidth() > getEntries())
+    return emitOpError(
+        "entries/width must be positive and width cannot exceed entries");
+  if (getPolicy() != "in_order")
+    return emitOpError("policy must be 'in_order'");
+  auto retired = cast<QueueValueType>(getRetired().getType());
+  Type payload = retired.getElementType();
+  if (failed(verifyQueuePayloads(*this, payload, getCompleted().getTypes(),
+                                 "reorder completion")))
+    return emitOpError("completion and retired payloads must match");
+  if (retired.getContract().getRate() != getWidth())
+    return emitOpError("retired Queue rate must equal retirement width");
+  FieldAttr identity = getBy();
+  if (identity.getRoot() != payload)
+    return emitOpError("identity field root must match Queue payload");
+  FailureOr<Type> leaf = resolveFieldLeaf(*this, identity);
+  if (failed(leaf) || *leaf != identity.getLeaf())
+    return emitOpError("identity field path/leaf does not resolve exactly");
+  return success();
+}
+
+LogicalResult SinkV03Op::verify() {
+  if (failed(requireV03(*this)) || failed(requireDirectGraphChild(*this)))
+    return failure();
+  return success();
 }
 
 LogicalResult PacketSerializeOp::verify() {
@@ -2221,7 +2356,7 @@ bool isStructuralGraphChild(Operation &child) {
   return isa<InstanceOp, ArrayOp, InstancesOp, ViewOp, QueueOp, EventQueueOp,
              ResourceOp, AddressSpaceOp, AddressMapOp, TimeDomainOp, ProcessOp,
              SourceV03Op, ComputeOp, ObserveV03Op, RouteV03Op, ForkV03Op,
-             MergeV03Op,
+             MergeV03Op, IssueV03Op, EngineV03Op, ReorderV03Op, SinkV03Op,
              RequireOp, EnsureOp, StatOp, ReturnOp>(child) ||
          child.getName().getStringRef() == "arith.constant";
 }
@@ -2553,7 +2688,8 @@ LogicalResult ModuleOp::verify() {
       path = instances.getPathAttr();
     } else if (auto view = dyn_cast<ViewOp>(child)) {
       localName = view.getSymNameAttr();
-    } else if (auto queue = dyn_cast<QueueOp>(child); queue && !queue.getInput()) {
+    } else if (auto queue = dyn_cast<QueueOp>(child);
+               queue && !queue.getInput()) {
       localName = queue.getSymNameAttr();
       stableId = queue.getStableIdAttr();
       path = queue.getPathAttr();
@@ -2606,13 +2742,14 @@ LogicalResult ModuleOp::verify() {
       return failure();
   }
   for (Operation &child : entry) {
-    LogicalResult local = TypeSwitch<Operation *, LogicalResult>(&child)
-                              .Case<QueueOp, EventQueueOp, ResourceOp,
-                                    AddressSpaceOp, AddressMapOp, TimeDomainOp,
-                                    SourceV03Op, ComputeOp, ObserveV03Op,
-                                    RouteV03Op, ForkV03Op, MergeV03Op>(
-                                  [](auto op) { return op.verify(); })
-                              .Default([](Operation *) { return success(); });
+    LogicalResult local =
+        TypeSwitch<Operation *, LogicalResult>(&child)
+            .Case<QueueOp, EventQueueOp, ResourceOp, AddressSpaceOp,
+                  AddressMapOp, TimeDomainOp, SourceV03Op, ComputeOp,
+                  ObserveV03Op, RouteV03Op, ForkV03Op, MergeV03Op, IssueV03Op,
+                  EngineV03Op, ReorderV03Op, SinkV03Op>(
+                [](auto op) { return op.verify(); })
+            .Default([](Operation *) { return success(); });
     if (failed(local))
       return failure();
   }

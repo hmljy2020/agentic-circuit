@@ -8,6 +8,7 @@ passing frontend result.
 from __future__ import annotations
 
 import dataclasses
+import re
 import shutil
 import subprocess
 import tempfile
@@ -74,6 +75,20 @@ class AcirV03LoweringTest(unittest.TestCase):
             check=False,
         )
         self.assertEqual(0, second.returncode, second.stderr)
+
+    def _verify_native_failure(self, text: str, message: str) -> None:
+        verifier = acir_opt()
+        if verifier is None:
+            self.skipTest("acir-opt is not built")
+        result = subprocess.run(
+            (str(verifier), "-"),
+            input=text,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn(message, result.stderr)
 
     def test_minimal_matches_golden_hash_source_map_and_native_verifier(self) -> None:
         """The smallest vertical slice is stable, attributable, and native-valid."""
@@ -154,6 +169,64 @@ class AcirV03LoweringTest(unittest.TestCase):
                 golden = (FIXTURES / relative).with_suffix(".ac.mlir")
                 self.assertEqual(golden.read_text(encoding="utf-8"), artifact.text)
                 self._verify_native(artifact.text)
+
+    def test_davincioo_main_chain_emits_frozen_lane_contracts(self) -> None:
+        """The seven-block chain preserves lane segments and retirement rate."""
+        from agentic_circuit._lower_acir_v03 import lower_semantic_v03
+
+        result = self._capture("davincioo/core.py", "davincioo")
+        self.assertEqual((), result.diagnostics)
+        assert result.program is not None
+        artifact = lower_semantic_v03(result.program)
+
+        self.assertEqual(
+            "sha256:15653a033912a078ffc7358991b3301b358c83b4b81a541f1fb2d8de2ffc4f8b",
+            artifact.sha256,
+        )
+        self.assertIn("ac.v03.issue", artifact.text)
+        self.assertIn("entries 16 width 4", artifact.text)
+        self.assertIn("dependency_key = #ac.field", artifact.text)
+        self.assertIn("dependency_ready = #ac.field", artifact.text)
+        self.assertIn("wakeup_key = #ac.field", artifact.text)
+        self.assertIn("ac.v03.engine", artifact.text)
+        self.assertIn("latency_by (#ac.field", artifact.text)
+        self.assertIn("ac.v03.reorder", artifact.text)
+        self.assertIn("rate = 4", artifact.text)
+        self.assertIn("ac.v03.sink", artifact.text)
+        self.assertNotIn("deferred", artifact.text)
+        self._verify_native(artifact.text)
+
+        bad_width = artifact.text.replace(
+            "entries 16 width 4 policy", "entries 16 width 5 policy", 1
+        )
+        self._verify_native_failure(bad_width, "width cannot exceed")
+
+        missing_wakeup_contract = re.sub(
+            r" \{dependency_key = .*wakeup_key = .*\}",
+            "",
+            artifact.text,
+            count=1,
+        )
+        self._verify_native_failure(
+            missing_wakeup_contract,
+            "wakeup lanes require dependency field descriptors",
+        )
+
+        bad_ready_descriptor = artifact.text.replace(
+            'path = ["ready"], leaf = i1',
+            'path = ["sequence"], leaf = i16',
+            1,
+        )
+        self._verify_native_failure(
+            bad_ready_descriptor,
+            "dependency_ready must select an i1 field",
+        )
+
+        bad_retirement_rate = artifact.text.replace("rate = 4", "rate = 3")
+        self._verify_native_failure(
+            bad_retirement_rate,
+            "retired Queue rate must equal retirement width",
+        )
 
     def test_equivalent_workspace_roots_emit_identical_acir(self) -> None:
         """Absolute checkout paths must not leak into deterministic artifacts."""

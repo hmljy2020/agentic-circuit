@@ -51,7 +51,7 @@ class FeedbackV03FrontendTest(unittest.TestCase):
             lowered.text,
         )
         self.assertNotIn("deferred", lowered.text)
-        self.assertIn("ac.merge (%q1, %q0)", lowered.text)
+        self.assertIn("ac.v03.merge (%q1, %q0)", lowered.text)
 
     def test_unbound_double_bind_and_payload_conflict_are_rejected(self) -> None:
         """Deferred lifetime, identity, type, and positive-latency edges are closed."""

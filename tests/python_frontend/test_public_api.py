@@ -52,6 +52,9 @@ PUBLIC = {
     "route",
     "fork",
     "merge",
+    "issue",
+    "engine",
+    "reorder",
 }
 
 

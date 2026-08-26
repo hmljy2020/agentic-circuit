@@ -768,9 +768,9 @@ class BlockCatalog:
 def davincioo_core_catalog() -> BlockCatalog:
     """Return the frozen 13-op v0.3 semantic catalog.
 
-    Static parameter details are refined by the versioned BlockSpec source once
-    the shared B6 contract lands.  Port group names, effects and minimum arity
-    are already part of the frozen frontend contract.
+    The seven main-chain primitives carry their frozen v0.3 port and static
+    parameter contracts here. Remaining catalog entries reserve the same
+    versioned namespace for later frontend increments.
     """
 
     consume_one = lambda name: PortSpec(name, "consume", "fixed", 1)
@@ -795,10 +795,15 @@ def davincioo_core_catalog() -> BlockCatalog:
         ),
         BlockSpec(
             "engine",
-            (consume_one("input"),),
-            (produce_one("completed"),),
-            (),
-            same("input", "completed"),
+            (consume_many("issued"),),
+            (produce_many("completed"),),
+            (
+                ParameterSpec("inflight", "integer"),
+                ParameterSpec("initiation_interval", "integer"),
+                ParameterSpec("kind", "string"),
+                ParameterSpec("latency_by", "field"),
+            ),
+            same("issued", "completed"),
             True,
         ),
         BlockSpec(
@@ -813,12 +818,22 @@ def davincioo_core_catalog() -> BlockCatalog:
             "issue",
             (
                 consume_many("enqueue"),
-                consume_many("wakeup"),
-                consume_many("recheck_response"),
+                consume_many("wakeup", 0),
+                consume_many("recheck_response", 0),
             ),
-            (produce_many("issued"), produce_many("recheck_request")),
-            (),
-            same("enqueue", "issued"),
+            (produce_many("issued"), produce_many("recheck_request", 0)),
+            (
+                ParameterSpec("dependency_key", "field", False),
+                ParameterSpec("dependency_ready", "field", False),
+                ParameterSpec("entries", "integer"),
+                ParameterSpec("policy", "string"),
+                ParameterSpec("wakeup_key", "field", False),
+                ParameterSpec("width", "integer"),
+            ),
+            (
+                PayloadRelation(("enqueue", "issued")),
+                PayloadRelation(("recheck_response", "recheck_request")),
+            ),
             True,
         ),
         BlockSpec(
@@ -856,10 +871,15 @@ def davincioo_core_catalog() -> BlockCatalog:
         ),
         BlockSpec(
             "reorder",
-            (consume_one("enqueue"), consume_one("completed")),
-            (produce_one("admitted"), produce_one("retired")),
-            (),
-            same("enqueue", "completed", "admitted", "retired"),
+            (consume_many("completed"),),
+            (produce_one("retired"),),
+            (
+                ParameterSpec("by", "field"),
+                ParameterSpec("entries", "integer"),
+                ParameterSpec("policy", "string"),
+                ParameterSpec("width", "integer"),
+            ),
+            same("completed", "retired"),
             True,
         ),
         BlockSpec(

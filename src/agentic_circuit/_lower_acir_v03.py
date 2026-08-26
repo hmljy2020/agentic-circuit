@@ -95,7 +95,7 @@ def _queue_type(queue: QueueValue) -> str:
     contract = queue.constraint.freeze()
     domain = _symbol(contract.domain)
     return (
-        f"!ac.queue<{_payload_type(queue.constraint.payload)}, "
+        f"!ac.queue_v03<{_payload_type(queue.constraint.payload)}, "
         f"#ac.queue_contract<depth = {contract.depth}, "
         f"latency = {contract.latency}, rate = {contract.rate}, "
         f"domain = @{domain}, ordering = {contract.ordering}>>"
@@ -215,8 +215,8 @@ def _emit_var_operation(
         if len(operands) != 1 or not isinstance(field, str):
             raise _error("get requires one operand and a string field")
         return (
-            f"{result} = ac.var.get {operands[0]} [{_string(field)}] : "
-            f"({_var_type(operand_types[0])}) -> {_var_type(result_type)}"
+            f"{result} = ac.var.get {operands[0]} field {_string(field)} : "
+            f"{_var_type(operand_types[0])} -> {_var_type(result_type)}"
         )
 
     if operation.opcode == "binary":
@@ -314,6 +314,23 @@ def _block_parameter(block: BlockInstance, name: str) -> object:
     return parameters[name]
 
 
+def _block_parameters(block: BlockInstance, expected: set[str]) -> dict[str, object]:
+    parameters = {parameter.name: parameter.value for parameter in block.parameters}
+    if set(parameters) != expected:
+        raise _error(
+            f"{block.opcode} parameters must be {tuple(sorted(expected))}"
+        )
+    return parameters
+
+
+def _queue_operands(queues: tuple[str, ...]) -> str:
+    return ", ".join(f"%{queue}" for queue in queues)
+
+
+def _queue_types(queues: tuple[str, ...], queue_map: dict[str, QueueValue]) -> str:
+    return ", ".join(_queue_type(queue_map[queue]) for queue in queues)
+
+
 def _emit_block(
     block: BlockInstance,
     queue_map: dict[str, QueueValue],
@@ -326,7 +343,7 @@ def _emit_block(
             _group_queues(block, "result", "output", "produce"), "source output"
         )
         return [
-            f"    %{output} = ac.source {_string(block.id)} : "
+            f"    %{output} = ac.v03.source {_string(block.id)} : "
             f"{_queue_type(queue_map[output])}"
         ]
 
@@ -355,7 +372,7 @@ def _emit_block(
             _group_queues(block, "input", "input", "observe"), "observe input"
         )
         return [
-            f"    ac.observe %{input_queue} as {_string(block.id)} fields [] : "
+            f"    ac.v03.observe %{input_queue} as {_string(block.id)} fields [] : "
             f"{_queue_type(queue_map[input_queue])}"
         ]
 
@@ -387,7 +404,7 @@ def _emit_block(
         result_names = ", ".join(f"%{queue}" for queue in outputs)
         result_types = ", ".join(_queue_type(queue_map[queue]) for queue in outputs)
         return [
-            f"    {result_names} = ac.route %{input_queue} by "
+            f"    {result_names} = ac.v03.route %{input_queue} by "
             f"({_field_attribute(selector)}) : "
             f"({_queue_type(queue_map[input_queue])}) -> ({result_types})"
         ]
@@ -402,7 +419,7 @@ def _emit_block(
         result_names = ", ".join(f"%{queue}" for queue in outputs)
         result_types = ", ".join(_queue_type(queue_map[queue]) for queue in outputs)
         return [
-            f"    {result_names} = ac.fork %{input_queue} : "
+            f"    {result_names} = ac.v03.fork %{input_queue} : "
             f"({_queue_type(queue_map[input_queue])}) -> ({result_types})"
         ]
 
@@ -419,9 +436,149 @@ def _emit_block(
         operands = ", ".join(f"%{queue}" for queue in inputs)
         input_types = ", ".join(_queue_type(queue_map[queue]) for queue in inputs)
         return [
-            f"    %{output} = ac.merge ({operands}) policy "
+            f"    %{output} = ac.v03.merge ({operands}) policy "
             f"({_policy_attribute(policy)}) : ({input_types}) -> "
             f"{_queue_type(queue_map[output])}"
+        ]
+
+    if block.opcode == "issue":
+        if block.regions:
+            raise _error("issue cannot have Var regions")
+        enqueue = _group_queues(block, "input", "enqueue", "consume")
+        wakeup = _group_queues(block, "input", "wakeup", "consume")
+        recheck_response = _group_queues(
+            block, "input", "recheck_response", "consume"
+        )
+        issued = _group_queues(block, "result", "issued", "produce")
+        recheck_request = _group_queues(
+            block, "result", "recheck_request", "produce"
+        )
+        parameters = {
+            parameter.name: parameter.value for parameter in block.parameters
+        }
+        required_parameters = {"entries", "policy", "width"}
+        descriptor_parameters = {
+            "dependency_key",
+            "dependency_ready",
+            "wakeup_key",
+        }
+        if not required_parameters.issubset(parameters) or not set(
+            parameters
+        ).issubset(required_parameters | descriptor_parameters):
+            raise _error("issue parameters do not match its frozen contract")
+        present_descriptors = descriptor_parameters.intersection(parameters)
+        if present_descriptors and present_descriptors != descriptor_parameters:
+            raise _error("issue dependency descriptors must be present together")
+        entries = parameters["entries"]
+        width = parameters["width"]
+        policy = parameters["policy"]
+        if type(entries) is not int or type(width) is not int or not isinstance(
+            policy, str
+        ):
+            raise _error("issue entries/width/policy have invalid static types")
+        result_names = _queue_operands((*issued, *recheck_request))
+        wakeup_syntax = ""
+        if wakeup:
+            wakeup_syntax = (
+                f" wakeup ({_queue_operands(wakeup)} : "
+                f"{_queue_types(wakeup, queue_map)})"
+            )
+        recheck_response_syntax = ""
+        if recheck_response:
+            recheck_response_syntax = (
+                f" recheck_response ({_queue_operands(recheck_response)} : "
+                f"{_queue_types(recheck_response, queue_map)})"
+            )
+        recheck_request_syntax = ""
+        if recheck_request:
+            recheck_request_syntax = (
+                f" recheck_request ({_queue_types(recheck_request, queue_map)})"
+            )
+        descriptor_syntax = ""
+        if present_descriptors:
+            descriptors = []
+            for name in sorted(descriptor_parameters):
+                descriptor = parameters[name]
+                if not isinstance(descriptor, FieldDescriptor):
+                    raise _error(f"issue {name} must be a typed field")
+                descriptors.append(f"{name} = {_field_attribute(descriptor)}")
+            descriptor_syntax = " {" + ", ".join(descriptors) + "}"
+        return [
+            f"    {result_names} = ac.v03.issue "
+            f"enqueue ({_queue_operands(enqueue)} : "
+            f"{_queue_types(enqueue, queue_map)})"
+            f"{wakeup_syntax}{recheck_response_syntax} "
+            f"entries {entries} width {width} policy {_string(policy)} -> "
+            f"issued ({_queue_types(issued, queue_map)})"
+            f"{recheck_request_syntax}{descriptor_syntax}"
+        ]
+
+    if block.opcode == "engine":
+        if block.regions:
+            raise _error("engine cannot have Var regions")
+        issued = _group_queues(block, "input", "issued", "consume")
+        completed = _group_queues(block, "result", "completed", "produce")
+        parameters = _block_parameters(
+            block, {"inflight", "initiation_interval", "kind", "latency_by"}
+        )
+        inflight = parameters["inflight"]
+        initiation_interval = parameters["initiation_interval"]
+        kind = parameters["kind"]
+        latency_by = parameters["latency_by"]
+        if (
+            type(inflight) is not int
+            or type(initiation_interval) is not int
+            or not isinstance(kind, str)
+            or not isinstance(latency_by, FieldDescriptor)
+        ):
+            raise _error("engine static parameters have invalid types")
+        return [
+            f"    {_queue_operands(completed)} = ac.v03.engine "
+            f"({_queue_operands(issued)}) latency_by "
+            f"({_field_attribute(latency_by)}) inflight {inflight} "
+            f"initiation_interval {initiation_interval} kind {_string(kind)} : "
+            f"({_queue_types(issued, queue_map)}) -> "
+            f"({_queue_types(completed, queue_map)})"
+        ]
+
+    if block.opcode == "reorder":
+        if block.regions:
+            raise _error("reorder cannot have Var regions")
+        completed = _group_queues(block, "input", "completed", "consume")
+        retired = _require_one(
+            _group_queues(block, "result", "retired", "produce"),
+            "reorder retired",
+        )
+        parameters = _block_parameters(
+            block, {"by", "entries", "policy", "width"}
+        )
+        identity = parameters["by"]
+        entries = parameters["entries"]
+        policy = parameters["policy"]
+        width = parameters["width"]
+        if (
+            not isinstance(identity, FieldDescriptor)
+            or type(entries) is not int
+            or type(width) is not int
+            or not isinstance(policy, str)
+        ):
+            raise _error("reorder static parameters have invalid types")
+        return [
+            f"    %{retired} = ac.v03.reorder completed ({_queue_operands(completed)}) "
+            f"by ({_field_attribute(identity)}) entries {entries} "
+            f"width {width} policy {_string(policy)} : "
+            f"({_queue_types(completed, queue_map)}) -> "
+            f"{_queue_type(queue_map[retired])}"
+        ]
+
+    if block.opcode == "sink":
+        if block.results or block.regions or block.parameters:
+            raise _error("sink requires one Queue and no results/regions/parameters")
+        input_queue = _require_one(
+            _group_queues(block, "input", "input", "consume"), "sink input"
+        )
+        return [
+            f"    ac.v03.sink %{input_queue} : {_queue_type(queue_map[input_queue])}"
         ]
 
     raise _error(f"P4 emitter does not support primitive {block.opcode!r}")

@@ -90,6 +90,9 @@ __all__ = (
     "route",
     "fork",
     "merge",
+    "issue",
+    "engine",
+    "reorder",
 )
 
 
@@ -158,3 +161,15 @@ def fork(input: object, **options: object) -> Never:
 
 def merge(inputs: object, **options: object) -> Never:
     return _not_implemented("merge")
+
+
+def issue(enqueue: object, **options: object) -> Never:
+    return _not_implemented("issue")
+
+
+def engine(issued: object, **options: object) -> Never:
+    return _not_implemented("engine")
+
+
+def reorder(completed: object, **options: object) -> Never:
+    return _not_implemented("reorder")

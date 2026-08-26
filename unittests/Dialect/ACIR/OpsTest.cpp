@@ -360,13 +360,33 @@ TEST(ACIROpsTest, RegistryContainsExactV02QueueVarOperations) {
       "ac.record.create",
       "ac.record.get",
       "ac.record.with",
+      "ac.compute",
       "ac.var.add",
+      "ac.var.array",
+      "ac.var.binary",
+      "ac.var.cast",
+      "ac.var.compare",
       "ac.var.constant",
       "ac.var.cmp",
+      "ac.var.extract",
       "ac.var.get",
       "ac.var.mul",
+      "ac.var.select",
+      "ac.var.struct",
       "ac.var.sub",
+      "ac.var.unary",
+      "ac.var.update",
       "ac.var.with",
+      "ac.var.yield",
+      "ac.v03.engine",
+      "ac.v03.fork",
+      "ac.v03.issue",
+      "ac.v03.merge",
+      "ac.v03.observe",
+      "ac.v03.reorder",
+      "ac.v03.route",
+      "ac.v03.sink",
+      "ac.v03.source",
       "ac.require",
       "ac.return",
       "ac.resource",
@@ -516,9 +536,9 @@ TEST(ACIROpsTest, V03QueueTransportRoundTripsWithoutBecomingStateOwner) {
   auto file = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
     builtin.module attributes {ac.contract_epoch = "0.3"} {
       ac.module @M() parameters {} graph {
-        %source = ac.source "input" : !ac.queue<i1, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>
-        %buffered = ac.queue %source : !ac.queue<i1, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>> -> !ac.queue<i1, #ac.queue_contract<depth = 4, latency = 2, rate = 1, domain = @core, ordering = fifo>>
-        ac.observe %buffered as "output" fields [] : !ac.queue<i1, #ac.queue_contract<depth = 4, latency = 2, rate = 1, domain = @core, ordering = fifo>>
+        %source = ac.v03.source "input" : !ac.queue_v03<i1, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>
+        %buffered = ac.queue %source : !ac.queue_v03<i1, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>> -> !ac.queue_v03<i1, #ac.queue_contract<depth = 4, latency = 2, rate = 1, domain = @core, ordering = fifo>>
+        ac.v03.observe %buffered as "output" fields [] : !ac.queue_v03<i1, #ac.queue_contract<depth = 4, latency = 2, rate = 1, domain = @core, ordering = fifo>>
         ac.return
       }
     }
@@ -842,7 +862,7 @@ TEST(ACIROpsTest, RuntimeAndV02QueueVarRegistryIsExact) {
   for (llvm::StringLiteral name : v02Names)
     EXPECT_TRUE(mlir::OperationName(name, &context).isRegistered())
         << name.str();
-  EXPECT_EQ(context.getRegisteredOperationsByDialect("ac").size(), 94u);
+  EXPECT_EQ(context.getRegisteredOperationsByDialect("ac").size(), 114u);
 }
 
 TEST(ACIROpsTest, ProcessLinearLivenessDoesNotRescanBlockPerValue) {

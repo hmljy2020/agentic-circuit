@@ -483,7 +483,10 @@ class _SystemElaborator:
                 if self._is_deferred_bind(statement.value):
                     self._bind_deferred(statement.value)
                     return
-                self._observe(statement.value)
+                if _call_name(statement.value) == "sink":
+                    self._sink(statement.value)
+                else:
+                    self._observe(statement.value)
                 return
         if isinstance(statement, ast.If):
             condition = self._static(statement.test)
@@ -684,6 +687,34 @@ class _SystemElaborator:
                 )
             self.queues[child.id] = queue
 
+    def _bind_groups(
+        self, target: ast.expr, groups: tuple[tuple[str, ...], ...]
+    ) -> None:
+        """Bind named primitive result groups without flattening lane identity."""
+
+        nonempty = tuple(group for group in groups if group)
+        if isinstance(target, ast.Name) and len(nonempty) == 1:
+            self._bind(target, nonempty[0])
+            return
+        if not isinstance(target, (ast.Tuple, ast.List)) or len(target.elts) != len(
+            groups
+        ):
+            raise _ElaborationFailure(
+                "ACPY-V03-SYNTAX-001",
+                "primitive with multiple result groups requires one target per group",
+                _span(self.unit, target),
+            )
+        for child, group in zip(target.elts, groups, strict=True):
+            if not group:
+                if not isinstance(child, (ast.Tuple, ast.List)) or child.elts:
+                    raise _ElaborationFailure(
+                        "ACPY-V03-SYNTAX-001",
+                        "empty primitive result group requires an empty tuple/list target",
+                        _span(self.unit, child),
+                    )
+                continue
+            self._bind(child, group)
+
     def _assignment(self, statement: ast.Assign) -> None:
         if len(statement.targets) != 1 or not isinstance(statement.value, ast.Call):
             raise _ElaborationFailure(
@@ -709,6 +740,13 @@ class _SystemElaborator:
             outputs = self._fork(call)
         elif name == "merge":
             outputs = self._merge(call)
+        elif name == "issue":
+            self._bind_groups(target, self._issue(call))
+            return
+        elif name == "engine":
+            outputs = self._engine(call)
+        elif name == "reorder":
+            outputs = self._reorder(call)
         else:
             raise _ElaborationFailure(
                 "ACPY-V03-CALL-001",
@@ -853,6 +891,25 @@ class _SystemElaborator:
             "expected a static Queue tuple/list",
             _span(self.unit, node),
         )
+
+    def _queue_collection_or_one(self, node: ast.expr) -> tuple[str, ...]:
+        try:
+            return self._queue_collection(node)
+        except _ElaborationFailure as collection_error:
+            try:
+                return (self._queue_ref(node),)
+            except _ElaborationFailure:
+                raise collection_error
+
+    def _positive_static_int(self, node: ast.expr, name: str) -> int:
+        value = self._static(node)
+        if type(value) is not int or value <= 0:
+            raise _ElaborationFailure(
+                "ACPY-V03-CALL-002",
+                f"{name} must be a positive static integer",
+                _span(self.unit, node),
+            )
+        return value
 
     def _keywords(self, call: ast.Call, allowed: set[str]) -> dict[str, ast.expr]:
         result: dict[str, ast.expr] = {}
@@ -1065,7 +1122,9 @@ class _SystemElaborator:
         payloads = {self.queue_types[queue] for queue in inputs}
         if not inputs or len(payloads) != 1:
             raise _ElaborationFailure(
-                "ACPY-V03-TYPE-003", "merge inputs require one payload type", _span(self.unit, call.args[0])
+                "ACPY-V03-TYPE-003",
+                "merge inputs require one payload type",
+                _span(self.unit, call.args[0]),
             )
         output = self._queue(next(iter(payloads)), call)
         self._add_block(
@@ -1076,6 +1135,290 @@ class _SystemElaborator:
             source=_span(self.unit, call),
         )
         return (output,)
+
+    def _issue(self, call: ast.Call) -> tuple[tuple[str, ...], ...]:
+        if len(call.args) != 1:
+            raise _ElaborationFailure(
+                "ACPY-V03-CALL-002",
+                "ac.issue requires one enqueue lane collection",
+                _span(self.unit, call),
+            )
+        keywords = self._keywords(
+            call,
+            {
+                "entries",
+                "width",
+                "policy",
+                "wakeup",
+                "recheck_response",
+                "dependency_key",
+                "dependency_ready",
+                "wakeup_key",
+            },
+        )
+        required = {"entries", "width", "policy"}
+        if not required.issubset(keywords):
+            raise _ElaborationFailure(
+                "ACPY-V03-CALL-002",
+                "ac.issue requires entries, width, and policy",
+                _span(self.unit, call),
+            )
+        enqueue = self._queue_collection_or_one(call.args[0])
+        if not enqueue:
+            raise _ElaborationFailure(
+                "ACPY-V03-CALL-002",
+                "issue requires at least one engine lane",
+                _span(self.unit, call.args[0]),
+            )
+        entries = self._positive_static_int(keywords["entries"], "issue entries")
+        width = self._positive_static_int(keywords["width"], "issue width")
+        if width > len(enqueue) or width > entries:
+            raise _ElaborationFailure(
+                "ACPY-V03-CALL-002",
+                "issue width cannot exceed lane count or entries",
+                _span(self.unit, keywords["width"]),
+            )
+        policy = self._static(keywords["policy"])
+        if policy not in {"oldest_ready", "round_robin", "priority"}:
+            raise _ElaborationFailure(
+                "ACPY-V03-CALL-002",
+                "unsupported issue policy",
+                _span(self.unit, keywords["policy"]),
+            )
+        wakeup = (
+            self._queue_collection_or_one(keywords["wakeup"])
+            if "wakeup" in keywords
+            else ()
+        )
+        recheck_response = (
+            self._queue_collection_or_one(keywords["recheck_response"])
+            if "recheck_response" in keywords
+            else ()
+        )
+        descriptor_names = {
+            "dependency_key",
+            "dependency_ready",
+            "wakeup_key",
+        }
+        present_descriptors = descriptor_names.intersection(keywords)
+        if wakeup and present_descriptors != descriptor_names:
+            raise _ElaborationFailure(
+                "ACPY-V03-CALL-002",
+                "issue wakeup requires dependency_key, dependency_ready, and wakeup_key",
+                _span(self.unit, call),
+            )
+        if present_descriptors and present_descriptors != descriptor_names:
+            raise _ElaborationFailure(
+                "ACPY-V03-CALL-002",
+                "issue dependency descriptors must be provided together",
+                _span(self.unit, call),
+            )
+        descriptor_parameters: list[SemanticParameter] = []
+        if present_descriptors:
+            dependency_key = self.types.descriptor(keywords["dependency_key"])
+            dependency_ready = self.types.descriptor(
+                keywords["dependency_ready"]
+            )
+            wakeup_key = self.types.descriptor(keywords["wakeup_key"])
+            enqueue_payload = self.queue_types[enqueue[0]]
+            if (
+                dependency_key.root != enqueue_payload
+                or dependency_ready.root != enqueue_payload
+                or dependency_ready.leaf != _SCALARS["i1"]
+            ):
+                raise _ElaborationFailure(
+                    "ACPY-V03-TYPE-003",
+                    "issue dependency descriptors must select key/i1-ready fields from enqueue payload",
+                    _span(self.unit, call),
+                )
+            if any(
+                wakeup_key.root != self.queue_types[queue] for queue in wakeup
+            ) or wakeup_key.leaf != dependency_key.leaf:
+                raise _ElaborationFailure(
+                    "ACPY-V03-TYPE-003",
+                    "issue wakeup key must match the dependency key type",
+                    _span(self.unit, keywords["wakeup_key"]),
+                )
+            descriptor_parameters.extend(
+                (
+                    SemanticParameter("dependency_key", dependency_key),
+                    SemanticParameter("dependency_ready", dependency_ready),
+                    SemanticParameter("wakeup_key", wakeup_key),
+                )
+            )
+        issued = tuple(self._queue_like(queue, call) for queue in enqueue)
+        recheck_request = tuple(
+            self._queue_like(queue, call) for queue in recheck_response
+        )
+        self._add_block(
+            "issue",
+            (
+                PortGroup("enqueue", "consume", enqueue),
+                PortGroup("wakeup", "consume", wakeup),
+                PortGroup("recheck_response", "consume", recheck_response),
+            ),
+            (
+                PortGroup("issued", "produce", issued),
+                PortGroup("recheck_request", "produce", recheck_request),
+            ),
+            parameters=(
+                *descriptor_parameters,
+                SemanticParameter("entries", entries),
+                SemanticParameter("policy", str(policy)),
+                SemanticParameter("width", width),
+            ),
+            source=_span(self.unit, call),
+        )
+        return issued, recheck_request
+
+    def _engine(self, call: ast.Call) -> tuple[str, ...]:
+        if len(call.args) != 1:
+            raise _ElaborationFailure(
+                "ACPY-V03-CALL-002",
+                "ac.engine requires one issued lane collection",
+                _span(self.unit, call),
+            )
+        keywords = self._keywords(
+            call, {"latency_by", "inflight", "initiation_interval", "kind"}
+        )
+        if set(keywords) != {
+            "latency_by",
+            "inflight",
+            "initiation_interval",
+            "kind",
+        }:
+            raise _ElaborationFailure(
+                "ACPY-V03-CALL-002",
+                "ac.engine requires latency_by, inflight, initiation_interval, and kind",
+                _span(self.unit, call),
+            )
+        issued = self._queue_collection_or_one(call.args[0])
+        if not issued:
+            raise _ElaborationFailure(
+                "ACPY-V03-CALL-002",
+                "engine requires at least one lane",
+                _span(self.unit, call.args[0]),
+            )
+        latency_by = self.types.descriptor(keywords["latency_by"])
+        if any(latency_by.root != self.queue_types[queue] for queue in issued):
+            raise _ElaborationFailure(
+                "ACPY-V03-TYPE-003",
+                "engine latency_by root must match every issued payload",
+                _span(self.unit, keywords["latency_by"]),
+            )
+        if not isinstance(latency_by.leaf, ScalarType):
+            raise _ElaborationFailure(
+                "ACPY-V03-TYPE-003",
+                "engine latency_by must select a scalar field",
+                _span(self.unit, keywords["latency_by"]),
+            )
+        inflight = self._positive_static_int(
+            keywords["inflight"], "engine inflight"
+        )
+        initiation_interval = self._positive_static_int(
+            keywords["initiation_interval"], "engine initiation_interval"
+        )
+        kind = self._static(keywords["kind"])
+        if not isinstance(kind, str) or not kind:
+            raise _ElaborationFailure(
+                "ACPY-V03-CALL-002",
+                "engine kind must be a non-empty static string",
+                _span(self.unit, keywords.get("kind", call)),
+            )
+        completed = tuple(self._queue_like(queue, call) for queue in issued)
+        self._add_block(
+            "engine",
+            (PortGroup("issued", "consume", issued),),
+            (PortGroup("completed", "produce", completed),),
+            parameters=(
+                SemanticParameter("inflight", inflight),
+                SemanticParameter("initiation_interval", initiation_interval),
+                SemanticParameter("kind", kind),
+                SemanticParameter("latency_by", latency_by),
+            ),
+            source=_span(self.unit, call),
+        )
+        return completed
+
+    def _reorder(self, call: ast.Call) -> tuple[str, ...]:
+        if len(call.args) != 1:
+            raise _ElaborationFailure(
+                "ACPY-V03-CALL-002",
+                "ac.reorder requires one completion lane collection",
+                _span(self.unit, call),
+            )
+        keywords = self._keywords(call, {"by", "entries", "width", "policy"})
+        if set(keywords) != {"by", "entries", "width", "policy"}:
+            raise _ElaborationFailure(
+                "ACPY-V03-CALL-002",
+                "ac.reorder requires by, entries, width, and policy",
+                _span(self.unit, call),
+            )
+        completed = self._queue_collection_or_one(call.args[0])
+        if not completed:
+            raise _ElaborationFailure(
+                "ACPY-V03-CALL-002",
+                "reorder requires completion lanes",
+                _span(self.unit, call.args[0]),
+            )
+        payload = self.queue_types[completed[0]]
+        if any(self.queue_types[queue] != payload for queue in completed[1:]):
+            raise _ElaborationFailure(
+                "ACPY-V03-TYPE-003",
+                "reorder completion payloads must match",
+                _span(self.unit, call),
+            )
+        descriptor = self.types.descriptor(keywords["by"])
+        if descriptor.root != payload:
+            raise _ElaborationFailure(
+                "ACPY-V03-TYPE-003",
+                "reorder identity root must match its payload",
+                _span(self.unit, keywords["by"]),
+            )
+        entries = self._positive_static_int(keywords["entries"], "reorder entries")
+        width = self._positive_static_int(keywords["width"], "reorder width")
+        if width > entries:
+            raise _ElaborationFailure(
+                "ACPY-V03-CALL-002",
+                "reorder width cannot exceed entries",
+                _span(self.unit, keywords["width"]),
+            )
+        policy = self._static(keywords["policy"])
+        if policy != "in_order":
+            raise _ElaborationFailure(
+                "ACPY-V03-CALL-002",
+                "reorder policy must be 'in_order'",
+                _span(self.unit, keywords["policy"]),
+            )
+        retired = self._queue(payload, call, rate=width)
+        self._add_block(
+            "reorder",
+            (PortGroup("completed", "consume", completed),),
+            (PortGroup("retired", "produce", (retired,)),),
+            parameters=(
+                SemanticParameter("by", descriptor),
+                SemanticParameter("entries", entries),
+                SemanticParameter("policy", str(policy)),
+                SemanticParameter("width", width),
+            ),
+            source=_span(self.unit, call),
+        )
+        return (retired,)
+
+    def _sink(self, call: ast.Call) -> None:
+        if len(call.args) != 1 or call.keywords:
+            raise _ElaborationFailure(
+                "ACPY-V03-CALL-002",
+                "ac.sink requires one Queue",
+                _span(self.unit, call),
+            )
+        queue = self._queue_ref(call.args[0])
+        self._add_block(
+            "sink",
+            (PortGroup("input", "consume", (queue,)),),
+            (),
+            source=_span(self.unit, call),
+        )
 
     def _observe(self, call: ast.Call) -> None:
         if (

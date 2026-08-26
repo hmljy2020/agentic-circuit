@@ -3,7 +3,7 @@
 // RUN: %acir_opt --emit-bytecode -o %t.bc %s
 // RUN: %acir_opt %t.bc | %FileCheck %s
 
-!packet_q = !ac.queue<!ac.struct<@types::@Packet>, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>
+!packet_q = !ac.queue_v03<!ac.struct<@types::@Packet>, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>
 
 builtin.module attributes {ac.contract_epoch = "0.3"} {
   ac.type_scope @types {
@@ -13,13 +13,13 @@ builtin.module attributes {ac.contract_epoch = "0.3"} {
   >}
   ac.system @s root @m as "m" tick 0 "cycle" seed {kind = "fixed", value = 0 : i64} instrumentation [] results {id = "default", format = "json"} selected true
   ac.module @m() parameters {} graph {
-    %source = ac.source "input" : !packet_q
+    %source = ac.v03.source "input" : !packet_q
     %buffered = ac.queue %source : !packet_q -> !packet_q
-    %lane:2 = ac.route %buffered by (#ac.field<root = !ac.struct<@types::@Packet>, path = ["kind"], leaf = i1>) : (!packet_q) -> (!packet_q, !packet_q)
-    %joined = ac.merge (%lane#0, %lane#1) policy (#ac.policy<kind = round_robin>) : (!packet_q, !packet_q) -> !packet_q
-    %copy:2 = ac.fork %joined : (!packet_q) -> (!packet_q, !packet_q)
-    ac.observe %copy#0 as "copy0" fields [] : !packet_q
-    ac.observe %copy#1 as "copy1" fields [] : !packet_q
+    %lane:2 = ac.v03.route %buffered by (#ac.field<root = !ac.struct<@types::@Packet>, path = ["kind"], leaf = i1>) : (!packet_q) -> (!packet_q, !packet_q)
+    %joined = ac.v03.merge (%lane#0, %lane#1) policy (#ac.policy<kind = round_robin>) : (!packet_q, !packet_q) -> !packet_q
+    %copy:2 = ac.v03.fork %joined : (!packet_q) -> (!packet_q, !packet_q)
+    ac.v03.observe %copy#0 as "copy0" fields [] : !packet_q
+    ac.v03.observe %copy#1 as "copy1" fields [] : !packet_q
     ac.return
   }
 }
@@ -27,6 +27,6 @@ builtin.module attributes {ac.contract_epoch = "0.3"} {
 // CHECK: #ac.field<root = !ac.struct<@types::@Packet>, path = ["kind"], leaf = i1>
 // CHECK: #ac.policy<kind = round_robin>
 // CHECK: ac.queue %
-// CHECK: ac.route
-// CHECK: ac.merge
-// CHECK: ac.fork
+// CHECK: ac.v03.route
+// CHECK: ac.v03.merge
+// CHECK: ac.v03.fork
