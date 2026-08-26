@@ -24,6 +24,8 @@ class FeedbackV03FrontendTest(unittest.TestCase):
         )
 
     def test_deferred_alias_disappears_and_closes_feedback_queue(self) -> None:
+        from agentic_circuit._lower_acir_v03 import lower_semantic_v03
+
         result = self._capture("feedback/feedback.py", "feedback")
 
         self.assertEqual((), result.diagnostics)
@@ -40,6 +42,13 @@ class FeedbackV03FrontendTest(unittest.TestCase):
         artifact = program.canonical_bytes()
         self.assertNotIn(b"deferred", artifact)
         self.assertEqual(artifact, program.canonical_bytes())
+        lowered = lower_semantic_v03(program)
+        self.assertEqual(
+            (FIXTURES / "feedback/feedback.ac.mlir").read_text(encoding="utf-8"),
+            lowered.text,
+        )
+        self.assertNotIn("deferred", lowered.text)
+        self.assertIn("ac.merge (%q1, %q0)", lowered.text)
 
     def test_unbound_double_bind_and_payload_conflict_are_rejected(self) -> None:
         cases = (

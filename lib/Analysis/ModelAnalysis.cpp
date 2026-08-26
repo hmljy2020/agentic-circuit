@@ -425,6 +425,16 @@ bool isDirectStateOwner(Operation *operation) {
              ac::ProcessOp, ac::StatOp>(operation);
 }
 
+bool isPositiveDelayBoundary(Operation *operation) {
+  if (auto queue = dyn_cast<ac::QueueOp>(operation)) {
+    if (!queue.getInput())
+      return true;
+    auto output = dyn_cast<ac::QueueValueType>(queue.getOutput().getType());
+    return output && output.getContract().getLatency() > 0;
+  }
+  return isDirectStateOwner(operation);
+}
+
 std::optional<bool> constantBoolean(Value value) {
   Attribute constant;
   if (!matchPattern(value, m_Constant(&constant)))
@@ -714,7 +724,7 @@ LogicalResult ModelAnalysis::verifyZeroDelayDependencies() {
     bool stateful = false;
     if (!module.getBody().empty())
       for (Operation &child : module.getBody().front()) {
-        if (isDirectStateOwner(&child)) {
+        if (isPositiveDelayBoundary(&child)) {
           stateful = true;
           break;
         }
@@ -763,7 +773,7 @@ LogicalResult ModelAnalysis::verifyZeroDelayDependencies() {
       if (operation.getNumResults() == 0)
         continue;
       bool stateful =
-          isDirectStateOwner(&operation) ||
+          isPositiveDelayBoundary(&operation) ||
           (!isMemoryEffectFree(&operation) && !isa<func::CallOp>(operation));
       auto targetStateful = [&](FlatSymbolRefAttr reference) {
         if (auto target = dyn_cast_or_null<ac::ModuleOp>(

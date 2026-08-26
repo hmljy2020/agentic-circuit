@@ -113,7 +113,7 @@ class AcirV03LoweringTest(unittest.TestCase):
                 self.assertEqual(count, artifact.text.count(needle))
                 self._verify_native(artifact.text)
 
-    def test_topology_emits_adjacent_native_verified_acir(self) -> None:
+    def test_topology_and_feedback_emit_adjacent_native_verified_acir(self) -> None:
         from agentic_circuit._lower_acir_v03 import lower_semantic_v03
         from agentic_circuit._static_eval import FrozenMap
 
@@ -125,7 +125,10 @@ class AcirV03LoweringTest(unittest.TestCase):
                 ),
             ),
         )
-        cases = (("topology/static_topology.py", "static_topology", topology_consts),)
+        cases = (
+            ("topology/static_topology.py", "static_topology", topology_consts),
+            ("feedback/feedback.py", "feedback", ()),
+        )
         for relative, system, consts in cases:
             with self.subTest(relative=relative):
                 result = self._capture(relative, system, consts=consts)
