@@ -1,3 +1,5 @@
+"""Invalid: compute helpers are one pure expression and cannot call ``print``."""
+
 from __future__ import annotations
 
 import agentic_circuit as ac
@@ -23,4 +25,3 @@ def invalid(cfg: ac.const[Config]) -> None:
     source = ac.source(Token)
     result = ac.compute(source, mutate)
     ac.observe(result)
-

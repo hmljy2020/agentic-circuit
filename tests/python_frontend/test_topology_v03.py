@@ -1,3 +1,5 @@
+"""Executable examples and contract boundaries for static ACPy topology."""
+
 from __future__ import annotations
 
 import unittest

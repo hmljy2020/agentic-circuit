@@ -1,3 +1,5 @@
+"""Invalid: a deferred Queue must be bound exactly once, never twice."""
+
 from __future__ import annotations
 
 import agentic_circuit as ac

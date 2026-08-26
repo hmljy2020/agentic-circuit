@@ -1,3 +1,5 @@
+"""Invalid: a route selector must be a field of its input payload type."""
+
 from __future__ import annotations
 
 import agentic_circuit as ac

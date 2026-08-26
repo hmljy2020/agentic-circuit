@@ -1,3 +1,5 @@
+"""Invalid: all inputs of one merge must carry the same payload type."""
+
 from __future__ import annotations
 
 import agentic_circuit as ac

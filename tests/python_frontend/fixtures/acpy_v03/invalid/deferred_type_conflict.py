@@ -1,3 +1,5 @@
+"""Invalid: deferred output and bound Queue payload types must agree."""
+
 from __future__ import annotations
 
 import agentic_circuit as ac

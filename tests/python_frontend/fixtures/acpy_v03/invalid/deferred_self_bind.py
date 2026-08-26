@@ -1,3 +1,5 @@
+"""Invalid: binding a deferred Queue to its own output defines no producer."""
+
 from __future__ import annotations
 
 import agentic_circuit as ac

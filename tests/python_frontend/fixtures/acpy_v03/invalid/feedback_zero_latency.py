@@ -1,3 +1,5 @@
+"""Invalid: every feedback cycle needs a Queue edge with positive latency."""
+
 from __future__ import annotations
 
 import agentic_circuit as ac

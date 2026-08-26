@@ -1,3 +1,9 @@
+"""Close a forward Queue reference into a legal positive-latency feedback loop.
+
+``deferred`` and ``bind`` exist only while elaborating Python.  The adjacent
+ACIR contains a cyclic SSA use and no deferred runtime object.
+"""
+
 from __future__ import annotations
 
 import agentic_circuit as ac

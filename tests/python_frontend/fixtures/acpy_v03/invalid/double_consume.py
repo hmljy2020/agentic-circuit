@@ -1,3 +1,5 @@
+"""Invalid: one linear Queue cannot feed two consuming compute blocks."""
+
 from __future__ import annotations
 
 import agentic_circuit as ac

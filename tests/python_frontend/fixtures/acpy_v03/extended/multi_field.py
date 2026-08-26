@@ -1,3 +1,5 @@
+"""Exercise independent typed field reads and ordered struct reconstruction."""
+
 from __future__ import annotations
 
 import agentic_circuit as ac

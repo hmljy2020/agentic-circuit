@@ -1,3 +1,5 @@
+"""Check that a Python bool literal becomes a typed ``!ac.var<i1>`` constant."""
+
 from __future__ import annotations
 
 import agentic_circuit as ac

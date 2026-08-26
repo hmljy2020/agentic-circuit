@@ -1,3 +1,5 @@
+"""Executable examples and rejection boundaries for deferred feedback edges."""
+
 from __future__ import annotations
 
 import unittest

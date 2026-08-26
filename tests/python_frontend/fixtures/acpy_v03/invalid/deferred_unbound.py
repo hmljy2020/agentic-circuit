@@ -1,3 +1,5 @@
+"""Invalid: a used deferred Queue cannot remain unbound after elaboration."""
+
 from __future__ import annotations
 
 import agentic_circuit as ac

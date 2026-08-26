@@ -1,3 +1,5 @@
+"""Invalid: a Queue transport rate is a positive static integer."""
+
 from __future__ import annotations
 
 import agentic_circuit as ac

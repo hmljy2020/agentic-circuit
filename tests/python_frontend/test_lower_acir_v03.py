@@ -1,3 +1,10 @@
+"""End-to-end ACPy v0.3 semantic-to-ACIR golden and verifier tests.
+
+These tests always run the real AST elaborator and emitter.  Adjacent ACIR
+files are expected output for review; they are never used to manufacture a
+passing frontend result.
+"""
+
 from __future__ import annotations
 
 import dataclasses

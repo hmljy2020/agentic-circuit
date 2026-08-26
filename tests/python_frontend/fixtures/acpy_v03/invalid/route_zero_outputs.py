@@ -1,3 +1,5 @@
+"""Invalid: a variadic route still requires at least one result Queue."""
+
 from __future__ import annotations
 
 import agentic_circuit as ac

@@ -1,3 +1,10 @@
+"""Cover the currently implemented static topology construction surface.
+
+The config controls elaboration-time branching and expansion.  Nested scopes
+exercise inferred lexical ports, while route/merge/fork and queue cover the
+multi-port and explicit transport primitives.
+"""
+
 from __future__ import annotations
 
 import agentic_circuit as ac
