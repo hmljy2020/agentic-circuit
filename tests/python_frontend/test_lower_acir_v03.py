@@ -54,7 +54,13 @@ class AcirV03LoweringTest(unittest.TestCase):
         )
         self.assertEqual(0, first.returncode, first.stderr)
         second = subprocess.run(
-            (str(verifier), "-o", "/dev/null", "-"),
+            (
+                str(verifier),
+                "--pass-pipeline=builtin.module(ac-verify-model)",
+                "-o",
+                "/dev/null",
+                "-",
+            ),
             input=first.stdout,
             text=True,
             capture_output=True,

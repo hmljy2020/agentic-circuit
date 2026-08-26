@@ -1,8 +1,8 @@
 // This executable example proves that a cyclic Graph region is legal when
 // its ordinary Queue SSA edges carry positive latency contracts.  No owned
 // queue and no special feedback operation is required.
-// RUN: %acir_opt %s | %FileCheck %s
-// RUN: %acir_opt %s | %acir_opt | %FileCheck %s
+// RUN: %acir_opt --pass-pipeline='builtin.module(ac-verify-model)' %s | %FileCheck %s
+// RUN: %acir_opt %s | %acir_opt --pass-pipeline='builtin.module(ac-verify-model)' | %FileCheck %s
 
 builtin.module attributes {ac.contract_epoch = "0.3"} {
   ac.system @feedback_system root @feedback as "feedback" tick 0 "cycle"
