@@ -165,7 +165,7 @@ class DmaMemoryV03Test(unittest.TestCase):
         from agentic_circuit._queue_frontend import lower_queue_source
 
         root = Path(__file__).resolve().parents[2]
-        source = root / "examples" / "v03" / "tma_dma_memory.py"
+        source = root / "examples" / "memory" / "tma_dma_memory.py"
         golden = source.with_suffix(".ac.mlir")
 
         self.assertEqual(
