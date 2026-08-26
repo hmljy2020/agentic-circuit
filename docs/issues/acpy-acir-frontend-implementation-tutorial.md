@@ -347,15 +347,28 @@ arbitration: inputs q1,q2; output q3
 成为 scope output；区别只在 Queue linear consuming-use 计数。按 dense Queue identity
 排序边界使相同 Python 输入得到 byte-identical semantic artifact。
 
-## 15. P4 前端目前解决了什么
+## 15. P4 如何从 scope 变成 ACIR hierarchy
 
 前端已能表达并验证 `queue/route/fork/merge` 的 named port groups，route selector 使用
 typed `FieldDescriptor`，merge 使用 closed `Policy`。负例覆盖零 result arity、不同
 payload merge、非正 rate 和 selector root 错配。
 
-这一阶段暂时只证明到 `SemanticProgram`：native ACIR 还缺 B4 的 transport ops、
-field/policy attributes 和 scope outlining contract。保持这个 gate 很重要——在共享
-op 尚未注册时，emitter 会明确失败，不会用 generic operation 伪造“已打通”。
+shared ACIR 现在注册了 `#ac.field`、`#ac.policy` 和 `ac.route/fork/merge`。同一个
+`ac.queue` 由 custom parser/printer 保留两种互斥写法：epoch 0.1 的 `@symbol`
+owned-state form，以及 epoch 0.3 的一进一出 SSA transport form。两者不会互相重解释。
+
+scope 不引入新 primitive，而是 outline：`dispatch` 和 `arbitration` 分别成为
+`ac.module`，父 module 用 `ac.instance` 传递推导出的 Queue inputs/results。例如：
+
+```mlir
+%q4, %q5 = ac.instance @dispatch_s1
+  of @static_topology__dispatch(%q0) static {}
+  id "s1" path "dispatch" : (!ac.queue<...>) -> (!ac.queue<...>, !ac.queue<...>)
+```
+
+这样层次边界就是普通的 typed SSA signature；后端不必重新解释 Python lexical scope。
+完整输出保存在 `tests/python_frontend/fixtures/acpy_v03/topology/` 中，与 Python 样例
+逐字回归比较并连续通过两次 `acir-opt`。
 
 ## 16. P5：deferred 解决的是声明顺序，不是运行时队列
 
@@ -385,10 +398,39 @@ compute -> q0 -> merge -> q2 -> explicit queue q3 -> compute
 source  -> q1 -> merge
 ```
 
-artifact 中没有 `deferred`、`.bind` 或额外 transport op。反馈的状态边界来自用户明确
-写出的 `ac.queue(... latency=1)`；`latency=0` 被拒绝。反例还覆盖 unbound、重复
+artifact 中没有 `deferred`、`.bind` 或由它们偷偷生成的 transport op。用户写出的
+`ac.queue(... depth=2, latency=1)` 仍原样存在，用来表达这一位置需要更深的显式缓冲；
+但它不是让反馈图合法的唯一 timing boundary。裸 Queue def-use 也有完整 contract，
+默认 `latency=1`。所有 Queue edge 都拒绝 `latency=0`。反例还覆盖 unbound、重复
 bind、绑定到自身和 payload mismatch。
 
-这一步目前证明到 canonical `SemanticProgram`。等 P4 transport ops 和 P5 graph-cycle
-native contract 落地后，同目录会生成 `feedback.ac.mlir` 并由 `acir-opt` 验证，而不是
-提前提交无法解析的占位文件。
+## 17. P5 为什么还需要修改 native cycle analysis
+
+graph-region 允许 producer 在文本中晚于 use，因此 emitter 可以直接写：
+
+```mlir
+%q2 = ac.merge (%q1, %q0) policy (#ac.policy<kind = round_robin>) : ...
+%q3 = ac.queue %q2 : ... -> !ac.queue<..., latency = 1, ...>
+%q0 = ac.compute %q3 { ... } : ...
+```
+
+这已经消除了 Python 声明顺序造成的 SSA 构造困难，但 native 的零延迟环检查不能只
+把 `%q3 = ac.queue ...` 当作特例。transport 没有符号身份、绝对 hierarchy path 或
+运行时可写容器，不能被重新算成 v0.1 state owner；真正的 timing boundary 是每条
+Queue SSA result 自身的 contract，而不是某一个 op 的 owner 身份。
+
+实现因此把两个概念分开：owner 分析仍忽略 transport，零延迟依赖分析则检查所有 op
+的 Queue result contract，只要 latency 为正就停止沿该 result 的 producer 构造组合
+依赖边。这也覆盖裸 def-use，因为它同样是带完整 contract 的有限 Queue edge。Queue
+contract 本身已经拒绝零 latency，所以反馈环要么含明确边界并通过，要么在前端冻结
+前失败。
+
+最终 `feedback.py` 旁边生成了 `feedback.ac.mlir`。测试同时检查 deferred/bind 已完全
+消失、前向 `%q0` 引用仍保留，并执行 text→text native round-trip。这说明 P5 打通的是
+真实 ACPy→ACIR cyclic SSA，不是只在 Python semantic artifact 中看起来闭合。
+
+P5 收尾时的验证不是单一路径：86 个 Python 前端测试全部通过；6 个成功 lower 的
+fixture 都与旁边的 `.ac.mlir` 逐字相等，并显式经过 `ac-verify-model`；ACIR type、op、
+model-analysis、binding 四组原生测试通过；8 个 transport/routing 反例逐项确认非零
+退出码和精确诊断。独立的 `v03-feedback-valid.mlir` 还特意不使用显式 `ac.queue`
+transport，证明普通正 latency Queue edge 本身就能合法闭合反馈。

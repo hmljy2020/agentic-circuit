@@ -63,8 +63,8 @@ P0 基线
 | P1 | 审计当前 ACIR 对 v0.3 contract 的支持 | capability-gap matrix | P0 | B 只读 | `完成` |
 | P2 | 建立与 ACIR 文本解耦的语义中间层 | typed semantic graph | P1 contract 结论 | A | `完成` |
 | P3 | 贯通最小无状态程序 | source→compute→observe ACIR | P2；相关 B contract | A；必要时 B 对齐 | `完成` |
-| P4 | 支持静态拓扑、多端口和线性 Queue | route/fork/merge/scope | P3；相关 B contract | A；必要时 B 对齐 | `进行中` |
-| P5 | 支持 forward reference 和反馈图 | deferred/cyclic Queue | P4；graph-region contract | A；必要时 B 对齐 | `待开始` |
+| P4 | 支持静态拓扑、多端口和线性 Queue | route/fork/merge/scope | P3；相关 B contract | A；必要时 B 对齐 | `完成` |
+| P5 | 支持 forward reference 和反馈图 | deferred/cyclic Queue | P4；graph-region contract | A；必要时 B 对齐 | `完成` |
 | P6 | 支持通用状态积木 | reorder/pool/table | P5；相关 B contract | A；必要时 B 对齐 | `待开始` |
 | P7 | 支持分布式发射和 recheck | issue/engine/recheck | P6；相关 B contract | A；必要时 B 对齐 | `待开始` |
 | P8 | 完整编译 DavinciOO 样例 | frozen ACIR artifact | P7 | A；B 仅修复已批准缺口 | `待开始` |
@@ -201,16 +201,16 @@ merge
 
 ### 任务
 
-- [ ] `P4.1` 实现 `with ac.scope(...)` lexical I/O 推导。
-- [ ] `P4.2` 实现 const `if` 裁剪和 const `for/range` 静态展开。
-- [ ] `P4.3` 实现静态 tuple/list canonicalization。
-- [ ] `P4.4` 实现裸 Queue def-use contract constraints。
-- [ ] `P4.5` 实现显式 `ac.queue` transport block。
-- [ ] `P4.6` 实现 `ac.route` 多结果 lowering。
-- [ ] `P4.7` 实现 `ac.fork` strict atomic fanout lowering。
-- [ ] `P4.8` 实现 `ac.merge` variadic input 和 policy lowering。
-- [ ] `P4.9` 实现 Queue single-producer/single-consuming-use verifier。
-- [ ] `P4.10` 增加 port arity、rate、payload shape 不混用的负测试。
+- [x] `P4.1` 实现 `with ac.scope(...)` lexical I/O 推导。
+- [x] `P4.2` 实现 const `if` 裁剪和 const `for/range` 静态展开。
+- [x] `P4.3` 实现静态 tuple/list canonicalization。
+- [x] `P4.4` 实现裸 Queue def-use contract constraints。
+- [x] `P4.5` 实现显式 `ac.queue` transport block。
+- [x] `P4.6` 实现 `ac.route` 多结果 lowering。
+- [x] `P4.7` 实现 `ac.fork` strict atomic fanout lowering。
+- [x] `P4.8` 实现 `ac.merge` variadic input 和 policy lowering。
+- [x] `P4.9` 实现 Queue single-producer/single-consuming-use verifier。
+- [x] `P4.10` 增加 port arity、rate、payload shape 不混用的负测试。
 
 ### 完成条件
 
@@ -229,7 +229,7 @@ merge
 - [x] `P5.3` 实现 `.bind(queue)` exactly-once 检查。
 - [x] `P5.4` 统一 deferred 两端 payload/Queue contract constraints。
 - [x] `P5.5` 确保 deferred object 和 bind 不进入 frozen ACIR。
-- [ ] `P5.6` 发射 graph-region cyclic SSA。
+- [x] `P5.6` 发射 graph-region cyclic SSA。
 - [x] `P5.7` 检查每个 cycle 至少包含一个 `latency >= 1` edge。
 - [x] `P5.8` 增加 unbound、double-bind、type-conflict 和组合环负测试。
 
