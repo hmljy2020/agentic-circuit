@@ -131,7 +131,30 @@ ACIRTypesTests 通过
 `/tmp` shebang；所以本阶段同时直接运行了正例和逐段负例。测试文件保留标准 lit
 RUN lines，工具补齐后可以直接纳入完整 lit gate。
 
-## 6. 下一步阅读路线
+## 6. 为什么还需要文件 epoch 0.3
+
+类型和 operation 注册解决的是“某段文本能不能被 dialect parser 识别”，文件
+epoch 解决的是“整份 artifact 声明自己遵守哪一套 contract”。两者不能互相代替。
+
+仓库原入口只接受：
+
+```mlir
+builtin.module attributes {ac.contract_epoch = "0.1"}
+```
+
+如果前端把新的 Queue SSA 语义仍标成 0.1，下游会误以为它遵守旧的
+endpoint/owned-state contract；如果标成 0.3，旧入口又会在看到任何 operation
+以前直接拒绝。因此 P3 增加一个很小的 epoch gate：入口同时识别 0.1 和 0.3，
+已有 0.1 artifact 保持原样，新的前端 artifact 明确写 0.3，其他 epoch 继续失败。
+
+这不是让 0.1 和 0.3 相互 reinterpret：
+
+- 旧 `ac.queue` owned-state op 的意义没有改变；
+- 新 `!ac.queue` 仍是独立的 SSA type；
+- v0.3 primitive 自己会要求所在文件为 0.3；
+- 后端仍可用 capability inventory 明确报告“不支持 v0.3”，而不是误执行。
+
+## 7. 下一步阅读路线
 
 后续章节将在实现时继续加入：
 

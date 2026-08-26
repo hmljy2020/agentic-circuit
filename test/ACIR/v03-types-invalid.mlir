@@ -12,26 +12,26 @@
 // NESTED-VAR: error: var element cannot be a queue or var type
 
 //--- depth.mlir
-builtin.module attributes {ac.contract_epoch = "0.1"} {
+builtin.module attributes {ac.contract_epoch = "0.3"} {
   "builtin.unrealized_conversion_cast"() : () -> !ac.queue<i16, #ac.queue_contract<depth = 0, latency = 1, rate = 1, domain = @core, ordering = fifo>>
 }
 
 //--- latency.mlir
-builtin.module attributes {ac.contract_epoch = "0.1"} {
+builtin.module attributes {ac.contract_epoch = "0.3"} {
   "builtin.unrealized_conversion_cast"() : () -> !ac.queue<i16, #ac.queue_contract<depth = 1, latency = 0, rate = 1, domain = @core, ordering = fifo>>
 }
 
 //--- rate.mlir
-builtin.module attributes {ac.contract_epoch = "0.1"} {
+builtin.module attributes {ac.contract_epoch = "0.3"} {
   "builtin.unrealized_conversion_cast"() : () -> !ac.queue<i16, #ac.queue_contract<depth = 1, latency = 1, rate = 0, domain = @core, ordering = fifo>>
 }
 
 //--- nested-queue.mlir
-builtin.module attributes {ac.contract_epoch = "0.1"} {
+builtin.module attributes {ac.contract_epoch = "0.3"} {
   "builtin.unrealized_conversion_cast"() : () -> !ac.queue<!ac.queue<i16, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>
 }
 
 //--- nested-var.mlir
-builtin.module attributes {ac.contract_epoch = "0.1"} {
+builtin.module attributes {ac.contract_epoch = "0.3"} {
   "builtin.unrealized_conversion_cast"() : () -> !ac.var<!ac.queue<i16, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>>
 }
