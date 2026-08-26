@@ -68,4 +68,33 @@ def ACIR_QueueContractAttr
   let genVerifyDecl = 1;
 }
 
+def ACIR_PolicyKind_RoundRobin
+    : I32EnumAttrCase<"RoundRobin", 0, "round_robin">;
+
+def ACIR_PolicyKind
+    : I32EnumAttr<"PolicyKind", "ACIR transport arbitration policy", [
+        ACIR_PolicyKind_RoundRobin
+      ]> {
+  let genSpecializedAttr = 0;
+  let cppNamespace = "::acir::ac";
+}
+
+def ACIR_FieldAttr : AttrDef<ACIR_Dialect, "Field"> {
+  let mnemonic = "field";
+  let parameters = (ins "mlir::Type":$root,
+                        "mlir::ArrayAttr":$path,
+                        "mlir::Type":$leaf);
+  let assemblyFormat = [{
+    `<` `root` `=` $root `,` `path` `=` $path `,` `leaf` `=` $leaf `>`
+  }];
+  let genVerifyDecl = 1;
+}
+
+def ACIR_PolicyAttr : AttrDef<ACIR_Dialect, "Policy"> {
+  let mnemonic = "policy";
+  let parameters = (ins EnumParameter<ACIR_PolicyKind>:$kind);
+  let assemblyFormat = "`<` `kind` `=` $kind `>`";
+  let genVerifyDecl = 1;
+}
+
 #endif // ACIR_DIALECT_ACIR_ACIRATTRIBUTES_TD

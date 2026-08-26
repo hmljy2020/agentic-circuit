@@ -260,6 +260,35 @@ def ACIR_ObserveV03Op : ACIR_Op<"v03.observe", [Pure, ACIR_Observation]> {
   }];
 }
 
+def ACIR_RouteV03Op : ACIR_Op<"v03.route", [Pure]> {
+  let arguments = (ins AnyType:$input, ACIR_FieldAttr:$by);
+  let results = (outs Variadic<AnyType>:$outputs);
+  let hasVerifier = 1;
+  let assemblyFormat = [{
+    $input `by` `(` qualified($by) `)` attr-dict `:`
+    functional-type($input, $outputs)
+  }];
+}
+
+def ACIR_ForkV03Op : ACIR_Op<"v03.fork", [Pure]> {
+  let arguments = (ins AnyType:$input);
+  let results = (outs Variadic<AnyType>:$outputs);
+  let hasVerifier = 1;
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type($input, $outputs)
+  }];
+}
+
+def ACIR_MergeV03Op : ACIR_Op<"v03.merge", [Pure]> {
+  let arguments = (ins Variadic<AnyType>:$inputs, ACIR_PolicyAttr:$policy);
+  let results = (outs AnyType:$output);
+  let hasVerifier = 1;
+  let assemblyFormat = [{
+    `(` $inputs `)` `policy` `(` qualified($policy) `)` attr-dict `:`
+    functional-type($inputs, $output)
+  }];
+}
+
 def ACIR_PacketSerializeOp : ACIR_Op<"packet.serialize", [Pure]> {
   let arguments = (ins AnyType:$packet_value, SymbolRefAttr:$packet);
   let results = (outs AnyType:$bytes);

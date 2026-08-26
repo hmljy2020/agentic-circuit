@@ -130,6 +130,29 @@ LogicalResult QueueContractAttr::verify(
   return success();
 }
 
+LogicalResult FieldAttr::verify(function_ref<InFlightDiagnostic()> emitError,
+                                Type root, ArrayAttr path, Type leaf) {
+  if (!isa<StructType, PacketType, TransactionType>(root))
+    return emitError() << "field root must be a named record payload type";
+  if (!path || path.empty())
+    return emitError() << "field path must be non-empty";
+  for (Attribute component : path) {
+    auto name = dyn_cast<StringAttr>(component);
+    if (!name || name.getValue().empty())
+      return emitError() << "field path components must be non-empty strings";
+  }
+  if (!leaf || isa<QueueValueType, VarType>(leaf))
+    return emitError() << "field leaf must be a non-Queue, non-Var value type";
+  return success();
+}
+
+LogicalResult PolicyAttr::verify(function_ref<InFlightDiagnostic()> emitError,
+                                 PolicyKind kind) {
+  if (kind != PolicyKind::RoundRobin)
+    return emitError() << "unsupported transport policy";
+  return success();
+}
+
 bool containsChannelType(Type type) {
   return type.walk([](ChannelType) { return WalkResult::interrupt(); })
       .wasInterrupted();

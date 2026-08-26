@@ -1460,6 +1460,91 @@ LogicalResult MemoryOp::verify() {
   return success();
 }
 
+namespace {
+
+LogicalResult verifyQueuePayloads(Operation *operation, Type expected,
+                                  TypeRange actual, StringRef context) {
+  for (Type type : actual) {
+    auto queue = dyn_cast<QueueValueType>(type);
+    if (!queue)
+      return operation->emitOpError() << context << " must have !ac.queue type";
+    if (queue.getElementType() != expected)
+      return operation->emitOpError()
+             << context << " Queue payload must be " << expected
+             << " but received " << queue.getElementType();
+  }
+  return success();
+}
+
+FailureOr<Type> resolveFieldLeaf(Operation *operation, FieldAttr field) {
+  Type current = field.getRoot();
+  for (Attribute component : field.getPath()) {
+    Operation *declaration = recordDecl(operation, current);
+    if (!declaration)
+      return failure();
+    StringRef name = cast<StringAttr>(component).getValue();
+    std::optional<unsigned> index = findField(declaration, name);
+    if (!index)
+      return failure();
+    current = fieldType(declaration, *index);
+  }
+  return current;
+}
+
+} // namespace
+
+LogicalResult RouteV03Op::verify() {
+  if (failed(requireV03(*this)) || failed(requireDirectGraphChild(*this)))
+    return failure();
+  auto input = dyn_cast<QueueValueType>(getInput().getType());
+  FieldAttr selector = getBy();
+  if (!input)
+    return emitOpError("input must have !ac.queue type");
+  if (getOutputs().empty())
+    return emitOpError("requires at least one output Queue");
+  Type payload = input.getElementType();
+  if (selector.getRoot() != payload)
+    return emitOpError("selector root must match input Queue payload");
+  FailureOr<Type> leaf = resolveFieldLeaf(*this, selector);
+  if (failed(leaf) || *leaf != selector.getLeaf())
+    return emitOpError("selector field path/leaf does not resolve exactly");
+  auto integer = dyn_cast<IntegerType>(*leaf);
+  if (!integer || integer.getWidth() >= 63)
+    return emitOpError("direct-index selector must be a bounded integer field");
+  uint64_t cardinality = uint64_t{1} << integer.getWidth();
+  if (getOutputs().size() != cardinality)
+    return emitOpError()
+           << "direct-index route requires " << cardinality
+           << " outputs for selector width " << integer.getWidth();
+  return verifyQueuePayloads(*this, payload, getOutputs().getTypes(),
+                             "route output");
+}
+
+LogicalResult ForkV03Op::verify() {
+  if (failed(requireV03(*this)) || failed(requireDirectGraphChild(*this)))
+    return failure();
+  auto input = dyn_cast<QueueValueType>(getInput().getType());
+  if (!input)
+    return emitOpError("input must have !ac.queue type");
+  if (getOutputs().empty())
+    return emitOpError("requires at least one output Queue");
+  return verifyQueuePayloads(*this, input.getElementType(),
+                             getOutputs().getTypes(), "fork output");
+}
+
+LogicalResult MergeV03Op::verify() {
+  if (failed(requireV03(*this)) || failed(requireDirectGraphChild(*this)))
+    return failure();
+  auto output = dyn_cast<QueueValueType>(getOutput().getType());
+  if (!output)
+    return emitOpError("output must have !ac.queue type");
+  if (getInputs().empty())
+    return emitOpError("requires at least one input Queue");
+  Type payload = output.getElementType();
+  return verifyQueuePayloads(*this, payload, getInputs().getTypes(),
+                             "merge input");
+}
+
 LogicalResult PacketSerializeOp::verify() {
   auto packetType = dyn_cast<PacketType>(getPacketValue().getType());
   if (!packetType)
@@ -2135,6 +2220,8 @@ LogicalResult verifyStaticArgumentSet(Operation *op, DictionaryAttr arguments,
 bool isStructuralGraphChild(Operation &child) {
   return isa<InstanceOp, ArrayOp, InstancesOp, ViewOp, QueueOp, EventQueueOp,
              ResourceOp, AddressSpaceOp, AddressMapOp, TimeDomainOp, ProcessOp,
+             SourceV03Op, ComputeOp, ObserveV03Op, RouteV03Op, ForkV03Op,
+             MergeV03Op,
              RequireOp, EnsureOp, StatOp, ReturnOp>(child) ||
          child.getName().getStringRef() == "arith.constant";
 }
@@ -2521,7 +2608,9 @@ LogicalResult ModuleOp::verify() {
   for (Operation &child : entry) {
     LogicalResult local = TypeSwitch<Operation *, LogicalResult>(&child)
                               .Case<QueueOp, EventQueueOp, ResourceOp,
-                                    AddressSpaceOp, AddressMapOp, TimeDomainOp>(
+                                    AddressSpaceOp, AddressMapOp, TimeDomainOp,
+                                    SourceV03Op, ComputeOp, ObserveV03Op,
+                                    RouteV03Op, ForkV03Op, MergeV03Op>(
                                   [](auto op) { return op.verify(); })
                               .Default([](Operation *) { return success(); });
     if (failed(local))
