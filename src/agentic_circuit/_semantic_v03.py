@@ -6,7 +6,7 @@ typed boundary between Python elaboration and dialect-specific lowering.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal, TypeAlias
 
 from ._canonical_json import JsonValue, canonical_json_bytes, sha256_bytes
@@ -1059,6 +1059,7 @@ class SemanticBuilder:
         self._queues: list[QueueValue] = []
         self._blocks: list[BlockInstance] = []
         self._regions: list[VarRegion] = []
+        self._queue_aliases: dict[str, str] = {}
         self._scopes: list[_ScopeDraft] = [
             _ScopeDraft("s0", root_name, None, [], [], [], [], source)
         ]
@@ -1094,6 +1095,29 @@ class SemanticBuilder:
         )
         parent_scope.children.append(identity)
         return identity
+
+    def bind_queue_alias(self, preferred: str, alias: str) -> None:
+        """Unify an elaboration-only forward Queue with its real producer."""
+
+        if preferred == alias:
+            raise SemanticError(
+                "ACPY03-DEFERRED-002", "deferred Queue cannot bind to itself"
+            )
+        queue_ids = {queue.id for queue in self._queues}
+        if preferred not in queue_ids or alias not in queue_ids:
+            raise SemanticError(
+                "ACPY03-DEFERRED-002", "deferred Queue binding does not resolve"
+            )
+        if preferred in self._queue_aliases or alias in self._queue_aliases:
+            raise SemanticError(
+                "ACPY03-DEFERRED-002", "Queue participates in multiple aliases"
+            )
+        if int(preferred[1:]) >= int(alias[1:]):
+            raise SemanticError(
+                "ACPY03-DEFERRED-002",
+                "deferred Queue identity must precede its bound producer",
+            )
+        self._queue_aliases[alias] = preferred
 
     def set_scope_io(
         self, scope: str, inputs: tuple[str, ...], outputs: tuple[str, ...]
@@ -1143,6 +1167,7 @@ class SemanticBuilder:
         return identity
 
     def freeze(self) -> SemanticProgram:
+        queues, blocks, queue_remap = self._freeze_queue_aliases()
         scopes = tuple(
             Scope(
                 draft.id,
@@ -1150,8 +1175,8 @@ class SemanticBuilder:
                 draft.parent,
                 tuple(draft.blocks),
                 tuple(draft.children),
-                tuple(draft.inputs),
-                tuple(draft.outputs),
+                tuple(queue_remap[queue] for queue in draft.inputs),
+                tuple(queue_remap[queue] for queue in draft.outputs),
                 draft.source,
             )
             for draft in self._scopes
@@ -1160,13 +1185,62 @@ class SemanticBuilder:
             self._system,
             self.root_scope,
             tuple(self._declarations),
-            tuple(self._queues),
-            tuple(self._blocks),
+            queues,
+            blocks,
             scopes,
             tuple(self._regions),
         )
         program.verify()
         return program
+
+    def _freeze_queue_aliases(
+        self,
+    ) -> tuple[
+        tuple[QueueValue, ...], tuple[BlockInstance, ...], dict[str, str]
+    ]:
+        representative = {
+            queue.id: self._queue_aliases.get(queue.id, queue.id)
+            for queue in self._queues
+        }
+        classes: dict[str, list[QueueValue]] = {}
+        for queue in self._queues:
+            classes.setdefault(representative[queue.id], []).append(queue)
+
+        remap: dict[str, str] = {}
+        queues: list[QueueValue] = []
+        for queue in self._queues:
+            if representative[queue.id] != queue.id:
+                continue
+            members = classes[queue.id]
+            constraint = members[0].constraint
+            for member in members[1:]:
+                constraint = constraint.merge(member.constraint)
+            identity = f"q{len(queues)}"
+            queues.append(QueueValue(identity, constraint, queue.source))
+            for member in members:
+                remap[member.id] = identity
+
+        blocks = tuple(
+            replace(
+                block,
+                inputs=tuple(
+                    replace(
+                        group,
+                        queues=tuple(remap[queue] for queue in group.queues),
+                    )
+                    for group in block.inputs
+                ),
+                results=tuple(
+                    replace(
+                        group,
+                        queues=tuple(remap[queue] for queue in group.queues),
+                    )
+                    for group in block.results
+                ),
+            )
+            for block in self._blocks
+        )
+        return tuple(queues), blocks, remap
 
     def _scope(self, identity: str) -> _ScopeDraft:
         for scope in self._scopes:

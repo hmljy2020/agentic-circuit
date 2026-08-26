@@ -224,14 +224,14 @@ merge
 
 ### 任务
 
-- [ ] `P5.1` 实现 `ac.queue.deferred(T)` elaboration object。
-- [ ] `P5.2` 实现 `.output` 的 forward-use constraint。
-- [ ] `P5.3` 实现 `.bind(queue)` exactly-once 检查。
-- [ ] `P5.4` 统一 deferred 两端 payload/Queue contract constraints。
-- [ ] `P5.5` 确保 deferred object 和 bind 不进入 frozen ACIR。
+- [x] `P5.1` 实现 `ac.queue.deferred(T)` elaboration object。
+- [x] `P5.2` 实现 `.output` 的 forward-use constraint。
+- [x] `P5.3` 实现 `.bind(queue)` exactly-once 检查。
+- [x] `P5.4` 统一 deferred 两端 payload/Queue contract constraints。
+- [x] `P5.5` 确保 deferred object 和 bind 不进入 frozen ACIR。
 - [ ] `P5.6` 发射 graph-region cyclic SSA。
-- [ ] `P5.7` 检查每个 cycle 至少包含一个 `latency >= 1` edge。
-- [ ] `P5.8` 增加 unbound、double-bind、type-conflict 和组合环负测试。
+- [x] `P5.7` 检查每个 cycle 至少包含一个 `latency >= 1` edge。
+- [x] `P5.8` 增加 unbound、double-bind、type-conflict 和组合环负测试。
 
 ### 完成条件
 

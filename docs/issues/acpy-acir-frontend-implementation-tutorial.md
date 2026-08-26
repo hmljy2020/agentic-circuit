@@ -356,3 +356,39 @@ payload merge、非正 rate 和 selector root 错配。
 这一阶段暂时只证明到 `SemanticProgram`：native ACIR 还缺 B4 的 transport ops、
 field/policy attributes 和 scope outlining contract。保持这个 gate 很重要——在共享
 op 尚未注册时，emitter 会明确失败，不会用 generic operation 伪造“已打通”。
+
+## 16. P5：deferred 解决的是声明顺序，不是运行时队列
+
+反馈图里，consumer 的 Python 语句可能先于 producer：
+
+```python
+completion = ac.queue.deferred(Token)
+selected = ac.merge((source, completion.output), policy="round_robin")
+completed = ac.compute(buffered, identity)
+completion.bind(completed)
+```
+
+`deferred.output` 先分配稳定 Queue identity，但不产生 block，也不预设完整 Queue
+contract；它只有 payload constraint。`.bind(completed)` 建立一次性的 SSA 等价关系。
+冻结时 frontend：
+
+1. 合并 forward identity 与真实 producer result 的 Queue constraints；
+2. 保留较早的 forward identity，使先前 use 无需变成运行时指针；
+3. 重写所有 block port 和 scope I/O；
+4. 删除真实 producer 临时 result identity 后重新生成 dense Queue ids；
+5. 再运行 unique producer/consumer 和 frozen contract verifier。
+
+合法反馈 fixture 最终得到：
+
+```text
+compute -> q0 -> merge -> q2 -> explicit queue q3 -> compute
+source  -> q1 -> merge
+```
+
+artifact 中没有 `deferred`、`.bind` 或额外 transport op。反馈的状态边界来自用户明确
+写出的 `ac.queue(... latency=1)`；`latency=0` 被拒绝。反例还覆盖 unbound、重复
+bind、绑定到自身和 payload mismatch。
+
+这一步目前证明到 canonical `SemanticProgram`。等 P4 transport ops 和 P5 graph-cycle
+native contract 落地后，同目录会生成 `feedback.ac.mlir` 并由 `acir-opt` 验证，而不是
+提前提交无法解析的占位文件。

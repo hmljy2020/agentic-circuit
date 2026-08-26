@@ -13,6 +13,7 @@ from pathlib import Path
 
 from ._diagnostics import Diagnostic, SourceSpan
 from ._semantic_v03 import (
+    DeferredEdge,
     FieldDescriptor,
     NamedType,
     PayloadDeclaration,
@@ -433,6 +434,7 @@ class _SystemElaborator:
             self.builder.add_declaration(declaration)
         self.queues: dict[str, str] = {}
         self.collections: dict[str, tuple[str, ...]] = {}
+        self.deferred: dict[str, DeferredEdge] = {}
         self.queue_types: dict[str, PayloadType] = {}
         self.queue_order: list[str] = []
         self.catalog = davincioo_core_catalog()
@@ -444,11 +446,19 @@ class _SystemElaborator:
         }
         self.producer_scope: dict[str, str] = {}
         self.use_scopes: dict[str, list[str]] = {}
+        self.queue_aliases: dict[str, str] = {}
 
     def run(self) -> SemanticProgram:
         self._validate_consts()
         assert isinstance(self.system.node, ast.FunctionDef)
         self._statements(self.system.node.body)
+        for name, edge in self.deferred.items():
+            if edge.bound_queue is None:
+                raise _ElaborationFailure(
+                    "ACPY-V03-DEFERRED-003",
+                    f"deferred Queue {name!r} is unbound",
+                    self.system.span,
+                )
         self._infer_scope_io()
         return self.builder.freeze()
 
@@ -470,6 +480,9 @@ class _SystemElaborator:
             ):
                 return
             if isinstance(statement.value, ast.Call):
+                if self._is_deferred_bind(statement.value):
+                    self._bind_deferred(statement.value)
+                    return
                 self._observe(statement.value)
                 return
         if isinstance(statement, ast.If):
@@ -640,7 +653,10 @@ class _SystemElaborator:
 
     def _bind(self, target: ast.expr, queues: tuple[str, ...]) -> None:
         names = self._target_names(target)
-        if any(name in self.queues or name in self.collections for name in names):
+        if any(
+            name in self.queues or name in self.collections or name in self.deferred
+            for name in names
+        ):
             raise _ElaborationFailure(
                 "ACPY-V03-SYNTAX-001",
                 "Queue or collection name is rebound",
@@ -678,6 +694,9 @@ class _SystemElaborator:
         target = statement.targets[0]
         call = statement.value
         name = _call_name(call)
+        if name == "deferred":
+            self._deferred(target, call)
+            return
         if name == "source":
             outputs = self._source(call)
         elif name == "compute":
@@ -723,6 +742,13 @@ class _SystemElaborator:
         if isinstance(node, ast.Name) and node.id in self.queues:
             return self.queues[node.id]
         if (
+            isinstance(node, ast.Attribute)
+            and node.attr == "output"
+            and isinstance(node.value, ast.Name)
+            and node.value.id in self.deferred
+        ):
+            return self.deferred[node.value.id].output_queue
+        if (
             isinstance(node, ast.Subscript)
             and isinstance(node.value, ast.Name)
             and node.value.id in self.collections
@@ -745,6 +771,77 @@ class _SystemElaborator:
         raise _ElaborationFailure(
             "ACPY-V03-CALL-003", "Queue reference does not resolve", _span(self.unit, node)
         )
+
+    def _deferred(self, target: ast.expr, call: ast.Call) -> None:
+        if (
+            not isinstance(target, ast.Name)
+            or _qualified_name(call.func) != "ac.queue.deferred"
+            or len(call.args) != 1
+            or call.keywords
+        ):
+            raise _ElaborationFailure(
+                "ACPY-V03-DEFERRED-001",
+                "ac.queue.deferred requires one payload type and one name target",
+                _span(self.unit, call),
+            )
+        name = target.id
+        if name in self.queues or name in self.collections or name in self.deferred:
+            raise _ElaborationFailure(
+                "ACPY-V03-SYNTAX-001",
+                "Queue, collection or deferred name is rebound",
+                _span(self.unit, target),
+            )
+        payload = self.types.resolve(call.args[0])
+        output = self.builder.add_queue(
+            QueueConstraint(payload), _span(self.unit, call)
+        )
+        self.queue_types[output] = payload
+        self.queue_order.append(output)
+        self.deferred[name] = DeferredEdge(
+            f"d{len(self.deferred)}", output, payload
+        )
+
+    def _is_deferred_bind(self, call: ast.Call) -> bool:
+        return (
+            isinstance(call.func, ast.Attribute)
+            and call.func.attr == "bind"
+            and isinstance(call.func.value, ast.Name)
+            and call.func.value.id in self.deferred
+        )
+
+    def _bind_deferred(self, call: ast.Call) -> None:
+        assert isinstance(call.func, ast.Attribute)
+        assert isinstance(call.func.value, ast.Name)
+        name = call.func.value.id
+        edge = self.deferred[name]
+        if len(call.args) != 1 or call.keywords:
+            raise _ElaborationFailure(
+                "ACPY-V03-DEFERRED-002",
+                "deferred.bind requires one Queue",
+                _span(self.unit, call),
+            )
+        if edge.bound_queue is not None:
+            raise _ElaborationFailure(
+                "ACPY-V03-DEFERRED-002",
+                f"deferred Queue {name!r} is bound more than once",
+                _span(self.unit, call),
+            )
+        queue = self._queue_ref(call.args[0])
+        if queue == edge.output_queue:
+            raise _ElaborationFailure(
+                "ACPY-V03-DEFERRED-002",
+                "deferred Queue cannot bind to its own output",
+                _span(self.unit, call.args[0]),
+            )
+        if self.queue_types[queue] != edge.payload:
+            raise _ElaborationFailure(
+                "ACPY-V03-DEFERRED-002",
+                "deferred binding payload type does not match",
+                _span(self.unit, call.args[0]),
+            )
+        self.deferred[name] = edge.bind(queue)
+        self.queue_aliases[queue] = edge.output_queue
+        self.builder.bind_queue_alias(edge.output_queue, queue)
 
     def _queue_collection(self, node: ast.expr) -> tuple[str, ...]:
         if isinstance(node, ast.Name) and node.id in self.collections:
@@ -1006,20 +1103,34 @@ class _SystemElaborator:
         return False
 
     def _infer_scope_io(self) -> None:
+        def canonical(queue: str) -> str:
+            return self.queue_aliases.get(queue, queue)
+
+        producers = {
+            canonical(queue): scope for queue, scope in self.producer_scope.items()
+        }
+        uses: dict[str, list[str]] = {}
+        for queue, scopes in self.use_scopes.items():
+            uses.setdefault(canonical(queue), []).extend(scopes)
+        ordered: list[str] = []
+        for queue in self.queue_order:
+            queue = canonical(queue)
+            if queue not in ordered:
+                ordered.append(queue)
         for scope in self.scope_parents:
             if scope == self.builder.root_scope:
                 continue
             inputs: list[str] = []
             outputs: list[str] = []
-            for queue in self.queue_order:
-                producer = self.producer_scope.get(queue)
-                uses = self.use_scopes.get(queue, [])
-                if any(self._inside(use, scope) for use in uses) and (
+            for queue in ordered:
+                producer = producers.get(queue)
+                queue_uses = uses.get(queue, [])
+                if any(self._inside(use, scope) for use in queue_uses) and (
                     producer is None or not self._inside(producer, scope)
                 ):
                     inputs.append(queue)
                 if producer is not None and self._inside(producer, scope) and any(
-                    not self._inside(use, scope) for use in uses
+                    not self._inside(use, scope) for use in queue_uses
                 ):
                     outputs.append(queue)
             self.builder.set_scope_io(scope, tuple(inputs), tuple(outputs))
