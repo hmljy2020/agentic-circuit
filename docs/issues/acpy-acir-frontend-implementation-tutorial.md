@@ -228,15 +228,17 @@ payload 对齐输出 Queue，并拒绝 `arith.*` 或任何 closed family 之外�
 
 ## 9. Queue linearity 为什么必须由 ACIR 再检查
 
-Python 前端已经检查 Queue single producer/use，但 ACIR 仍可能由手写文本或其他
-前端产生，因此 native verifier 必须再次建立信任边界。
+Python 前端在 freeze 时把重复的 consuming uses 规范化为一个 strict atomic fork，
+但 ACIR 仍可能由手写文本或其他前端产生，因此 native verifier 必须再次建立
+single producer/use 信任边界。
 
 ```python
 left = ac.compute(source, f)
-right = ac.compute(source, g)  # 非法：同一个 token 被消费两次
+right = ac.compute(source, g)  # ACPy 自动插入二输出 fork
 ```
 
-上述结构会得到两个 consuming uses，并提示显式插入 `ac.fork`。相反：
+上述结构会在 deferred alias 解析后变成一个 fork consumption 和两个独立 result。
+相反：
 
 ```python
 ac.observe(result)
@@ -298,14 +300,14 @@ minimal       struct source -> compute -> observe，逐字 ACIR golden
 scalar_chain  scalar source -> compute -> compute -> 两个 observe
 multi_field   u8/u32 字段、两个表达式、带 padding 的 struct layout
 bool_literal  Python True -> typed !ac.var<i1> constant
-double_consume 同一 Queue 进入两个 compute，必须在发射前失败
+double_consume 同一 Queue 进入两个 compute，自动规范化为二输出 fork
 ```
 
 每个合法程序的发射结果都连续经过两次 `acir-opt`。这同时回答三个问题：前端能否
 构造语义图、emitter 是否产生注册过的 ACIR、canonical printer 的输出能否再次解析。
 等价 workspace root 还会比较最终文本与 SHA-256，确认 source path 不会污染 artifact。
 
-为方便人工检阅，每个能够成功 lower 的正向 Python fixture 都在同一目录保存同名
+为方便人工检阅，用于逐字发射回归的正向 Python fixture 会在同一目录保存同名
 `.ac.mlir`，例如 `scalar_chain.py` 对应 `scalar_chain.ac.mlir`。测试逐字比较实际
 emitter 输出与该文件，所以人工看到的不是说明性伪代码，而是持续受回归保护的真实
 编译产物。尚未注册 shared primitive 的阶段不会提前放置伪 ACIR golden。

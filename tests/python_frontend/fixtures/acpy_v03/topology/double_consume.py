@@ -1,4 +1,4 @@
-"""Invalid: one linear Queue cannot feed two consuming compute blocks."""
+"""Repeated consuming uses normalize to one strict atomic broadcast fork."""
 
 from __future__ import annotations
 
@@ -11,7 +11,9 @@ def increment(value: ac.u16) -> ac.u16:
 
 @ac.system
 def double_consume() -> None:
-    source = ac.source(ac.u16)
+    source = ac.source(
+        ac.u16, depth=4, latency=2, rate=2, domain="frontend"
+    )
     left = ac.compute(source, increment)
     right = ac.compute(source, increment)
     ac.observe(left)

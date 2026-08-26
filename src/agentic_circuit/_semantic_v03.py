@@ -283,6 +283,12 @@ class QueueConstraint:
         }
 
 
+def _queue_like_constraint(payload: PayloadType) -> QueueConstraint:
+    """Return the Queue contract used by outputs of explicit and implicit forks."""
+
+    return QueueConstraint(payload, depth=1, latency=1, rate=1, domain="core")
+
+
 @dataclass(frozen=True, slots=True)
 class QueueValue:
     id: str
@@ -1059,10 +1065,7 @@ class _ScopeDraft:
     id: str
     name: str
     parent: str | None
-    blocks: list[str]
     children: list[str]
-    inputs: list[str]
-    outputs: list[str]
     source: SourceSpan | None
 
 
@@ -1081,7 +1084,7 @@ class SemanticBuilder:
         self._regions: list[VarRegion] = []
         self._queue_aliases: dict[str, str] = {}
         self._scopes: list[_ScopeDraft] = [
-            _ScopeDraft("s0", root_name, None, [], [], [], [], source)
+            _ScopeDraft("s0", root_name, None, [], source)
         ]
 
     @property
@@ -1111,7 +1114,7 @@ class SemanticBuilder:
         parent_scope = self._scope(parent)
         identity = f"s{len(self._scopes)}"
         self._scopes.append(
-            _ScopeDraft(identity, name, parent, [], [], [], [], source)
+            _ScopeDraft(identity, name, parent, [], source)
         )
         parent_scope.children.append(identity)
         return identity
@@ -1139,13 +1142,6 @@ class SemanticBuilder:
             )
         self._queue_aliases[alias] = preferred
 
-    def set_scope_io(
-        self, scope: str, inputs: tuple[str, ...], outputs: tuple[str, ...]
-    ) -> None:
-        draft = self._scope(scope)
-        draft.inputs[:] = inputs
-        draft.outputs[:] = outputs
-
     def add_region(self, region: VarRegion) -> str:
         identity = f"vr{len(self._regions)}"
         if region.id != identity:
@@ -1168,7 +1164,7 @@ class SemanticBuilder:
         source: SourceSpan | None = None,
         catalog: BlockCatalog | None = None,
     ) -> str:
-        draft = self._scope(scope)
+        self._scope(scope)
         identity = f"b{len(self._blocks)}"
         block = BlockInstance(
             identity,
@@ -1183,24 +1179,12 @@ class SemanticBuilder:
         if catalog is not None:
             catalog.lookup(opcode).verify_instance(block, tuple(self._queues))
         self._blocks.append(block)
-        draft.blocks.append(identity)
         return identity
 
     def freeze(self) -> SemanticProgram:
-        queues, blocks, queue_remap = self._freeze_queue_aliases()
-        scopes = tuple(
-            Scope(
-                draft.id,
-                draft.name,
-                draft.parent,
-                tuple(draft.blocks),
-                tuple(draft.children),
-                tuple(queue_remap[queue] for queue in draft.inputs),
-                tuple(queue_remap[queue] for queue in draft.outputs),
-                draft.source,
-            )
-            for draft in self._scopes
-        )
+        queues, blocks, _ = self._freeze_queue_aliases()
+        queues, blocks = self._materialize_implicit_forks(queues, blocks)
+        scopes = self._freeze_scopes(queues, blocks)
         program = SemanticProgram(
             self._system,
             self.root_scope,
@@ -1212,6 +1196,159 @@ class SemanticBuilder:
         )
         program.verify()
         return program
+
+    def _materialize_implicit_forks(
+        self,
+        queues: tuple[QueueValue, ...],
+        blocks: tuple[BlockInstance, ...],
+    ) -> tuple[tuple[QueueValue, ...], tuple[BlockInstance, ...]]:
+        """Normalize repeated consuming uses into one strict atomic fork."""
+
+        consuming_uses: dict[str, list[tuple[int, int, int]]] = {}
+        producers: dict[str, list[int]] = {}
+        for block_index, block in enumerate(blocks):
+            for group_index, group in enumerate(block.inputs):
+                if group.effect != "consume":
+                    continue
+                for operand_index, queue in enumerate(group.queues):
+                    consuming_uses.setdefault(queue, []).append(
+                        (block_index, group_index, operand_index)
+                    )
+            for group in block.results:
+                for queue in group.queues:
+                    producers.setdefault(queue, []).append(block_index)
+
+        normalized_queues = list(queues)
+        replacements: dict[tuple[int, int, int], str] = {}
+        forks_after: dict[int, list[tuple[int, BlockInstance]]] = {}
+        fork_spec = davincioo_core_catalog().lookup("fork")
+        for queue_index, queue in enumerate(queues):
+            uses = consuming_uses.get(queue.id, ())
+            if len(uses) <= 1:
+                continue
+            queue_producers = producers.get(queue.id, ())
+            if len(queue_producers) != 1:
+                # Preserve the more fundamental producer diagnostic from verify().
+                continue
+            producer_index = queue_producers[0]
+            producer = blocks[producer_index]
+            outputs: list[str] = []
+            for use in uses:
+                output = f"q{len(normalized_queues)}"
+                normalized_queues.append(
+                    QueueValue(
+                        output,
+                        _queue_like_constraint(queue.constraint.payload),
+                        producer.source,
+                    )
+                )
+                outputs.append(output)
+                replacements[use] = output
+            fork = BlockInstance(
+                f"implicit_fork_{queue.id}",
+                "fork",
+                producer.scope,
+                (PortGroup("input", "consume", (queue.id,)),),
+                (PortGroup("outputs", "produce", tuple(outputs)),),
+                source=producer.source,
+            )
+            fork_spec.verify_instance(fork, tuple(normalized_queues))
+            forks_after.setdefault(producer_index, []).append((queue_index, fork))
+
+        if not replacements:
+            return queues, blocks
+
+        rewritten: list[BlockInstance] = []
+        for block_index, block in enumerate(blocks):
+            inputs = tuple(
+                replace(
+                    group,
+                    queues=tuple(
+                        replacements.get(
+                            (block_index, group_index, operand_index), queue
+                        )
+                        for operand_index, queue in enumerate(group.queues)
+                    ),
+                )
+                for group_index, group in enumerate(block.inputs)
+            )
+            rewritten.append(replace(block, inputs=inputs))
+            rewritten.extend(
+                fork
+                for _, fork in sorted(forks_after.get(block_index, ()))
+            )
+
+        block_remap = {
+            block.id: f"b{index}" for index, block in enumerate(rewritten)
+        }
+        normalized_blocks = tuple(
+            replace(block, id=block_remap[block.id]) for block in rewritten
+        )
+        return tuple(normalized_queues), normalized_blocks
+
+    def _freeze_scopes(
+        self,
+        queues: tuple[QueueValue, ...],
+        blocks: tuple[BlockInstance, ...],
+    ) -> tuple[Scope, ...]:
+        """Infer lexical Queue ports from the final normalized graph."""
+
+        parents = {scope.id: scope.parent for scope in self._scopes}
+
+        def inside(candidate: str, scope: str) -> bool:
+            cursor: str | None = candidate
+            while cursor is not None:
+                if cursor == scope:
+                    return True
+                cursor = parents[cursor]
+            return False
+
+        producers: dict[str, str] = {}
+        uses: dict[str, list[str]] = {}
+        for block in blocks:
+            for group in block.inputs:
+                for queue in group.queues:
+                    uses.setdefault(queue, []).append(block.scope)
+            for group in block.results:
+                for queue in group.queues:
+                    producers[queue] = block.scope
+
+        queue_order = tuple(queue.id for queue in queues)
+
+        scopes: list[Scope] = []
+        for draft in self._scopes:
+            scope_blocks = tuple(
+                block.id for block in blocks if block.scope == draft.id
+            )
+            inputs: list[str] = []
+            outputs: list[str] = []
+            if draft.id != self.root_scope:
+                for queue in queue_order:
+                    producer = producers.get(queue)
+                    queue_uses = uses.get(queue, ())
+                    if any(inside(use, draft.id) for use in queue_uses) and (
+                        producer is None or not inside(producer, draft.id)
+                    ):
+                        inputs.append(queue)
+                    if (
+                        producer is not None
+                        and inside(producer, draft.id)
+                        and any(not inside(use, draft.id) for use in queue_uses)
+                    ):
+                        outputs.append(queue)
+            scopes.append(
+                Scope(
+                    draft.id,
+                    draft.name,
+                    draft.parent,
+                    scope_blocks,
+                    tuple(draft.children),
+                    tuple(inputs),
+                    tuple(outputs),
+                    draft.source,
+                )
+            )
+        return tuple(scopes)
 
     def _freeze_queue_aliases(
         self,

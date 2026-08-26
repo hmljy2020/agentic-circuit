@@ -630,9 +630,10 @@ def _emit_instance(
 
 
 def _source_order(source: SourceSpan | None, identity: str) -> tuple[object, ...]:
+    numeric_identity = int(identity[1:]) if identity[1:].isdigit() else identity
     if source is None:
-        return (1, 0, 0, identity)
-    return (0, source.start_line, source.start_column, identity)
+        return (1, 0, 0, numeric_identity)
+    return (0, source.start_line, source.start_column, numeric_identity)
 
 
 def lower_semantic_v03(program: SemanticProgram) -> AcirV03Artifact:

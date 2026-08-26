@@ -104,6 +104,88 @@ class TopologyV03FrontendTest(unittest.TestCase):
             sum(block.opcode == "observe" for block in without_tap.program.blocks),
         )
 
+    def test_two_and_three_consumers_materialize_one_flat_fork(self) -> None:
+        """Broadcast sugar emits one N-output fork in stable consumer order."""
+        cases = (
+            ("topology/double_consume.py", "double_consume", 2),
+            ("topology/triple_consume.py", "triple_consume", 3),
+        )
+        for relative, system, outputs in cases:
+            with self.subTest(relative=relative):
+                result = self._capture(relative, system)
+                self.assertEqual((), result.diagnostics)
+                assert result.program is not None
+                forks = tuple(
+                    block for block in result.program.blocks
+                    if block.opcode == "fork"
+                )
+                self.assertEqual(1, len(forks))
+                self.assertEqual(outputs, len(forks[0].results[0].queues))
+                for queue in forks[0].results[0].queues:
+                    contract = result.program.queues[int(queue[1:])].constraint
+                    self.assertEqual(
+                        (1, 1, 1, "core"),
+                        (
+                            contract.depth,
+                            contract.latency,
+                            contract.rate,
+                            contract.domain,
+                        ),
+                    )
+                consumers = tuple(
+                    block.inputs[0].queues[0]
+                    for block in result.program.blocks
+                    if block.opcode == "compute"
+                )
+                self.assertEqual(forks[0].results[0].queues, consumers)
+
+    def test_observation_does_not_materialize_fork(self) -> None:
+        """One sink plus any number of observations remains a linear Queue."""
+        result = self._capture(
+            "topology/consume_and_observe.py", "consume_and_observe"
+        )
+        self.assertEqual((), result.diagnostics)
+        assert result.program is not None
+        self.assertNotIn(
+            "fork", tuple(block.opcode for block in result.program.blocks)
+        )
+
+    def test_explicit_fork_is_not_normalized_again(self) -> None:
+        """An explicit fork already leaves its input with one consuming use."""
+        result = self._capture(
+            "topology/static_topology.py",
+            "static_topology",
+            self._consts(tap_input=True),
+        )
+        self.assertEqual((), result.diagnostics)
+        assert result.program is not None
+        self.assertEqual(
+            1, sum(block.opcode == "fork" for block in result.program.blocks)
+        )
+
+    def test_cross_scope_fanout_rebuilds_ports_and_instances(self) -> None:
+        """The synthesized fork lives beside its producer and exports its results."""
+        from agentic_circuit._lower_acir_v03 import lower_semantic_v03
+
+        result = self._capture(
+            "topology/cross_scope_fanout.py", "cross_scope_fanout"
+        )
+        self.assertEqual((), result.diagnostics)
+        assert result.program is not None
+        program = result.program
+        producer, left, right = program.scopes[1:]
+        fork = next(block for block in program.blocks if block.opcode == "fork")
+        self.assertEqual(producer.id, fork.scope)
+        self.assertEqual(("q0",), producer.inputs)
+        self.assertEqual(fork.results[0].queues, producer.outputs)
+        self.assertEqual((fork.results[0].queues[0],), left.inputs)
+        self.assertEqual((fork.results[0].queues[1],), right.inputs)
+
+        text = lower_semantic_v03(program).text
+        self.assertIn("ac.v03.fork %q1", text)
+        self.assertIn("ac.instance @left_s2", text)
+        self.assertIn("ac.instance @right_s3", text)
+
     def test_static_topology_is_byte_deterministic(self) -> None:
         """Repeated elaboration and lowering reproduce the reviewable golden."""
         from agentic_circuit._lower_acir_v03 import lower_semantic_v03

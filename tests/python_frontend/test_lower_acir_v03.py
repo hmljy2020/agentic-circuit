@@ -180,7 +180,7 @@ class AcirV03LoweringTest(unittest.TestCase):
         artifact = lower_semantic_v03(result.program)
 
         self.assertEqual(
-            "sha256:15653a033912a078ffc7358991b3301b358c83b4b81a541f1fb2d8de2ffc4f8b",
+            "sha256:15171f7c57febe3a90655dd3439de33969f10fdf471f39a3f855faeafc6492be",
             artifact.sha256,
         )
         self.assertIn("ac.v03.issue", artifact.text)
@@ -193,6 +193,28 @@ class AcirV03LoweringTest(unittest.TestCase):
         self.assertIn("ac.v03.reorder", artifact.text)
         self.assertIn("rate = 4", artifact.text)
         self.assertIn("ac.v03.sink", artifact.text)
+        self.assertEqual(4, artifact.text.count("ac.v03.fork"))
+        forks = tuple(
+            block for block in result.program.blocks if block.opcode == "fork"
+        )
+        merge = next(
+            block for block in result.program.blocks if block.opcode == "merge"
+        )
+        reorder = next(
+            block for block in result.program.blocks if block.opcode == "reorder"
+        )
+        self.assertEqual(
+            tuple(fork.results[0].queues[0] for fork in forks),
+            merge.inputs[0].queues,
+        )
+        self.assertEqual(
+            tuple(fork.results[0].queues[1] for fork in forks),
+            reorder.inputs[0].queues,
+        )
+        self.assertNotIn(
+            "ac.fork",
+            (FIXTURES / "davincioo/core.py").read_text(encoding="utf-8"),
+        )
         self.assertNotIn("deferred", artifact.text)
         self._verify_native(artifact.text)
 
@@ -256,43 +278,65 @@ class AcirV03LoweringTest(unittest.TestCase):
         self.assertIn('kind "vector"', artifact.text)
         self.assertIn("entries 48 width 2", artifact.text)
         self.assertIn("rate = 2", artifact.text)
+        self.assertEqual(4, artifact.text.count("ac.v03.fork"))
+        self.assertNotIn("ac.fork", entry.read_text(encoding="utf-8"))
         self.assertNotIn("deferred", artifact.text)
         self._verify_native(artifact.text)
 
     def test_equivalent_workspace_roots_emit_identical_acir(self) -> None:
-        """Absolute checkout paths must not leak into deterministic artifacts."""
+        """Fanout artifacts do not depend on an absolute checkout path."""
         from agentic_circuit._frontend_v03 import (
             SemanticCaptureRequest,
             elaborate_semantic_v03,
         )
         from agentic_circuit._lower_acir_v03 import lower_semantic_v03
 
-        artifacts = []
+        semantic_artifacts = []
+        acir_artifacts = []
         with tempfile.TemporaryDirectory() as directory:
             parent = Path(directory)
             for name in ("left", "right"):
                 workspace = parent / name
                 workspace.mkdir()
                 entry = workspace / "system.py"
-                shutil.copyfile(FIXTURES / "minimal/system.py", entry)
+                shutil.copyfile(
+                    FIXTURES / "topology/double_consume.py", entry
+                )
                 result = elaborate_semantic_v03(
                     SemanticCaptureRequest(
-                        entry, workspace, "minimal", self._minimal_consts()
+                        entry, workspace, "double_consume", ()
                     )
                 )
                 self.assertEqual((), result.diagnostics)
                 assert result.program is not None
-                artifacts.append(lower_semantic_v03(result.program))
-        self.assertEqual(artifacts[0].text, artifacts[1].text)
-        self.assertEqual(artifacts[0].sha256, artifacts[1].sha256)
+                semantic_artifacts.append(result.program.canonical_bytes())
+                acir_artifacts.append(lower_semantic_v03(result.program))
+        self.assertEqual(semantic_artifacts[0], semantic_artifacts[1])
+        self.assertEqual(acir_artifacts[0].text, acir_artifacts[1].text)
+        self.assertEqual(acir_artifacts[0].sha256, acir_artifacts[1].sha256)
 
-    def test_double_consuming_use_is_rejected_before_emission(self) -> None:
-        """Linear Queue ownership fails before dialect text is produced."""
-        result = self._capture("invalid/double_consume.py", "double_consume")
+    def test_cross_scope_fanout_is_native_valid(self) -> None:
+        """Normalized scope ports and instance wiring survive native verification."""
+        from agentic_circuit._lower_acir_v03 import lower_semantic_v03
 
-        self.assertIsNone(result.program)
-        self.assertEqual("ACPY-V03-VERIFY-001", result.diagnostics[0].code)
-        self.assertIn("multiple consuming uses", result.diagnostics[0].message)
+        result = self._capture(
+            "topology/cross_scope_fanout.py", "cross_scope_fanout"
+        )
+        self.assertEqual((), result.diagnostics)
+        assert result.program is not None
+        self._verify_native(lower_semantic_v03(result.program).text)
+
+    def test_double_consuming_use_is_normalized_before_emission(self) -> None:
+        """Repeated Queue use emits explicit single-consumer frozen ACIR."""
+        from agentic_circuit._lower_acir_v03 import lower_semantic_v03
+
+        result = self._capture("topology/double_consume.py", "double_consume")
+
+        self.assertEqual((), result.diagnostics)
+        assert result.program is not None
+        artifact = lower_semantic_v03(result.program)
+        self.assertEqual(1, artifact.text.count("ac.v03.fork"))
+        self._verify_native(artifact.text)
 
     def test_emitter_rejects_queue_with_compute_region(self) -> None:
         """Changing an opcode cannot smuggle a compute region into transport."""

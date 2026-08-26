@@ -61,19 +61,24 @@ def davincioo_dual_cluster() -> None:
         kind="vector",
     )
 
-    int_wakeup0, int_retire0 = ac.fork(integer_completed[0], outputs=2)
-    int_wakeup1, int_retire1 = ac.fork(integer_completed[1], outputs=2)
-    vec_wakeup0, vec_retire0 = ac.fork(vector_completed[0], outputs=2)
-    vec_wakeup1, vec_retire1 = ac.fork(vector_completed[1], outputs=2)
-
     wakeups = ac.merge(
-        (int_wakeup0, int_wakeup1, vec_wakeup0, vec_wakeup1),
+        (
+            integer_completed[0],
+            integer_completed[1],
+            vector_completed[0],
+            vector_completed[1],
+        ),
         policy="round_robin",
     )
     completion_feedback.bind(wakeups)
 
     retired = ac.reorder(
-        (int_retire0, int_retire1, vec_retire0, vec_retire1),
+        (
+            integer_completed[0],
+            integer_completed[1],
+            vector_completed[0],
+            vector_completed[1],
+        ),
         by=MicroOp.rob_tag,
         entries=48,
         width=2,

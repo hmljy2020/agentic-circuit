@@ -39,17 +39,11 @@ def davincioo() -> None:
         kind="integer",
     )
 
-    wake0, retire0 = ac.fork(completed[0], outputs=2)
-    wake1, retire1 = ac.fork(completed[1], outputs=2)
-    wake2, retire2 = ac.fork(completed[2], outputs=2)
-    wake3, retire3 = ac.fork(completed[3], outputs=2)
-    wakeups = ac.merge(
-        (wake0, wake1, wake2, wake3), policy="round_robin"
-    )
+    wakeups = ac.merge(completed, policy="round_robin")
     completion_feedback.bind(wakeups)
 
     retired = ac.reorder(
-        (retire0, retire1, retire2, retire3),
+        completed,
         by=Work.sequence,
         entries=32,
         width=4,

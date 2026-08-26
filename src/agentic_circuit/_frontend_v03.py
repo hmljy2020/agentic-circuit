@@ -30,6 +30,7 @@ from ._semantic_v03 import (
     VarOperation,
     VarRegion,
     VarValue,
+    _queue_like_constraint,
     davincioo_core_catalog,
 )
 from ._source import DefinitionSite, SourceCaptureError, SourceUnit, load_source_unit
@@ -436,17 +437,10 @@ class _SystemElaborator:
         self.collections: dict[str, tuple[str, ...]] = {}
         self.deferred: dict[str, DeferredEdge] = {}
         self.queue_types: dict[str, PayloadType] = {}
-        self.queue_order: list[str] = []
         self.catalog = davincioo_core_catalog()
         self.static_values: dict[str, StaticValue] = {}
         self.static_locals: dict[str, StaticValue] = {}
         self.scope_stack = [self.builder.root_scope]
-        self.scope_parents: dict[str, str | None] = {
-            self.builder.root_scope: None
-        }
-        self.producer_scope: dict[str, str] = {}
-        self.use_scopes: dict[str, list[str]] = {}
-        self.queue_aliases: dict[str, str] = {}
 
     def run(self) -> SemanticProgram:
         self._validate_consts()
@@ -459,7 +453,6 @@ class _SystemElaborator:
                     f"deferred Queue {name!r} is unbound",
                     self.system.span,
                 )
-        self._infer_scope_io()
         return self.builder.freeze()
 
     @property
@@ -577,9 +570,9 @@ class _SystemElaborator:
                 "scope name must be a non-empty static string",
                 _span(self.unit, call.args[0]),
             )
-        parent = self.current_scope
-        scope = self.builder.add_scope(name, parent, _span(self.unit, statement))
-        self.scope_parents[scope] = parent
+        scope = self.builder.add_scope(
+            name, self.current_scope, _span(self.unit, statement)
+        )
         self.scope_stack.append(scope)
         try:
             self._statements(statement.body)
@@ -770,11 +763,14 @@ class _SystemElaborator:
             _span(self.unit, node),
         )
         self.queue_types[queue] = payload
-        self.queue_order.append(queue)
         return queue
 
     def _queue_like(self, queue: str, node: ast.AST) -> str:
-        return self._queue(self.queue_types[queue], node)
+        output = self.builder.add_queue(
+            _queue_like_constraint(self.queue_types[queue]), _span(self.unit, node)
+        )
+        self.queue_types[output] = self.queue_types[queue]
+        return output
 
     def _queue_ref(self, node: ast.expr) -> str:
         if isinstance(node, ast.Name) and node.id in self.queues:
@@ -834,7 +830,6 @@ class _SystemElaborator:
             QueueConstraint(payload), _span(self.unit, call)
         )
         self.queue_types[output] = payload
-        self.queue_order.append(output)
         self.deferred[name] = DeferredEdge(
             f"d{len(self.deferred)}", output, payload
         )
@@ -878,7 +873,6 @@ class _SystemElaborator:
                 _span(self.unit, call.args[0]),
             )
         self.deferred[name] = edge.bind(queue)
-        self.queue_aliases[queue] = edge.output_queue
         self.builder.bind_queue_alias(edge.output_queue, queue)
 
     def _queue_collection(self, node: ast.expr) -> tuple[str, ...]:
@@ -955,7 +949,7 @@ class _SystemElaborator:
         parameters: tuple[SemanticParameter, ...] = (),
         source: SourceSpan | None = None,
     ) -> str:
-        block = self.builder.add_block(
+        return self.builder.add_block(
             opcode,
             self.current_scope,
             inputs,
@@ -965,13 +959,6 @@ class _SystemElaborator:
             source=source,
             catalog=self.catalog,
         )
-        for group in inputs:
-            for queue in group.queues:
-                self.use_scopes.setdefault(queue, []).append(self.current_scope)
-        for group in results:
-            for queue in group.queues:
-                self.producer_scope[queue] = self.current_scope
-        return block
 
     def _source(self, call: ast.Call) -> tuple[str, ...]:
         if len(call.args) != 1:
@@ -1436,48 +1423,6 @@ class _SystemElaborator:
             (),
             source=_span(self.unit, call),
         )
-
-    def _inside(self, candidate: str, scope: str) -> bool:
-        cursor: str | None = candidate
-        while cursor is not None:
-            if cursor == scope:
-                return True
-            cursor = self.scope_parents[cursor]
-        return False
-
-    def _infer_scope_io(self) -> None:
-        def canonical(queue: str) -> str:
-            return self.queue_aliases.get(queue, queue)
-
-        producers = {
-            canonical(queue): scope for queue, scope in self.producer_scope.items()
-        }
-        uses: dict[str, list[str]] = {}
-        for queue, scopes in self.use_scopes.items():
-            uses.setdefault(canonical(queue), []).extend(scopes)
-        ordered: list[str] = []
-        for queue in self.queue_order:
-            queue = canonical(queue)
-            if queue not in ordered:
-                ordered.append(queue)
-        for scope in self.scope_parents:
-            if scope == self.builder.root_scope:
-                continue
-            inputs: list[str] = []
-            outputs: list[str] = []
-            for queue in ordered:
-                producer = producers.get(queue)
-                queue_uses = uses.get(queue, [])
-                if any(self._inside(use, scope) for use in queue_uses) and (
-                    producer is None or not self._inside(producer, scope)
-                ):
-                    inputs.append(queue)
-                if producer is not None and self._inside(producer, scope) and any(
-                    not self._inside(use, scope) for use in queue_uses
-                ):
-                    outputs.append(queue)
-            self.builder.set_scope_io(scope, tuple(inputs), tuple(outputs))
-
 
 def elaborate_semantic_v03(request: SemanticCaptureRequest) -> SemanticFrontendResult:
     """Capture one system into a deterministic v0.3 semantic graph."""

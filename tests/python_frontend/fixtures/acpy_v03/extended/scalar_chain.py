@@ -1,7 +1,7 @@
 """Exercise scalar Queue payloads, chained consumers, and read-only observers.
 
 Two observations of ``second`` are legal because observation does not consume
-Queue ownership; using ``second`` in two compute calls would not be legal.
+Queue ownership and therefore does not require broadcast normalization.
 """
 
 from __future__ import annotations
