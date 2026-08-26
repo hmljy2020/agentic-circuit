@@ -14,7 +14,8 @@ builtin.module attributes {ac.contract_epoch = "0.3"} {
   ac.system @s root @m as "m" tick 0 "cycle" seed {kind = "fixed", value = 0 : i64} instrumentation [] results {id = "default", format = "json"} selected true
   ac.module @m() parameters {} graph {
     %source = ac.source "input" : !packet_q
-    %lane:2 = ac.route %source by (#ac.field<root = !ac.struct<@types::@Packet>, path = ["kind"], leaf = i1>) : (!packet_q) -> (!packet_q, !packet_q)
+    %buffered = ac.queue %source : !packet_q -> !packet_q
+    %lane:2 = ac.route %buffered by (#ac.field<root = !ac.struct<@types::@Packet>, path = ["kind"], leaf = i1>) : (!packet_q) -> (!packet_q, !packet_q)
     %joined = ac.merge (%lane#0, %lane#1) policy (#ac.policy<kind = round_robin>) : (!packet_q, !packet_q) -> !packet_q
     %copy:2 = ac.fork %joined : (!packet_q) -> (!packet_q, !packet_q)
     ac.observe %copy#0 as "copy0" fields [] : !packet_q
@@ -25,6 +26,7 @@ builtin.module attributes {ac.contract_epoch = "0.3"} {
 
 // CHECK: #ac.field<root = !ac.struct<@types::@Packet>, path = ["kind"], leaf = i1>
 // CHECK: #ac.policy<kind = round_robin>
+// CHECK: ac.queue %
 // CHECK: ac.route
 // CHECK: ac.merge
 // CHECK: ac.fork

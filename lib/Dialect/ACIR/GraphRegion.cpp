@@ -375,8 +375,9 @@ static LogicalResult verifyGraphStructureImpl(
               std::max(localDepth, saturatedAdd(2, childStats.depth,
                                                 maxHierarchyDepth + 1));
         }
-      } else if (isa<QueueOp, EventQueueOp, ResourceOp, AddressSpaceOp,
-                     ProcessOp, StatOp>(child)) {
+      } else if ((isa<QueueOp>(child) && !cast<QueueOp>(child).getInput()) ||
+                 isa<EventQueueOp, ResourceOp, AddressSpaceOp, ProcessOp,
+                     StatOp>(child)) {
         localOwners = 1;
         localDepth = 1;
       }
@@ -483,8 +484,10 @@ static LogicalResult verifyGraphStructureImpl(
             return failure();
         }
       } else if (auto queue = dyn_cast<QueueOp>(child)) {
-        std::string path = (parentPath + "." + queue.getPath()).str();
-        std::string id = (parentId + "/" + queue.getStableId()).str();
+        if (queue.getInput())
+          continue;
+        std::string path = (parentPath + "." + *queue.getPath()).str();
+        std::string id = (parentId + "/" + *queue.getStableId()).str();
         if (failed(registerOwner(&child, path, id)))
           return failure();
         if (elaboratedStateOwners)

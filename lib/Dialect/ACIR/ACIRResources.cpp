@@ -273,10 +273,126 @@ SymbolRefAttr ownerEffectReference(Operation *operation, StringRef localName) {
       {FlatSymbolRefAttr::get(operation->getContext(), localName)});
 }
 
+ParseResult QueueOp::parse(OpAsmParser &parser, OperationState &result) {
+  auto &properties = result.getOrAddProperties<QueueOp::Properties>();
+  OpAsmParser::UnresolvedOperand input;
+  OptionalParseResult optionalInput = parser.parseOptionalOperand(input);
+  if (optionalInput.has_value()) {
+    if (failed(*optionalInput))
+      return failure();
+    Type inputType;
+    Type outputType;
+    if (parser.parseOptionalAttrDict(result.attributes) ||
+        parser.parseColonType(inputType) || parser.parseArrow() ||
+        parser.parseType(outputType) ||
+        parser.resolveOperand(input, inputType, result.operands))
+      return failure();
+    result.addTypes(outputType);
+    return success();
+  }
+
+  StringAttr symbol;
+  TypeAttr payload;
+  IntegerAttr entryCapacity;
+  IntegerAttr byteCapacity;
+  StringAttr ordering;
+  FlatSymbolRefAttr protocol;
+  StringAttr ownership;
+  StringAttr stableId;
+  StringAttr path;
+  DictionaryAttr watermarks;
+  if (parser.parseSymbolName(symbol) || parser.parseKeyword("payload") ||
+      parser.parseCustomAttributeWithFallback(
+          payload, parser.getBuilder().getNoneType()) ||
+      parser.parseKeyword("entries") ||
+      parser.parseCustomAttributeWithFallback(
+          entryCapacity, parser.getBuilder().getI64Type()))
+    return failure();
+  if (succeeded(parser.parseOptionalKeyword("bytes")) &&
+      parser.parseCustomAttributeWithFallback(
+          byteCapacity, parser.getBuilder().getI64Type()))
+    return failure();
+  if (parser.parseKeyword("ordering") ||
+      parser.parseCustomAttributeWithFallback(
+          ordering, parser.getBuilder().getNoneType()) ||
+      parser.parseKeyword("protocol") ||
+      parser.parseCustomAttributeWithFallback(
+          protocol, parser.getBuilder().getNoneType()) ||
+      parser.parseKeyword("ownership") ||
+      parser.parseCustomAttributeWithFallback(
+          ownership, parser.getBuilder().getNoneType()) ||
+      parser.parseKeyword("id") ||
+      parser.parseCustomAttributeWithFallback(
+          stableId, parser.getBuilder().getNoneType()) ||
+      parser.parseKeyword("path") ||
+      parser.parseCustomAttributeWithFallback(
+          path, parser.getBuilder().getNoneType()))
+    return failure();
+  if (succeeded(parser.parseOptionalKeyword("watermarks")) &&
+      parser.parseCustomAttributeWithFallback(
+          watermarks, parser.getBuilder().getNoneType()))
+    return failure();
+  if (parser.parseOptionalAttrDict(result.attributes))
+    return failure();
+
+  properties.sym_name = symbol;
+  properties.payload = payload;
+  properties.entry_capacity = entryCapacity;
+  properties.byte_capacity = byteCapacity;
+  properties.ordering = ordering;
+  properties.protocol = protocol;
+  properties.ownership = ownership;
+  properties.stable_id = stableId;
+  properties.path = path;
+  properties.watermarks = watermarks;
+  properties.delay_ticks = parser.getBuilder().getI64IntegerAttr(1);
+  return success();
+}
+
+void QueueOp::print(OpAsmPrinter &printer) {
+  if (getInput()) {
+    printer << ' ' << getInput();
+    printer.printOptionalAttrDict(
+        (*this)->getDiscardableAttrDictionary().getValue());
+    printer << " : " << getInput().getType() << " -> "
+            << getOutput().getType();
+    return;
+  }
+
+  printer << ' ';
+  printer.printSymbolName(getSymNameAttr().getValue());
+  printer << " payload ";
+  printer.printAttributeWithoutType(getPayloadAttr());
+  printer << " entries ";
+  printer.printAttributeWithoutType(getEntryCapacityAttr());
+  if (getByteCapacityAttr()) {
+    printer << " bytes ";
+    printer.printAttributeWithoutType(getByteCapacityAttr());
+  }
+  printer << " ordering ";
+  printer.printAttributeWithoutType(getOrderingAttr());
+  printer << " protocol ";
+  printer.printAttributeWithoutType(getProtocolAttr());
+  printer << " ownership ";
+  printer.printAttributeWithoutType(getOwnershipAttr());
+  printer << " id ";
+  printer.printAttributeWithoutType(getStableIdAttr());
+  printer << " path ";
+  printer.printAttributeWithoutType(getPathAttr());
+  if (getWatermarksAttr()) {
+    printer << " watermarks ";
+    printer.printAttributeWithoutType(getWatermarksAttr());
+  }
+  printer.printOptionalAttrDict(
+      (*this)->getDiscardableAttrDictionary().getValue());
+}
+
 void QueueOp::getEffects(
     SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  if (getInput())
+    return;
   effects.emplace_back(
-      MemoryEffects::Write::get(), ownerEffectReference(*this, getSymName()),
+      MemoryEffects::Write::get(), ownerEffectReference(*this, *getSymName()),
       ownerEffectParameters(*this, getStableIdAttr(), getPathAttr()),
       QueueStateResource::get());
 }
@@ -332,7 +448,45 @@ void ResourceOp::getEffects(
 }
 
 LogicalResult QueueOp::verify() {
-  if (failed(verifyOwner(*this, getSymName(), getStableId(), getPath(),
+  bool transport = static_cast<bool>(getInput()) || static_cast<bool>(getOutput());
+  if (transport) {
+    if (!getInput() || !getOutput())
+      return emitOpError("transport form requires exactly one input and one output");
+    if (getSymNameAttr() || getStableIdAttr() || getPathAttr() ||
+        getPayloadAttr() || getEntryCapacityAttr() || getByteCapacityAttr() ||
+        getOrderingAttr() || getProtocolAttr() || getOwnershipAttr() ||
+        getWatermarksAttr() || getDelayTicksAttr() ||
+        !getOperation()->getDiscardableAttrs().empty())
+      return emitOpError(
+          "transport form cannot carry legacy owned-state attributes");
+    auto file = getOperation()->getParentOfType<mlir::ModuleOp>();
+    auto epoch = file ? file->getAttrOfType<StringAttr>("ac.contract_epoch")
+                      : StringAttr();
+    if (!epoch || epoch.getValue() != "0.3")
+      return emitOpError(
+          "transport form is only legal in contract_epoch 0.3");
+    if (failed(verifyPlacement(*this)))
+      return failure();
+    auto input = dyn_cast<QueueValueType>(getInput().getType());
+    auto output = dyn_cast<QueueValueType>(getOutput().getType());
+    if (!input || !output)
+      return emitOpError("transport input and output must have !ac.queue type");
+    if (input.getElementType() != output.getElementType())
+      return emitOpError("transport must preserve Queue payload type");
+    return success();
+  }
+
+  if (!getSymNameAttr() || !getStableIdAttr() || !getPathAttr() ||
+      !getPayloadAttr() || !getEntryCapacityAttr() || !getOrderingAttr() ||
+      !getProtocolAttr() || !getOwnershipAttr() || !getDelayTicksAttr())
+    return emitOpError("owned-state form requires all legacy queue attributes");
+  auto file = getOperation()->getParentOfType<mlir::ModuleOp>();
+  auto epoch = file ? file->getAttrOfType<StringAttr>("ac.contract_epoch")
+                    : StringAttr();
+  if (epoch && epoch.getValue() == "0.3")
+    return emitOpError(
+        "owned-state form is not legal in contract_epoch 0.3");
+  if (failed(verifyOwner(*this, *getSymName(), *getStableId(), *getPath(),
                          getDelayTicksAttr().getInt())))
     return failure();
   int64_t entryCapacity = getEntryCapacityAttr().getInt();
@@ -340,11 +494,11 @@ LogicalResult QueueOp::verify() {
     return emitOpError("entry capacity must be positive");
   if (auto bytes = getByteCapacityAttr(); bytes && bytes.getInt() <= 0)
     return emitOpError("byte capacity must be positive when present");
-  if (getOrdering() != "fifo" && getOrdering() != "per_key")
+  if (*getOrdering() != "fifo" && *getOrdering() != "per_key")
     return emitOpError("ordering must be 'fifo' or 'per_key'");
-  if (getOwnership() != "exclusive")
+  if (*getOwnership() != "exclusive")
     return emitOpError("queue ownership must be exactly 'exclusive'");
-  if (!isNormativePayloadType(getPayload()))
+  if (!isNormativePayloadType(*getPayload()))
     return emitOpError("queue payload must be a normative ACIR value type");
   if (DictionaryAttr marks = getWatermarksAttr()) {
     auto low = marks.getAs<IntegerAttr>("low");
@@ -383,16 +537,16 @@ LogicalResult QueueOp::verify() {
   auto orderingStrength = [](StringRef ordering) {
     return ordering == "fifo" ? 2 : ordering == "per_key" ? 1 : 0;
   };
-  if (orderingStrength(getOrdering()) < orderingStrength(protocolOrdering))
-    return emitOpError() << "queue ordering '" << getOrdering()
+  if (orderingStrength(*getOrdering()) < orderingStrength(protocolOrdering))
+    return emitOpError() << "queue ordering '" << *getOrdering()
                          << "' weakens protocol ordering '" << protocolOrdering
                          << "'";
-  if (getOrdering() == "per_key" && !hasCorrelation)
+  if (*getOrdering() == "per_key" && !hasCorrelation)
     return emitOpError(
         "per_key queue storage requires protocol correlation semantics");
   bool carrier =
       llvm::any_of(protocol.getBody().getOps<EventOp>(), [&](EventOp event) {
-        return event.getPayload() == getPayload() &&
+        return event.getPayload() == *getPayload() &&
                (event.getAction() == "offer" ||
                 event.getAction() == "response" ||
                 event.getAction() == "notify");

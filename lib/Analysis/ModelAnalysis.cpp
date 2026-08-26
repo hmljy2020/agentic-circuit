@@ -419,7 +419,9 @@ Operation *lookupDefinition(ModuleOp model, FlatSymbolRefAttr reference) {
 }
 
 bool isDirectStateOwner(Operation *operation) {
-  return isa<ac::QueueOp, ac::EventQueueOp, ac::ResourceOp, ac::AddressSpaceOp,
+  if (auto queue = dyn_cast<ac::QueueOp>(operation))
+    return !queue.getInput();
+  return isa<ac::EventQueueOp, ac::ResourceOp, ac::AddressSpaceOp,
              ac::ProcessOp, ac::StatOp>(operation);
 }
 

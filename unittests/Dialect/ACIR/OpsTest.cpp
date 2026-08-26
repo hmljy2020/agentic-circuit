@@ -507,6 +507,36 @@ TEST(ACIROpsTest, TaskSixRegistryDeltaIsExactlyNineGraphOperations) {
   EXPECT_FALSE(mlir::OperationName("ac.freeze", &context).isRegistered());
 }
 
+TEST(ACIROpsTest, V03QueueTransportRoundTripsWithoutBecomingStateOwner) {
+  mlir::MLIRContext context;
+  context.loadDialect<ACIRDialect>();
+  auto file = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+    builtin.module attributes {ac.contract_epoch = "0.3"} {
+      ac.module @M() parameters {} graph {
+        %source = ac.source "input" : !ac.queue<i1, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>
+        %buffered = ac.queue %source : !ac.queue<i1, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>> -> !ac.queue<i1, #ac.queue_contract<depth = 4, latency = 2, rate = 1, domain = @core, ordering = fifo>>
+        ac.observe %buffered as "output" fields [] : !ac.queue<i1, #ac.queue_contract<depth = 4, latency = 2, rate = 1, domain = @core, ordering = fifo>>
+        ac.return
+      }
+    }
+  )mlir",
+                                                      &context);
+  ASSERT_TRUE(file);
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*file)));
+  auto module = *file->getOps<ModuleOp>().begin();
+  auto queue = *module.getBody().front().getOps<QueueOp>().begin();
+  EXPECT_TRUE(queue.getInput());
+  EXPECT_TRUE(queue.getOutput());
+  EXPECT_FALSE(queue.getSymNameAttr());
+  EXPECT_TRUE(mlir::isMemoryEffectFree(queue.getOperation()));
+
+  std::string printed;
+  llvm::raw_string_ostream(printed) << *file;
+  auto reparsed = mlir::parseSourceString<mlir::ModuleOp>(printed, &context);
+  ASSERT_TRUE(reparsed);
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*reparsed)));
+}
+
 TEST(ACIROpsTest, PublicBuildersConstructEveryTaskEightOperation) {
   mlir::MLIRContext context;
   context.loadDialect<ACIRDialect, mlir::arith::ArithDialect>();

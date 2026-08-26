@@ -879,21 +879,47 @@ class ACIR_OwnedStateOp<string mnemonic, list<Trait> traits = []>
       ], traits)>;
 
 def ACIR_QueueOp : ACIR_OwnedStateOp<"queue"> {
-  let arguments = (ins SymbolNameAttr:$sym_name, StrAttr:$stable_id,
-                       StrAttr:$path, TypeAttr:$payload,
-                       I64Attr:$entry_capacity,
+  let arguments = (ins Optional<AnyType>:$input,
+                       OptionalAttr<SymbolNameAttr>:$sym_name,
+                       OptionalAttr<StrAttr>:$stable_id,
+                       OptionalAttr<StrAttr>:$path,
+                       OptionalAttr<TypeAttr>:$payload,
+                       OptionalAttr<I64Attr>:$entry_capacity,
                        OptionalAttr<I64Attr>:$byte_capacity,
-                       StrAttr:$ordering, FlatSymbolRefAttr:$protocol,
-                       StrAttr:$ownership,
+                       OptionalAttr<StrAttr>:$ordering,
+                       OptionalAttr<FlatSymbolRefAttr>:$protocol,
+                       OptionalAttr<StrAttr>:$ownership,
                        OptionalAttr<DictionaryAttr>:$watermarks,
-                       DefaultValuedAttr<I64Attr, "1">:$delay_ticks);
+                       OptionalAttr<I64Attr>:$delay_ticks);
+  let results = (outs Optional<AnyType>:$output);
+  let builders = [OpBuilder<(ins
+      "::mlir::StringAttr":$sym_name,
+      "::mlir::StringAttr":$stable_id,
+      "::mlir::StringAttr":$path,
+      "::mlir::TypeAttr":$payload,
+      "::mlir::IntegerAttr":$entry_capacity,
+      "::mlir::IntegerAttr":$byte_capacity,
+      "::mlir::StringAttr":$ordering,
+      "::mlir::FlatSymbolRefAttr":$protocol,
+      "::mlir::StringAttr":$ownership,
+      "::mlir::DictionaryAttr":$watermarks,
+      "::mlir::IntegerAttr":$delay_ticks), [{
+    $_state.addAttribute("sym_name", sym_name);
+    $_state.addAttribute("stable_id", stable_id);
+    $_state.addAttribute("path", path);
+    $_state.addAttribute("payload", payload);
+    $_state.addAttribute("entry_capacity", entry_capacity);
+    if (byte_capacity)
+      $_state.addAttribute("byte_capacity", byte_capacity);
+    $_state.addAttribute("ordering", ordering);
+    $_state.addAttribute("protocol", protocol);
+    $_state.addAttribute("ownership", ownership);
+    if (watermarks)
+      $_state.addAttribute("watermarks", watermarks);
+    $_state.addAttribute("delay_ticks", delay_ticks);
+  }]>];
   let hasVerifier = 1;
-  let assemblyFormat = [{
-    $sym_name `payload` $payload `entries` $entry_capacity
-    (`bytes` $byte_capacity^)? `ordering` $ordering `protocol` $protocol
-    `ownership` $ownership `id` $stable_id `path` $path
-    (`watermarks` $watermarks^)? attr-dict
-  }];
+  let hasCustomAssemblyFormat = 1;
 }
 
 def ACIR_EventQueueOp : ACIR_OwnedStateOp<"event_queue"> {

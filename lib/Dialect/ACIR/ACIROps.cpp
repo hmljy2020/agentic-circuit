@@ -2258,19 +2258,19 @@ verifyRuntimeReferences(ModuleOp module,
       if (auto send = dyn_cast<TrySendOp>(operation)) {
         auto queue = dyn_cast_or_null<QueueOp>(
             lookupExpected(send, send.getQueue(), QueueOp::getOperationName()));
-        if (queue && queue.getPayload() != send.getValue().getType()) {
+        if (queue && *queue.getPayload() != send.getValue().getType()) {
           send.emitOpError()
               << "value type " << send.getValue().getType()
-              << " does not match queue payload type " << queue.getPayload();
+              << " does not match queue payload type " << *queue.getPayload();
           result = failure();
         }
       } else if (auto recv = dyn_cast<TryRecvOp>(operation)) {
         auto queue = dyn_cast_or_null<QueueOp>(
             lookupExpected(recv, recv.getQueue(), QueueOp::getOperationName()));
-        if (queue && queue.getPayload() != recv.getValue().getType()) {
+        if (queue && *queue.getPayload() != recv.getValue().getType()) {
           recv.emitOpError()
               << "result type " << recv.getValue().getType()
-              << " does not match queue payload type " << queue.getPayload();
+              << " does not match queue payload type " << *queue.getPayload();
           result = failure();
         }
       } else if (auto schedule = dyn_cast<ScheduleOp>(operation)) {
@@ -2306,10 +2306,10 @@ verifyRuntimeReferences(ModuleOp module,
         Operation *target = lookupExpected(probe, probe.getTarget(), expected);
         if (auto queue = dyn_cast_or_null<QueueOp>(target);
             queue && probe.getKind() == "queue" &&
-            queue.getPayload() != probe.getValue().getType()) {
+            *queue.getPayload() != probe.getValue().getType()) {
           probe.emitOpError()
               << "result type " << probe.getValue().getType()
-              << " does not match queue payload type " << queue.getPayload();
+              << " does not match queue payload type " << *queue.getPayload();
           result = failure();
         }
         if (auto eventQueue = dyn_cast_or_null<EventQueueOp>(target);
@@ -2553,7 +2553,7 @@ LogicalResult ModuleOp::verify() {
       path = instances.getPathAttr();
     } else if (auto view = dyn_cast<ViewOp>(child)) {
       localName = view.getSymNameAttr();
-    } else if (auto queue = dyn_cast<QueueOp>(child)) {
+    } else if (auto queue = dyn_cast<QueueOp>(child); queue && !queue.getInput()) {
       localName = queue.getSymNameAttr();
       stableId = queue.getStableIdAttr();
       path = queue.getPathAttr();
