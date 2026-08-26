@@ -382,6 +382,62 @@ def ACIR_MemoryYieldOp : ACIR_Op<"memory.yield", [
   let assemblyFormat = "$value attr-dict `:` qualified(type($value))";
 }
 
+// A named timing-only memory component.  It owns no functional byte image in
+// the v0.3 prototype; its contract determines blocking access duration.
+def ACIR_MemoryResourceOp : ACIR_Op<"memory.resource", [Symbol]> {
+  let arguments = (ins SymbolNameAttr:$sym_name, StrAttr:$kind,
+                       I64Attr:$capacity_bytes, I64Attr:$read_latency,
+                       I64Attr:$write_latency, I64Attr:$bytes_per_cycle);
+  let hasVerifier = 1;
+  let assemblyFormat = [{
+    $sym_name `kind` $kind `capacity_bytes` $capacity_bytes
+    `read_latency` $read_latency `write_latency` $write_latency
+    `bytes_per_cycle` $bytes_per_cycle attr-dict
+  }];
+}
+
+def ACIR_QueueProcessOp : ACIR_Op<"queue.process", [
+    SingleBlock, RecursiveMemoryEffects
+  ]> {
+  let arguments = (ins ACIR_QueueType:$input, I64Attr:$inflight,
+                       I64Attr:$depth, I64Attr:$latency);
+  let results = (outs ACIR_QueueType:$output);
+  let regions = (region SizedRegion<1>:$body);
+  let hasVerifier = 1;
+  let assemblyFormat = [{
+    $input `inflight` $inflight `depth` $depth `latency` $latency $body
+    attr-dict `:` qualified(type($input)) `->` qualified(type($output))
+  }];
+}
+
+def ACIR_MemoryReadOp : ACIR_Op<"memory.read"> {
+  let arguments = (ins FlatSymbolRefAttr:$memory, ACIR_VarType:$address,
+                       ACIR_VarType:$size);
+  let results = (outs ACIR_MemoryTransferType:$transfer);
+  let hasVerifier = 1;
+  let assemblyFormat = [{
+    $memory $address `size` $size attr-dict `:` qualified(type($address)) `,`
+    qualified(type($size)) `->` qualified(type($transfer))
+  }];
+}
+
+def ACIR_MemoryWriteOp : ACIR_Op<"memory.write"> {
+  let arguments = (ins FlatSymbolRefAttr:$memory, ACIR_VarType:$address,
+                       ACIR_MemoryTransferType:$transfer);
+  let hasVerifier = 1;
+  let assemblyFormat = [{
+    $memory $address `data` $transfer attr-dict `:` qualified(type($address))
+    `,` qualified(type($transfer))
+  }];
+}
+
+def ACIR_QueueProcessYieldOp : ACIR_Op<"queue.process.yield", [
+    Pure, Terminator, HasParent<"QueueProcessOp">
+  ]> {
+  let arguments = (ins ACIR_VarType:$value);
+  let assemblyFormat = "$value attr-dict `:` qualified(type($value))";
+}
+
 def ACIR_FeedbackOp : ACIR_Op<"feedback", [SingleBlock]> {
   let arguments = (ins ACIR_QueueType:$input, I64Attr:$depth,
                        I64Attr:$latency, I64Attr:$max_iterations);

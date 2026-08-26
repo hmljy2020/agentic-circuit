@@ -3564,6 +3564,183 @@ LogicalResult ProcessOp::verify() {
   return verifyTraceProvenance(*this);
 }
 
+namespace {
+
+LogicalResult requireMemoryPrototypeEpoch(Operation *operation) {
+  auto module = operation->getParentOfType<mlir::ModuleOp>();
+  auto epoch = module ? module->getAttrOfType<StringAttr>("ac.contract_epoch")
+                      : StringAttr();
+  if (!epoch || epoch.getValue() != "0.3")
+    return operation->emitOpError(
+        "requires top-level ac.contract_epoch = \"0.3\"");
+  return success();
+}
+
+MemoryResourceOp resolveMemoryResource(Operation *operation,
+                                       FlatSymbolRefAttr reference) {
+  return dyn_cast_or_null<MemoryResourceOp>(
+      SymbolTable::lookupNearestSymbolFrom(operation, reference));
+}
+
+LogicalResult verifyMemoryIndex(Operation *operation, Value value,
+                                StringRef subject) {
+  auto var = dyn_cast<VarType>(value.getType());
+  auto integer =
+      var ? dyn_cast<IntegerType>(var.getElementType()) : IntegerType();
+  if (!integer || integer.getWidth() > 64)
+    return operation->emitOpError()
+           << subject << " must be an integer Var no wider than 64 bits";
+  if (auto constant = value.getDefiningOp<VarConstantOp>()) {
+    auto attribute = dyn_cast<IntegerAttr>(constant.getValue());
+    if (attribute && attribute.getValue().isNegative())
+      return operation->emitOpError() << subject << " must be non-negative";
+  }
+  return success();
+}
+
+std::optional<uint64_t> constantVarUnsigned(Value value) {
+  auto constant = value.getDefiningOp<VarConstantOp>();
+  if (!constant)
+    return std::nullopt;
+  auto integer = dyn_cast<IntegerAttr>(constant.getValue());
+  if (!integer || integer.getValue().isNegative())
+    return std::nullopt;
+  return integer.getValue().getZExtValue();
+}
+
+} // namespace
+
+LogicalResult MemoryResourceOp::verify() {
+  if (failed(requireMemoryPrototypeEpoch(*this)))
+    return failure();
+  if (!isa_and_nonnull<mlir::ModuleOp>((*this)->getParentOp()))
+    return emitOpError("must be a direct child of the builtin module");
+  if (getKind() != "sram" && getKind() != "dram")
+    return emitOpError("kind must be 'sram' or 'dram'");
+  auto isPositive = [](IntegerAttr value) {
+    return !value.getValue().isNegative() && !value.getValue().isZero();
+  };
+  if (!isPositive(getCapacityBytesAttr()) ||
+      !isPositive(getBytesPerCycleAttr()))
+    return emitOpError("capacity_bytes and bytes_per_cycle must be positive");
+  if (getReadLatencyAttr().getValue().isNegative() ||
+      getWriteLatencyAttr().getValue().isNegative())
+    return emitOpError("read_latency and write_latency must be non-negative");
+
+  llvm::SmallDenseSet<Operation *> clients;
+  auto file = getOperation()->getParentOfType<mlir::ModuleOp>();
+  file.walk([&](Operation *operation) {
+    FlatSymbolRefAttr reference;
+    if (auto read = dyn_cast<MemoryReadOp>(operation))
+      reference = read.getMemoryAttr();
+    else if (auto write = dyn_cast<MemoryWriteOp>(operation))
+      reference = write.getMemoryAttr();
+    if (!reference || reference.getValue() != getSymName())
+      return;
+    if (auto process = operation->getParentOfType<QueueProcessOp>())
+      clients.insert(process.getOperation());
+  });
+  if (clients.size() != 1)
+    return emitOpError("must be referenced by exactly one queue process");
+  return success();
+}
+
+LogicalResult MemoryReadOp::verify() {
+  if (failed(requireMemoryPrototypeEpoch(*this)))
+    return failure();
+  auto process = getOperation()->getParentOfType<QueueProcessOp>();
+  if (!process || getOperation()->getParentOp() != process.getOperation())
+    return emitOpError("must be a direct operation in ac.queue.process");
+  MemoryResourceOp memory = resolveMemoryResource(*this, getMemoryAttr());
+  if (!memory)
+    return emitOpError() << "unresolved memory resource '" << getMemoryAttr()
+                         << "'";
+  if (failed(verifyMemoryIndex(*this, getAddress(), "address")) ||
+      failed(verifyMemoryIndex(*this, getSize(), "size")))
+    return failure();
+  if (auto size = constantVarUnsigned(getSize()); size && *size == 0)
+    return emitOpError("constant size must be positive");
+  auto address = constantVarUnsigned(getAddress());
+  auto size = constantVarUnsigned(getSize());
+  if (address && size &&
+      (*address >= static_cast<uint64_t>(memory.getCapacityBytes()) ||
+       *size > static_cast<uint64_t>(memory.getCapacityBytes()) - *address))
+    return emitOpError("constant access exceeds memory capacity");
+  return success();
+}
+
+LogicalResult MemoryWriteOp::verify() {
+  if (failed(requireMemoryPrototypeEpoch(*this)))
+    return failure();
+  auto process = getOperation()->getParentOfType<QueueProcessOp>();
+  if (!process || getOperation()->getParentOp() != process.getOperation())
+    return emitOpError("must be a direct operation in ac.queue.process");
+  MemoryResourceOp memory = resolveMemoryResource(*this, getMemoryAttr());
+  if (!memory)
+    return emitOpError() << "unresolved memory resource '" << getMemoryAttr()
+                         << "'";
+  if (failed(verifyMemoryIndex(*this, getAddress(), "address")))
+    return failure();
+  auto read = getTransfer().getDefiningOp<MemoryReadOp>();
+  auto address = constantVarUnsigned(getAddress());
+  auto size = read ? constantVarUnsigned(read.getSize()) : std::nullopt;
+  if (address && size &&
+      (*address >= static_cast<uint64_t>(memory.getCapacityBytes()) ||
+       *size > static_cast<uint64_t>(memory.getCapacityBytes()) - *address))
+    return emitOpError("constant access exceeds memory capacity");
+  return success();
+}
+
+LogicalResult QueueProcessOp::verify() {
+  if (failed(requireMemoryPrototypeEpoch(*this)))
+    return failure();
+  if (getInput().getType() != getOutput().getType())
+    return emitOpError("output queue must match input queue type");
+  if (getInflight() != 1)
+    return emitOpError("v0.3 prototype requires inflight = 1");
+  auto isPositive = [](IntegerAttr value) {
+    return !value.getValue().isNegative() && !value.getValue().isZero();
+  };
+  if (!isPositive(getDepthAttr()) || !isPositive(getLatencyAttr()))
+    return emitOpError("depth and latency must be positive");
+
+  Block &block = getBody().front();
+  Type payload = cast<QueueType>(getInput().getType()).getElementType();
+  Type expected = VarType::get(getContext(), payload);
+  if (block.getNumArguments() != 1 ||
+      block.getArgument(0).getType() != expected)
+    return emitOpError("body argument must match queue payload Var");
+  auto yield = dyn_cast<QueueProcessYieldOp>(block.getTerminator());
+  if (!yield || yield.getValue().getType() != expected)
+    return emitOpError(
+        "body must terminate with a payload-matching ac.queue.process.yield");
+
+  SmallVector<MemoryReadOp> reads;
+  SmallVector<MemoryWriteOp> writes;
+  for (Operation &operation : block.without_terminator()) {
+    if (auto read = dyn_cast<MemoryReadOp>(operation)) {
+      reads.push_back(read);
+      continue;
+    }
+    if (auto write = dyn_cast<MemoryWriteOp>(operation)) {
+      writes.push_back(write);
+      continue;
+    }
+    if (!isMemoryEffectFree(&operation))
+      return emitOpError() << "unsupported effectful body operation '"
+                           << operation.getName() << "'";
+  }
+  if (reads.size() != 1 || writes.size() != 1)
+    return emitOpError("requires exactly one memory read and one memory write");
+  if (writes.front().getTransfer() != reads.front().getTransfer())
+    return emitOpError("memory write must consume the process read transfer");
+  if (!reads.front()->isBeforeInBlock(writes.front()))
+    return emitOpError("memory read must precede memory write");
+  if (!reads.front().getTransfer().hasOneUse())
+    return emitOpError("memory transfer must have exactly one use");
+  return success();
+}
+
 LogicalResult TrySendOp::verify() { return requireProcess(*this); }
 LogicalResult TryRecvOp::verify() { return requireProcess(*this); }
 

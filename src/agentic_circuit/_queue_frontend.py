@@ -1,4 +1,4 @@
-"""v0.2 serial-Python to Queue/Var ACIR construction."""
+"""Serial-Python Queue/Var ACIR construction with v0.3 prototypes."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 
 class QueueFrontendError(ValueError):
-    """A stable rejection from the v0.2 queue frontend."""
+    """A stable rejection from the Queue/Var frontend."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +40,7 @@ class QueueBinding:
     dependency_output: bool = False
     credit_output: bool = False
     memory_output: bool = False
+    process_output: bool = False
     barrier_output: bool = False
     select_output: bool = False
     firing_effect: bool = False
@@ -213,6 +214,43 @@ class MemoryBinding:
 
 
 @dataclass(frozen=True, slots=True)
+class MemoryResourceBinding:
+    name: str
+    kind: str
+    capacity_bytes: int
+    read_latency: int
+    write_latency: int
+    bytes_per_cycle: int
+    order: int
+
+
+@dataclass(frozen=True, slots=True)
+class ProcessHelper:
+    name: str
+    argument: str
+    read_memory: str
+    read_address: ast.expr
+    read_size: ast.expr
+    transfer: str
+    write_memory: str
+    write_address: ast.expr
+    result: ast.expr
+    scope: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ProcessBinding:
+    input_name: str
+    output_name: str
+    helper: ProcessHelper
+    inflight: int
+    depth: int
+    latency: int
+    scope: tuple[str, ...]
+    order: int
+
+
+@dataclass(frozen=True, slots=True)
 class AtomicBinding:
     queues: tuple[str, ...]
     scope: tuple[str, ...]
@@ -258,6 +296,8 @@ class QueueProgram:
     barriers: tuple[BarrierBinding, ...]
     selects: tuple[SelectBinding, ...]
     memories: tuple[MemoryBinding, ...]
+    memory_resources: tuple[MemoryResourceBinding, ...]
+    processes: tuple[ProcessBinding, ...]
     atomics: tuple[AtomicBinding, ...]
     collections: tuple[CollectionBinding, ...]
     observations: tuple[ObservationBinding, ...]
@@ -566,6 +606,8 @@ def parse_queue_program(text: str, system: str) -> QueueProgram:
     barriers: list[BarrierBinding] = []
     selects: list[SelectBinding] = []
     memories: list[MemoryBinding] = []
+    memory_resources: list[MemoryResourceBinding] = []
+    processes: list[ProcessBinding] = []
     atomics: list[AtomicBinding] = []
     sinks: list[SinkBinding] = []
     observations: list[ObservationBinding] = []
@@ -573,6 +615,9 @@ def parse_queue_program(text: str, system: str) -> QueueProgram:
     by_name: dict[str, QueueBinding] = {}
     collections: dict[str, StaticQueueCollection] = {}
     collection_bindings: list[CollectionBinding] = []
+    memory_resources_by_name: dict[str, MemoryResourceBinding] = {}
+    process_helpers: dict[tuple[tuple[str, ...], str], ProcessHelper] = {}
+    used_process_helpers: set[tuple[tuple[str, ...], str]] = set()
     order = 0
 
     def call_name(call: ast.Call) -> str:
@@ -784,6 +829,15 @@ def parse_queue_program(text: str, system: str) -> QueueProgram:
         for statement in statements:
             current_order = order
             order += 1
+            if (
+                isinstance(statement, ast.Assign)
+                and len(statement.targets) == 1
+                and isinstance(statement.targets[0], ast.Name)
+                and statement.targets[0].id in memory_resources_by_name
+            ):
+                raise QueueFrontendError(
+                    "ACPY-QUEUE-021: memory resource name cannot be rebound"
+                )
             if isinstance(statement, ast.If):
                 if (
                     isinstance(statement.test, ast.Constant)
@@ -1040,6 +1094,149 @@ def parse_queue_program(text: str, system: str) -> QueueProgram:
                         )
                     )
                     continue
+            if isinstance(statement, ast.FunctionDef):
+                key = (scope_path, statement.name)
+                if (
+                    statement.decorator_list
+                    or statement.args.posonlyargs
+                    or statement.args.kwonlyargs
+                    or statement.args.vararg is not None
+                    or statement.args.kwarg is not None
+                    or statement.args.defaults
+                    or len(statement.args.args) != 1
+                    or len(statement.body) != 3
+                    or key in process_helpers
+                ):
+                    raise QueueFrontendError(
+                        "ACPY-QUEUE-021: process helper requires one argument and "
+                        "exactly read, write, and return statements"
+                    )
+                read_statement, write_statement, return_statement = statement.body
+                if (
+                    not isinstance(read_statement, ast.Assign)
+                    or len(read_statement.targets) != 1
+                    or not isinstance(read_statement.targets[0], ast.Name)
+                    or not isinstance(read_statement.value, ast.Call)
+                    or not isinstance(read_statement.value.func, ast.Attribute)
+                    or read_statement.value.func.attr != "read"
+                    or not isinstance(read_statement.value.func.value, ast.Name)
+                    or len(read_statement.value.args) != 1
+                ):
+                    raise QueueFrontendError(
+                        "ACPY-QUEUE-021: process helper must begin with one "
+                        "memory.read assignment"
+                    )
+                read_call = read_statement.value
+                size_values = [
+                    keyword.value
+                    for keyword in read_call.keywords
+                    if keyword.arg == "size"
+                ]
+                if (
+                    len(size_values) != 1
+                    or any(keyword.arg != "size" for keyword in read_call.keywords)
+                ):
+                    raise QueueFrontendError(
+                        "ACPY-QUEUE-021: memory.read requires one size keyword"
+                    )
+                read_memory = read_call.func.value.id
+                if read_memory not in memory_resources_by_name:
+                    raise QueueFrontendError(
+                        f"ACPY-QUEUE-021: memory resource {read_memory!r} is unbound"
+                    )
+                transfer = read_statement.targets[0].id
+                if (
+                    not isinstance(write_statement, ast.Expr)
+                    or not isinstance(write_statement.value, ast.Call)
+                    or not isinstance(write_statement.value.func, ast.Attribute)
+                    or write_statement.value.func.attr != "write"
+                    or not isinstance(write_statement.value.func.value, ast.Name)
+                    or len(write_statement.value.args) != 2
+                    or write_statement.value.keywords
+                    or not isinstance(write_statement.value.args[1], ast.Name)
+                    or write_statement.value.args[1].id != transfer
+                ):
+                    raise QueueFrontendError(
+                        "ACPY-QUEUE-021: memory.write must consume the read transfer"
+                    )
+                write_memory = write_statement.value.func.value.id
+                if write_memory not in memory_resources_by_name:
+                    raise QueueFrontendError(
+                        f"ACPY-QUEUE-021: memory resource {write_memory!r} is unbound"
+                    )
+                if (
+                    not isinstance(return_statement, ast.Return)
+                    or return_statement.value is None
+                ):
+                    raise QueueFrontendError(
+                        "ACPY-QUEUE-021: process helper must return one payload value"
+                    )
+                process_helpers[key] = ProcessHelper(
+                    statement.name,
+                    statement.args.args[0].arg,
+                    read_memory,
+                    read_call.args[0],
+                    size_values[0],
+                    transfer,
+                    write_memory,
+                    write_statement.value.args[0],
+                    return_statement.value,
+                    scope_path,
+                )
+                continue
+            if (
+                isinstance(statement, ast.Assign)
+                and len(statement.targets) == 1
+                and isinstance(statement.targets[0], ast.Name)
+                and isinstance(statement.value, ast.Call)
+                and _decorator_name(statement.value.func) in {"memory", "ac.memory"}
+            ):
+                name = statement.targets[0].id
+                call = statement.value
+                expected = {
+                    "kind",
+                    "capacity_bytes",
+                    "read_latency",
+                    "write_latency",
+                    "bytes_per_cycle",
+                }
+                if (
+                    scope_path
+                    or call.args
+                    or name in by_name
+                    or name in collections
+                    or name in memory_resources_by_name
+                    or any(keyword.arg not in expected for keyword in call.keywords)
+                    or {keyword.arg for keyword in call.keywords} != expected
+                    or len(call.keywords) != len(expected)
+                ):
+                    raise QueueFrontendError(
+                        "ACPY-QUEUE-021: root memory declaration requires kind, "
+                        "capacity_bytes, read_latency, write_latency, and "
+                        "bytes_per_cycle"
+                    )
+                kind_value = next(
+                    keyword.value for keyword in call.keywords if keyword.arg == "kind"
+                )
+                if (
+                    not isinstance(kind_value, ast.Constant)
+                    or kind_value.value not in {"sram", "dram"}
+                ):
+                    raise QueueFrontendError(
+                        "ACPY-QUEUE-021: memory kind must be 'sram' or 'dram'"
+                    )
+                binding = MemoryResourceBinding(
+                    name,
+                    kind_value.value,
+                    _positive_int(call, "capacity_bytes", 1),
+                    _nonnegative_int(call, "read_latency", 0),
+                    _nonnegative_int(call, "write_latency", 0),
+                    _positive_int(call, "bytes_per_cycle", 1),
+                    current_order,
+                )
+                memory_resources_by_name[name] = binding
+                memory_resources.append(binding)
+                continue
             if (
                 isinstance(statement, ast.Assign)
                 and len(statement.targets) == 1
@@ -1740,6 +1937,82 @@ def parse_queue_program(text: str, system: str) -> QueueProgram:
                 and len(statement.targets) == 1
                 and isinstance(statement.targets[0], ast.Name)
                 and isinstance(statement.value, ast.Call)
+                and isinstance(statement.value.func, ast.Attribute)
+                and statement.value.func.attr == "process"
+                and isinstance(statement.value.func.value, ast.Name)
+            ):
+                name = statement.targets[0].id
+                call = statement.value
+                incoming = by_name.get(call.func.value.id)
+                if incoming is None:
+                    raise QueueFrontendError(
+                        "ACPY-QUEUE-021: process input queue is unbound"
+                    )
+                if (
+                    name in by_name
+                    or name in collections
+                    or name in memory_resources_by_name
+                    or len(call.args) != 1
+                    or not isinstance(call.args[0], ast.Name)
+                    or any(
+                        keyword.arg not in {"inflight", "depth"}
+                        for keyword in call.keywords
+                    )
+                    or len(call.keywords)
+                    != len({keyword.arg for keyword in call.keywords})
+                ):
+                    raise QueueFrontendError(
+                        "ACPY-QUEUE-021: queue.process requires one helper and "
+                        "optional inflight/depth"
+                    )
+                helper_key = (scope_path, call.args[0].id)
+                helper = process_helpers.get(helper_key)
+                if helper is None:
+                    raise QueueFrontendError(
+                        "ACPY-QUEUE-021: process helper must be declared in the "
+                        "same scope before use"
+                    )
+                if helper_key in used_process_helpers:
+                    raise QueueFrontendError(
+                        "ACPY-QUEUE-021: process helper must be consumed exactly once"
+                    )
+                inflight = _positive_int(call, "inflight", 1)
+                if inflight != 1:
+                    raise QueueFrontendError(
+                        "ACPY-QUEUE-021: v0.3 prototype requires inflight=1"
+                    )
+                depth = _positive_int(call, "depth", 1)
+                output = QueueBinding(
+                    name,
+                    incoming.payload,
+                    depth,
+                    1,
+                    None,
+                    scope=scope_path,
+                    order=current_order,
+                    process_output=True,
+                )
+                queues.append(output)
+                by_name[name] = output
+                processes.append(
+                    ProcessBinding(
+                        incoming.name,
+                        name,
+                        helper,
+                        inflight,
+                        depth,
+                        1,
+                        scope_path,
+                        current_order,
+                    )
+                )
+                used_process_helpers.add(helper_key)
+                continue
+            if (
+                isinstance(statement, ast.Assign)
+                and len(statement.targets) == 1
+                and isinstance(statement.targets[0], ast.Name)
+                and isinstance(statement.value, ast.Call)
             ):
                 name, call = statement.targets[0].id, statement.value
                 if isinstance(call.func, ast.Name) and call.func.id in recursive_helpers:
@@ -2093,6 +2366,21 @@ def parse_queue_program(text: str, system: str) -> QueueProgram:
         raise QueueFrontendError(
             "ACPY-QUEUE-001: a queue system requires source and sink boundaries"
         )
+    unused_helpers = set(process_helpers) - used_process_helpers
+    if unused_helpers:
+        raise QueueFrontendError(
+            "ACPY-QUEUE-021: every process helper must be consumed exactly once"
+        )
+    clients: dict[str, set[int]] = {
+        name: set() for name in memory_resources_by_name
+    }
+    for index, process in enumerate(processes):
+        clients[process.helper.read_memory].add(index)
+        clients[process.helper.write_memory].add(index)
+    if any(len(users) != 1 for users in clients.values()):
+        raise QueueFrontendError(
+            "ACPY-QUEUE-021: every memory resource requires exactly one process client"
+        )
     return QueueProgram(
         system,
         payloads,
@@ -2108,6 +2396,8 @@ def parse_queue_program(text: str, system: str) -> QueueProgram:
         tuple(barriers),
         tuple(selects),
         tuple(memories),
+        tuple(memory_resources),
+        tuple(processes),
         tuple(atomics),
         tuple(collection_bindings),
         tuple(observations),
@@ -2314,8 +2604,9 @@ class _ExpressionEmitter:
 
 
 def lower_queue_program(program: QueueProgram) -> str:
+    epoch = "0.3" if program.memory_resources or program.processes else "0.2"
     lines = [
-        f'module attributes {{ac.contract_epoch = "0.2", '
+        f'module attributes {{ac.contract_epoch = "{epoch}", '
         f'ac.system = "{program.system}"}} {{'
     ]
     payloads = {item.name: item for item in program.payloads}
@@ -2343,6 +2634,14 @@ def lower_queue_program(program: QueueProgram) -> str:
                 f"preferred_alignment = {alignment} : i64, size = {total} : i64}}"
             )
         lines.append("  } {dlti.dl_spec = #dlti.dl_spec<" + ", ".join(layouts) + ">}")
+    for resource in sorted(program.memory_resources, key=lambda item: item.order):
+        lines.append(
+            f'  ac.memory.resource @{resource.name} kind "{resource.kind}" '
+            f"capacity_bytes {resource.capacity_bytes} "
+            f"read_latency {resource.read_latency} "
+            f"write_latency {resource.write_latency} "
+            f"bytes_per_cycle {resource.bytes_per_cycle}"
+        )
     by_name = {item.name: item for item in program.queues}
 
     def name_array(names: list[str] | tuple[str, ...]) -> str:
@@ -2352,6 +2651,10 @@ def lower_queue_program(program: QueueProgram) -> str:
     for queue in program.queues:
         if queue.input_name is not None:
             consumers.setdefault(queue.input_name, []).append(queue)
+    for process in program.processes:
+        consumers.setdefault(process.input_name, []).append(
+            by_name[process.output_name]
+        )
     fanouts: dict[str, tuple[tuple[str, ...], tuple[QueueBinding, ...]]] = {}
 
     def common_scope(scopes: list[tuple[str, ...]]) -> tuple[str, ...]:
@@ -2417,6 +2720,8 @@ def lower_queue_program(program: QueueProgram) -> str:
             uses[input_name].append(select.scope)
     for memory in program.memories:
         uses[memory.input_name].append(memory.scope)
+    for process in program.processes:
+        uses[process.input_name].append(process.scope)
 
     def inside(container: tuple[str, ...], candidate: tuple[str, ...]) -> bool:
         return candidate[: len(container)] == container
@@ -2503,6 +2808,7 @@ def lower_queue_program(program: QueueProgram) -> str:
             and not queue.dependency_output
             and not queue.credit_output
             and not queue.memory_output
+            and not queue.process_output
             and not queue.barrier_output
             and not queue.select_output
             and queue.atomic_group is None
@@ -2559,6 +2865,11 @@ def lower_queue_program(program: QueueProgram) -> str:
             (memory.order, "memory", memory)
             for memory in program.memories
             if memory.scope == path
+        )
+        events.extend(
+            (process.order, "process", process)
+            for process in program.processes
+            if process.scope == path
         )
         events.extend(
             (
@@ -2958,6 +3269,87 @@ def lower_queue_program(program: QueueProgram) -> str:
                     f"!ac.queue<{incoming.payload}>"
                 )
                 mapping[memory.output_name] = output
+            elif kind == "process":
+                process = item
+                assert isinstance(process, ProcessBinding)
+                incoming = by_name[process.input_name]
+                helper = process.helper
+                emitter = _ExpressionEmitter(
+                    payloads,
+                    helper.argument,
+                    incoming.payload,
+                    root_name="item",
+                    prefix="p",
+                )
+                start = len(emitter.lines)
+                read_address, read_address_type = emitter.emit(helper.read_address)
+                read_size, read_size_type = emitter.emit(helper.read_size)
+                read_lines = emitter.lines[start:]
+                start = len(emitter.lines)
+                write_address, write_address_type = emitter.emit(
+                    helper.write_address
+                )
+                write_lines = emitter.lines[start:]
+                start = len(emitter.lines)
+                result, result_type = emitter.emit(helper.result)
+                result_lines = emitter.lines[start:]
+                if not read_address_type.startswith("i"):
+                    raise QueueFrontendError(
+                        "ACPY-QUEUE-021: memory.read address must be integer"
+                    )
+                if not read_size_type.startswith("i"):
+                    raise QueueFrontendError(
+                        "ACPY-QUEUE-021: memory.read size must be integer"
+                    )
+                if not write_address_type.startswith("i"):
+                    raise QueueFrontendError(
+                        "ACPY-QUEUE-021: memory.write address must be integer"
+                    )
+                if result_type != incoming.payload:
+                    raise QueueFrontendError(
+                        "ACPY-QUEUE-021: process result must preserve Queue payload"
+                    )
+                output = (
+                    process.output_name
+                    if not path
+                    else f"{process.output_name}__local"
+                )
+                transfer = f"{process.output_name}__transfer"
+                input_name = effective_input.get(
+                    process.output_name, process.input_name
+                )
+                lines.append(
+                    f"{indent}%{output} = ac.queue.process "
+                    f"%{mapping[input_name]} inflight {process.inflight} "
+                    f"depth {process.depth} latency {process.latency} {{"
+                )
+                lines.append(
+                    f"{indent}^process(%item: !ac.var<{incoming.payload}>):"
+                )
+                lines.extend(indent + line[2:] for line in read_lines)
+                lines.append(
+                    f"{indent}  %{transfer} = ac.memory.read "
+                    f"@{helper.read_memory} %{read_address} size %{read_size} : "
+                    f"!ac.var<{read_address_type}>, !ac.var<{read_size_type}> "
+                    f"-> !ac.memory_transfer"
+                )
+                lines.extend(indent + line[2:] for line in write_lines)
+                lines.append(
+                    f"{indent}  ac.memory.write @{helper.write_memory} "
+                    f"%{write_address} data %{transfer} : "
+                    f"!ac.var<{write_address_type}>, !ac.memory_transfer"
+                )
+                lines.extend(indent + line[2:] for line in result_lines)
+                lines.append(
+                    f"{indent}  ac.queue.process.yield %{result} : "
+                    f"!ac.var<{incoming.payload}>"
+                )
+                lines.append(
+                    f'{indent}}} {{ac.name = "{process.output_name}"}} : '
+                    f"!ac.queue<{incoming.payload}> -> "
+                    f"!ac.queue<{incoming.payload}>"
+                )
+                mapping[process.output_name] = output
             elif kind == "atomic":
                 atomic = item
                 assert isinstance(atomic, AtomicBinding)

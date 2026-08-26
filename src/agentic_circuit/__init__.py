@@ -65,6 +65,7 @@ __all__ = (
     "Flow",
     "Endpoint",
     "source",
+    "memory",
     "sink",
     "observe",
     "expect",
@@ -115,6 +116,19 @@ def view(value: object, *selectors: object) -> Never:
 
 def source(payload: object, *, depth: int = 1, latency: int = 1) -> Never:
     return _not_implemented("source")
+
+
+def memory(
+    *,
+    kind: str,
+    capacity_bytes: int,
+    read_latency: int,
+    write_latency: int,
+    bytes_per_cycle: int,
+) -> Never:
+    raise NotImplementedError(
+        "memory is a declarative v0.3 frontend marker and cannot be executed directly"
+    )
 
 
 def sink(value: object) -> Never:

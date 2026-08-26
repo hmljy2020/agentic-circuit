@@ -9,6 +9,12 @@ The generated [official Queue building-block catalog](../../schemas/opcodes-v0.2
 records the closed opcode roles, arity, constants, backend realizations, and
 refinement observations.
 
+## v0.3 prototypes
+
+- [DMA and memory interaction prototype](agentic-circuit-dma-memory-v0.3-prototype.md)
+  defines the serial ACPy syntax and native ACIR contract for one blocking DMA
+  transfer. Backend realization is intentionally deferred.
+
 ## Queue/Var v0.2
 
 - [Queue/Var v0.2 Specification Manual](agentic-circuit-v0.2.md) defines the

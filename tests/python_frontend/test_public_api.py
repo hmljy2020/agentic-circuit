@@ -30,6 +30,7 @@ PUBLIC = {
     "Flow",
     "Endpoint",
     "source",
+    "memory",
     "sink",
     "observe",
     "expect",
@@ -120,6 +121,13 @@ class PublicApiTest(unittest.TestCase):
             lambda: api.instances(1, 2),
             lambda: api.view(object(), "field"),
             lambda: api.source(int),
+            lambda: api.memory(
+                kind="sram",
+                capacity_bytes=1024,
+                read_latency=1,
+                write_latency=1,
+                bytes_per_cycle=16,
+            ),
             lambda: api.sink(object()),
             lambda: api.observe(object()),
             lambda: api.expect(

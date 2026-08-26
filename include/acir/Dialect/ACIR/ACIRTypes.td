@@ -36,6 +36,12 @@ def ACIR_AddressType : ACIR_NamedType<"Address", "address">;
 def ACIR_ResourceTokenType
     : ACIR_NamedType<"ResourceToken", "resource_token">;
 
+// Opaque timing-only data produced by a blocking memory read and consumed by
+// exactly one blocking memory write in an ac.queue.process region.
+def ACIR_MemoryTransferType : ACIR_Type<"MemoryTransfer", "memory_transfer"> {
+  let assemblyFormat = "";
+}
+
 def ACIR_OptionalType : ACIR_Type<"Optional", "optional"> {
   let parameters = (ins "mlir::Type":$elementType);
   let assemblyFormat = "`<` $elementType `>`";

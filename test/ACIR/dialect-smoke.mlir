@@ -8,8 +8,8 @@
 
 // DIALECTS: Available Dialects: ac,acsim,arith,builtin,cf,dlti,func,index,scf
 // CANONICAL: module attributes {ac.contract_epoch = "0.2"}
-// MISSING: error: expected top-level 'ac.contract_epoch' string attribute equal to "0.2"
-// WRONG: error: expected top-level 'ac.contract_epoch' string attribute equal to "0.2"
+// MISSING: error: expected top-level 'ac.contract_epoch' string attribute equal to "0.2" or "0.3"
+// WRONG: error: expected top-level 'ac.contract_epoch' string attribute equal to "0.2" or "0.3"
 // UNKNOWN-AC: error: unregistered operation 'ac.unknown'
 
 //--- canonical.mlir
