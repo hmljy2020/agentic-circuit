@@ -101,6 +101,8 @@ class TopologyV03FrontendTest(unittest.TestCase):
         )
 
     def test_static_topology_is_byte_deterministic(self) -> None:
+        from agentic_circuit._lower_acir_v03 import lower_semantic_v03
+
         first = self._capture(
             "topology/static_topology.py",
             "static_topology",
@@ -113,6 +115,15 @@ class TopologyV03FrontendTest(unittest.TestCase):
         )
         assert first.program is not None and second.program is not None
         self.assertEqual(first.program.canonical_bytes(), second.program.canonical_bytes())
+        first_acir = lower_semantic_v03(first.program)
+        second_acir = lower_semantic_v03(second.program)
+        self.assertEqual(first_acir.text, second_acir.text)
+        self.assertEqual(
+            (FIXTURES / "topology/static_topology.ac.mlir").read_text(
+                encoding="utf-8"
+            ),
+            first_acir.text,
+        )
 
     def test_zero_route_outputs_is_rejected(self) -> None:
         result = self._capture(

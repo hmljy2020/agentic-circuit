@@ -15,12 +15,15 @@ from ._diagnostics import SourceSpan
 from ._semantic_v03 import (
     ArrayType,
     BlockInstance,
+    FieldDescriptor,
     NamedType,
     PayloadDeclaration,
     PayloadType,
+    Policy,
     QueueValue,
     ScalarType,
     SemanticProgram,
+    Scope,
     VarOperation,
     VarRegion,
 )
@@ -290,8 +293,193 @@ def _collect_source_map(program: SemanticProgram) -> tuple[tuple[str, SourceSpan
     return tuple(entries)
 
 
+def _field_attribute(field: FieldDescriptor) -> str:
+    path = ", ".join(_string(component) for component in field.path)
+    return (
+        f"#ac.field<root = {_payload_type(field.root)}, path = [{path}], "
+        f"leaf = {_payload_type(field.leaf)}>"
+    )
+
+
+def _policy_attribute(policy: Policy) -> str:
+    if policy != Policy("round_robin"):
+        raise _error("P4 emitter supports only parameter-free round_robin policy")
+    return "#ac.policy<kind = round_robin>"
+
+
+def _block_parameter(block: BlockInstance, name: str) -> object:
+    parameters = {parameter.name: parameter.value for parameter in block.parameters}
+    if set(parameters) != {name}:
+        raise _error(f"{block.opcode} requires exactly parameter {name!r}")
+    return parameters[name]
+
+
+def _emit_block(
+    block: BlockInstance,
+    queue_map: dict[str, QueueValue],
+    region_map: dict[str, VarRegion],
+) -> list[str]:
+    if block.opcode == "source":
+        if block.inputs or block.regions or block.parameters:
+            raise _error("source cannot have inputs, regions, or parameters")
+        output = _require_one(
+            _group_queues(block, "result", "output", "produce"), "source output"
+        )
+        return [
+            f"    %{output} = ac.source {_string(block.id)} : "
+            f"{_queue_type(queue_map[output])}"
+        ]
+
+    if block.opcode == "compute":
+        if block.parameters or len(block.regions) != 1:
+            raise _error("compute requires one Var region and no parameters")
+        input_queue = _require_one(
+            _group_queues(block, "input", "input", "consume"), "compute input"
+        )
+        output_queue = _require_one(
+            _group_queues(block, "result", "output", "produce"), "compute output"
+        )
+        region = region_map[block.regions[0]]
+        lines = [f"    %{output_queue} = ac.compute %{input_queue} {{"]
+        lines.extend(_emit_region(region))
+        lines.append(
+            f"    }} : ({_queue_type(queue_map[input_queue])}) -> "
+            f"{_queue_type(queue_map[output_queue])}"
+        )
+        return lines
+
+    if block.opcode == "observe":
+        if block.results or block.regions or block.parameters:
+            raise _error("observe requires one Queue and no results/regions/parameters")
+        input_queue = _require_one(
+            _group_queues(block, "input", "input", "observe"), "observe input"
+        )
+        return [
+            f"    ac.observe %{input_queue} as {_string(block.id)} fields [] : "
+            f"{_queue_type(queue_map[input_queue])}"
+        ]
+
+    if block.opcode == "queue":
+        if block.regions or block.parameters:
+            raise _error("queue cannot have Var regions or static parameters")
+        input_queue = _require_one(
+            _group_queues(block, "input", "input", "consume"), "queue input"
+        )
+        output_queue = _require_one(
+            _group_queues(block, "result", "output", "produce"), "queue output"
+        )
+        return [
+            f"    %{output_queue} = ac.queue %{input_queue} : "
+            f"{_queue_type(queue_map[input_queue])} -> "
+            f"{_queue_type(queue_map[output_queue])}"
+        ]
+
+    if block.opcode == "route":
+        if block.regions:
+            raise _error("route cannot have Var regions")
+        input_queue = _require_one(
+            _group_queues(block, "input", "input", "consume"), "route input"
+        )
+        outputs = _group_queues(block, "result", "outputs", "produce")
+        selector = _block_parameter(block, "by")
+        if not isinstance(selector, FieldDescriptor):
+            raise _error("route 'by' parameter must be a typed field")
+        result_names = ", ".join(f"%{queue}" for queue in outputs)
+        result_types = ", ".join(_queue_type(queue_map[queue]) for queue in outputs)
+        return [
+            f"    {result_names} = ac.route %{input_queue} by "
+            f"({_field_attribute(selector)}) : "
+            f"({_queue_type(queue_map[input_queue])}) -> ({result_types})"
+        ]
+
+    if block.opcode == "fork":
+        if block.regions or block.parameters:
+            raise _error("fork cannot have Var regions or static parameters")
+        input_queue = _require_one(
+            _group_queues(block, "input", "input", "consume"), "fork input"
+        )
+        outputs = _group_queues(block, "result", "outputs", "produce")
+        result_names = ", ".join(f"%{queue}" for queue in outputs)
+        result_types = ", ".join(_queue_type(queue_map[queue]) for queue in outputs)
+        return [
+            f"    {result_names} = ac.fork %{input_queue} : "
+            f"({_queue_type(queue_map[input_queue])}) -> ({result_types})"
+        ]
+
+    if block.opcode == "merge":
+        if block.regions:
+            raise _error("merge cannot have Var regions")
+        inputs = _group_queues(block, "input", "inputs", "consume")
+        output = _require_one(
+            _group_queues(block, "result", "output", "produce"), "merge output"
+        )
+        policy = _block_parameter(block, "policy")
+        if not isinstance(policy, Policy):
+            raise _error("merge policy parameter must be typed")
+        operands = ", ".join(f"%{queue}" for queue in inputs)
+        input_types = ", ".join(_queue_type(queue_map[queue]) for queue in inputs)
+        return [
+            f"    %{output} = ac.merge ({operands}) policy "
+            f"({_policy_attribute(policy)}) : ({input_types}) -> "
+            f"{_queue_type(queue_map[output])}"
+        ]
+
+    raise _error(f"P4 emitter does not support primitive {block.opcode!r}")
+
+
+def _scope_paths(scopes: dict[str, Scope], root: Scope) -> dict[str, tuple[str, ...]]:
+    paths = {root.id: (root.name,)}
+    pending = [root]
+    while pending:
+        parent = pending.pop()
+        for child_id in parent.children:
+            child = scopes[child_id]
+            paths[child_id] = (*paths[parent.id], child.name)
+            pending.append(child)
+    if len(paths) != len(scopes):
+        raise _error("scope tree is disconnected")
+    return paths
+
+
+def _scope_symbol(path: tuple[str, ...]) -> str:
+    return _symbol("__".join(path))
+
+
+def _function_results(types: tuple[str, ...]) -> str:
+    if not types:
+        return ""
+    if len(types) == 1:
+        return f" -> {types[0]}"
+    return " -> (" + ", ".join(types) + ")"
+
+
+def _emit_instance(
+    child: Scope,
+    symbol: str,
+    queue_map: dict[str, QueueValue],
+) -> str:
+    inputs = tuple(_queue_type(queue_map[queue]) for queue in child.inputs)
+    outputs = tuple(_queue_type(queue_map[queue]) for queue in child.outputs)
+    result = ""
+    if child.outputs:
+        result = ", ".join(f"%{queue}" for queue in child.outputs) + " = "
+    operands = ", ".join(f"%{queue}" for queue in child.inputs)
+    return (
+        f"    {result}ac.instance @{_symbol(child.name + '_' + child.id)} "
+        f"of @{symbol}({operands}) static {{}} id {_string(child.id)} "
+        f"path {_string(child.name)} : ({', '.join(inputs)}) -> "
+        f"({', '.join(outputs)})"
+    )
+
+
+def _source_order(source: SourceSpan | None, identity: str) -> tuple[object, ...]:
+    if source is None:
+        return (1, 0, 0, identity)
+    return (0, source.start_line, source.start_column, identity)
+
+
 def lower_semantic_v03(program: SemanticProgram) -> AcirV03Artifact:
-    """Emit the frozen P3 ACIR profile from a verified semantic program."""
+    """Emit the frozen P3-P5 ACIR profile from a verified semantic program."""
 
     program.verify(require_frozen_queues=True)
     queue_map = {queue.id: queue for queue in program.queues}
@@ -299,15 +487,15 @@ def lower_semantic_v03(program: SemanticProgram) -> AcirV03Artifact:
     region_map = {region.id: region for region in program.var_regions}
     scope_map = {scope.id: scope for scope in program.scopes}
     root_scope = scope_map[program.root_scope]
-    if root_scope.parent is not None or root_scope.children:
-        raise _error("P3 emitter requires one root scope without children")
-    if root_scope.blocks != tuple(block.id for block in program.blocks):
-        raise _error("P3 root scope must own every block in semantic order")
+    if root_scope.parent is not None:
+        raise _error("root scope cannot have a parent")
     if root_scope.inputs or root_scope.outputs:
-        raise _error("P3 root scope cannot have module Queue ports")
+        raise _error("root scope cannot have module Queue ports")
+    paths = _scope_paths(scope_map, root_scope)
+    symbols = {scope.id: _scope_symbol(paths[scope.id]) for scope in program.scopes}
 
     system = _symbol(f"{program.system}_system")
-    root = _symbol(root_scope.name)
+    root = symbols[root_scope.id]
     lines = ['builtin.module attributes {ac.contract_epoch = "0.3"} {']
     lines.extend(_emit_declarations(program.declarations))
     lines.append(
@@ -315,60 +503,43 @@ def lower_semantic_v03(program: SemanticProgram) -> AcirV03Artifact:
         "seed {kind = \"fixed\", value = 0 : i64} instrumentation [] "
         "results {id = \"default\", format = \"json\"} selected true"
     )
-    lines.append(f"  ac.module @{root}() parameters {{}} graph {{")
 
-    produced: set[str] = set()
-    for block_id in root_scope.blocks:
-        block = block_map[block_id]
-        if block.parameters:
-            raise _error(f"P3 {block.opcode} cannot carry static parameters")
-        if block.opcode == "source":
-            if block.inputs or block.regions:
-                raise _error("source cannot have inputs or Var regions")
-            output = _require_one(
-                _group_queues(block, "result", "output", "produce"), "source output"
+    for scope in program.scopes:
+        input_types = tuple(_queue_type(queue_map[queue]) for queue in scope.inputs)
+        output_types = tuple(_queue_type(queue_map[queue]) for queue in scope.outputs)
+        lines.append(
+            f"  ac.module @{symbols[scope.id]}({', '.join(input_types)})"
+            f"{_function_results(output_types)} parameters {{}} graph {{"
+        )
+        if scope.inputs:
+            arguments = ", ".join(
+                f"%{queue} : {_queue_type(queue_map[queue])}"
+                for queue in scope.inputs
             )
-            lines.append(
-                f"    %{output} = ac.source {_string(block.id)} : "
-                f"{_queue_type(queue_map[output])}"
-            )
-            produced.add(output)
-            continue
-        if block.opcode == "compute":
-            input_queue = _require_one(
-                _group_queues(block, "input", "input", "consume"), "compute input"
-            )
-            output_queue = _require_one(
-                _group_queues(block, "result", "output", "produce"), "compute output"
-            )
-            if input_queue not in produced:
-                raise _error("P3 compute input must be produced earlier")
-            if len(block.regions) != 1:
-                raise _error("compute requires one Var region")
-            region = region_map[block.regions[0]]
-            lines.append(f"    %{output_queue} = ac.compute %{input_queue} {{")
-            lines.extend(_emit_region(region))
-            lines.append(
-                f"    }} : ({_queue_type(queue_map[input_queue])}) -> "
-                f"{_queue_type(queue_map[output_queue])}"
-            )
-            produced.add(output_queue)
-            continue
-        if block.opcode == "observe":
-            input_queue = _require_one(
-                _group_queues(block, "input", "input", "observe"), "observe input"
-            )
-            if block.results or block.regions or input_queue not in produced:
-                raise _error("observe requires one previously produced Queue")
-            lines.append(
-                f"    ac.observe %{input_queue} as {_string(block.id)} fields [] : "
-                f"{_queue_type(queue_map[input_queue])}"
-            )
-            continue
-        raise _error(f"P3 emitter does not support primitive {block.opcode!r}")
+            lines.append(f"  ^bb0({arguments}):")
 
-    lines.append("    ac.return")
-    lines.append("  }")
+        items: list[tuple[tuple[object, ...], str, str]] = []
+        for block_id in scope.blocks:
+            block = block_map[block_id]
+            items.append((_source_order(block.source, block.id), "block", block_id))
+        for child_id in scope.children:
+            child = scope_map[child_id]
+            items.append((_source_order(child.source, child.id), "scope", child_id))
+        for _, kind, identity in sorted(items):
+            if kind == "block":
+                lines.extend(_emit_block(block_map[identity], queue_map, region_map))
+            else:
+                child = scope_map[identity]
+                lines.append(_emit_instance(child, symbols[child.id], queue_map))
+
+        if scope.outputs:
+            operands = ", ".join(f"%{queue}" for queue in scope.outputs)
+            types = ", ".join(_queue_type(queue_map[queue]) for queue in scope.outputs)
+            lines.append(f"    ac.return {operands} : {types}")
+        else:
+            lines.append("    ac.return")
+        lines.append("  }")
+
     lines.append("}")
     text = "\n".join(lines) + "\n"
     return AcirV03Artifact(

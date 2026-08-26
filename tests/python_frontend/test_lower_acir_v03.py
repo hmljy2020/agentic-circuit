@@ -113,6 +113,29 @@ class AcirV03LoweringTest(unittest.TestCase):
                 self.assertEqual(count, artifact.text.count(needle))
                 self._verify_native(artifact.text)
 
+    def test_topology_emits_adjacent_native_verified_acir(self) -> None:
+        from agentic_circuit._lower_acir_v03 import lower_semantic_v03
+        from agentic_circuit._static_eval import FrozenMap
+
+        topology_consts = (
+            (
+                "cfg",
+                FrozenMap(
+                    (("lanes", 2), ("observers", 1), ("tap_input", True))
+                ),
+            ),
+        )
+        cases = (("topology/static_topology.py", "static_topology", topology_consts),)
+        for relative, system, consts in cases:
+            with self.subTest(relative=relative):
+                result = self._capture(relative, system, consts=consts)
+                self.assertEqual((), result.diagnostics)
+                assert result.program is not None
+                artifact = lower_semantic_v03(result.program)
+                golden = (FIXTURES / relative).with_suffix(".ac.mlir")
+                self.assertEqual(golden.read_text(encoding="utf-8"), artifact.text)
+                self._verify_native(artifact.text)
+
     def test_equivalent_workspace_roots_emit_identical_acir(self) -> None:
         from agentic_circuit._frontend_v03 import (
             SemanticCaptureRequest,
@@ -146,7 +169,7 @@ class AcirV03LoweringTest(unittest.TestCase):
         self.assertEqual("ACPY-V03-VERIFY-001", result.diagnostics[0].code)
         self.assertIn("multiple consuming uses", result.diagnostics[0].message)
 
-    def test_emitter_rejects_semantically_known_but_unimplemented_primitive(self) -> None:
+    def test_emitter_rejects_queue_with_compute_region(self) -> None:
         from agentic_circuit._lower_acir_v03 import (
             AcirV03LoweringError,
             lower_semantic_v03,
@@ -161,7 +184,7 @@ class AcirV03LoweringTest(unittest.TestCase):
         program = dataclasses.replace(result.program, blocks=tuple(blocks))
 
         with self.assertRaisesRegex(
-            AcirV03LoweringError, "P3 emitter does not support primitive 'queue'"
+            AcirV03LoweringError, "queue cannot have Var regions"
         ):
             lower_semantic_v03(program)
 
