@@ -508,6 +508,9 @@ TEST(ACIROpsTest, TaskSixRegistryDeltaIsExactlyNineGraphOperations) {
 }
 
 TEST(ACIROpsTest, V03QueueTransportRoundTripsWithoutBecomingStateOwner) {
+  // This is the executable compatibility example: the same registered
+  // ac.queue name accepts v0.3 SSA syntax without gaining a symbol, owner
+  // effect, or losing parser/printer round-trip stability.
   mlir::MLIRContext context;
   context.loadDialect<ACIRDialect>();
   auto file = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(

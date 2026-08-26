@@ -63,6 +63,7 @@ class AcirV03LoweringTest(unittest.TestCase):
         self.assertEqual(0, second.returncode, second.stderr)
 
     def test_minimal_matches_golden_hash_source_map_and_native_verifier(self) -> None:
+        """The smallest vertical slice is stable, attributable, and native-valid."""
         from agentic_circuit._lower_acir_v03 import lower_semantic_v03
 
         result = self._capture(
@@ -93,6 +94,7 @@ class AcirV03LoweringTest(unittest.TestCase):
         self._verify_native(artifact.text)
 
     def test_extended_frontend_programs_emit_verified_acir(self) -> None:
+        """Scalar, aggregate, and boolean examples exercise Var-region emission."""
         from agentic_circuit._lower_acir_v03 import lower_semantic_v03
 
         cases = (
@@ -114,6 +116,7 @@ class AcirV03LoweringTest(unittest.TestCase):
                 self._verify_native(artifact.text)
 
     def test_topology_and_feedback_emit_adjacent_native_verified_acir(self) -> None:
+        """P4/P5 examples match adjacent ACIR and survive canonical round-trip."""
         from agentic_circuit._lower_acir_v03 import lower_semantic_v03
         from agentic_circuit._static_eval import FrozenMap
 
@@ -140,6 +143,7 @@ class AcirV03LoweringTest(unittest.TestCase):
                 self._verify_native(artifact.text)
 
     def test_equivalent_workspace_roots_emit_identical_acir(self) -> None:
+        """Absolute checkout paths must not leak into deterministic artifacts."""
         from agentic_circuit._frontend_v03 import (
             SemanticCaptureRequest,
             elaborate_semantic_v03,
@@ -166,6 +170,7 @@ class AcirV03LoweringTest(unittest.TestCase):
         self.assertEqual(artifacts[0].sha256, artifacts[1].sha256)
 
     def test_double_consuming_use_is_rejected_before_emission(self) -> None:
+        """Linear Queue ownership fails before dialect text is produced."""
         result = self._capture("invalid/double_consume.py", "double_consume")
 
         self.assertIsNone(result.program)
@@ -173,6 +178,7 @@ class AcirV03LoweringTest(unittest.TestCase):
         self.assertIn("multiple consuming uses", result.diagnostics[0].message)
 
     def test_emitter_rejects_queue_with_compute_region(self) -> None:
+        """Changing an opcode cannot smuggle a compute region into transport."""
         from agentic_circuit._lower_acir_v03 import (
             AcirV03LoweringError,
             lower_semantic_v03,

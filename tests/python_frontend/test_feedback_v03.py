@@ -24,6 +24,7 @@ class FeedbackV03FrontendTest(unittest.TestCase):
         )
 
     def test_deferred_alias_disappears_and_closes_feedback_queue(self) -> None:
+        """Deferred syntax becomes one forward Queue identity in frozen ACIR."""
         from agentic_circuit._lower_acir_v03 import lower_semantic_v03
 
         result = self._capture("feedback/feedback.py", "feedback")
@@ -51,6 +52,7 @@ class FeedbackV03FrontendTest(unittest.TestCase):
         self.assertIn("ac.merge (%q1, %q0)", lowered.text)
 
     def test_unbound_double_bind_and_payload_conflict_are_rejected(self) -> None:
+        """Deferred lifetime, identity, type, and positive-latency edges are closed."""
         cases = (
             (
                 "invalid/deferred_unbound.py",

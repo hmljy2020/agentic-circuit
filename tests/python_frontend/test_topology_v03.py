@@ -42,6 +42,7 @@ class TopologyV03FrontendTest(unittest.TestCase):
         )
 
     def test_static_topology_has_named_ports_contracts_and_inferred_scope_io(self) -> None:
+        """The main example exposes typed variadic ports and lexical scope I/O."""
         from agentic_circuit._semantic_v03 import FieldDescriptor, Policy
 
         result = self._capture(
@@ -77,6 +78,7 @@ class TopologyV03FrontendTest(unittest.TestCase):
         ))
 
     def test_static_if_prunes_unselected_observation(self) -> None:
+        """Const control flow changes topology at elaboration, never at runtime."""
         with_tap = self._capture(
             "topology/static_topology.py",
             "static_topology",
@@ -101,6 +103,7 @@ class TopologyV03FrontendTest(unittest.TestCase):
         )
 
     def test_static_topology_is_byte_deterministic(self) -> None:
+        """Repeated elaboration and lowering reproduce the reviewable golden."""
         from agentic_circuit._lower_acir_v03 import lower_semantic_v03
 
         first = self._capture(
@@ -126,6 +129,7 @@ class TopologyV03FrontendTest(unittest.TestCase):
         )
 
     def test_zero_route_outputs_is_rejected(self) -> None:
+        """A variadic result port still enforces its declared minimum arity."""
         result = self._capture(
             "invalid/route_zero_outputs.py", "route_zero_outputs"
         )
@@ -135,6 +139,7 @@ class TopologyV03FrontendTest(unittest.TestCase):
         self.assertIn("route outputs must be positive", result.diagnostics[0].message)
 
     def test_payload_rate_and_selector_shape_errors_are_rejected(self) -> None:
+        """Independent Queue payload, rate, and field-selector contracts fail early."""
         cases = (
             (
                 "invalid/merge_payload_mismatch.py",

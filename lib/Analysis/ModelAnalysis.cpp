@@ -426,12 +426,10 @@ bool isDirectStateOwner(Operation *operation) {
 }
 
 bool isPositiveDelayBoundary(Operation *operation) {
-  if (auto queue = dyn_cast<ac::QueueOp>(operation)) {
-    if (!queue.getInput())
+  for (Type type : operation->getResultTypes())
+    if (auto queue = dyn_cast<ac::QueueValueType>(type);
+        queue && queue.getContract().getLatency() > 0)
       return true;
-    auto output = dyn_cast<ac::QueueValueType>(queue.getOutput().getType());
-    return output && output.getContract().getLatency() > 0;
-  }
   return isDirectStateOwner(operation);
 }
 

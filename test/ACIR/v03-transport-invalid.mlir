@@ -4,6 +4,9 @@
 // RUN: %not %acir_opt %t/route-cardinality.mlir 2>&1 | %FileCheck %s --check-prefix=ROUTE-ARITY
 // RUN: %not %acir_opt %t/queue-payload.mlir 2>&1 | %FileCheck %s --check-prefix=QUEUE-PAYLOAD
 // RUN: %not %acir_opt %t/queue-epoch.mlir 2>&1 | %FileCheck %s --check-prefix=QUEUE-EPOCH
+// RUN: %not %acir_opt %t/fork-payload.mlir 2>&1 | %FileCheck %s --check-prefix=FORK-PAYLOAD
+// RUN: %not %acir_opt %t/merge-payload.mlir 2>&1 | %FileCheck %s --check-prefix=MERGE-PAYLOAD
+// RUN: %not %acir_opt %t/route-field-path.mlir 2>&1 | %FileCheck %s --check-prefix=ROUTE-PATH
 
 //--- fork-non-queue.mlir
 builtin.module attributes {ac.contract_epoch = "0.3"} {
@@ -59,3 +62,42 @@ builtin.module attributes {ac.contract_epoch = "0.1"} {
   }
 }
 // QUEUE-EPOCH: transport form is only legal in contract_epoch 0.3
+
+//--- fork-payload.mlir
+// A fork broadcasts one payload identity; changing a branch payload is not a cast.
+builtin.module attributes {ac.contract_epoch = "0.3"} {
+  ac.module @m() parameters {} graph {
+    %source = ac.source "input" : !ac.queue<i1, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>
+    %bad = ac.fork %source : (!ac.queue<i1, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>) -> (!ac.queue<i32, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>)
+    ac.return
+  }
+}
+// FORK-PAYLOAD: fork output Queue payload must be 'i1' but received 'i32'
+
+//--- merge-payload.mlir
+// A variadic merge arbitrates equivalent tokens; heterogeneous payloads are illegal.
+builtin.module attributes {ac.contract_epoch = "0.3"} {
+  ac.module @m() parameters {} graph {
+    %left = ac.source "left" : !ac.queue<i1, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>
+    %right = ac.source "right" : !ac.queue<i32, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>
+    %bad = ac.merge (%left, %right) policy (#ac.policy<kind = round_robin>) : (!ac.queue<i1, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>, !ac.queue<i32, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>) -> !ac.queue<i1, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>
+    ac.return
+  }
+}
+// MERGE-PAYLOAD: merge input Queue payload must be 'i1' but received 'i32'
+
+//--- route-field-path.mlir
+// Typed selectors resolve their full declaration path; strings are not hints.
+builtin.module attributes {ac.contract_epoch = "0.3"} {
+  ac.type_scope @types {
+    ac.struct @Packet fields [{name = "kind", type = i1}]
+  } {dlti.dl_spec = #dlti.dl_spec<
+    !ac.struct<@types::@Packet> = {abi_alignment = 1 : i64, endianness = "little", preferred_alignment = 1 : i64, size = 1 : i64}
+  >}
+  ac.module @m() parameters {} graph {
+    %source = ac.source "input" : !ac.queue<!ac.struct<@types::@Packet>, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>
+    %bad:2 = ac.route %source by (#ac.field<root = !ac.struct<@types::@Packet>, path = ["missing"], leaf = i1>) : (!ac.queue<!ac.struct<@types::@Packet>, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>) -> (!ac.queue<!ac.struct<@types::@Packet>, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>, !ac.queue<!ac.struct<@types::@Packet>, #ac.queue_contract<depth = 1, latency = 1, rate = 1, domain = @core, ordering = fifo>>)
+    ac.return
+  }
+}
+// ROUTE-PATH: selector field path/leaf does not resolve exactly
