@@ -98,7 +98,8 @@ LogicalResult verifyNamedLayoutEntries(DataLayoutEntryListRef entries,
 }
 
 bool isStaticCollectionElementType(Type type) {
-  return isa<QueueType, VarType, ArrayType, MapType, SetType>(type);
+  return isa<QueueType, QueueValueType, VarType, ArrayType, MapType, SetType>(
+      type);
 }
 
 LogicalResult
@@ -112,6 +113,23 @@ verifyStaticCollectionElement(function_ref<InFlightDiagnostic()> emitError,
 
 } // namespace
 
+LogicalResult QueueContractAttr::verify(
+    function_ref<InFlightDiagnostic()> emitError, int64_t depth,
+    int64_t latency, int64_t rate, FlatSymbolRefAttr domain,
+    QueueOrdering ordering) {
+  if (depth <= 0)
+    return emitError() << "queue depth must be positive";
+  if (latency <= 0)
+    return emitError() << "queue latency must be at least one";
+  if (rate <= 0)
+    return emitError() << "queue rate must be positive";
+  if (!domain || domain.getValue().empty())
+    return emitError() << "queue domain must be a non-empty symbol";
+  if (ordering != QueueOrdering::FIFO)
+    return emitError() << "unsupported queue ordering";
+  return success();
+}
+
 bool containsChannelType(Type type) {
   return type.walk([](ChannelType) { return WalkResult::interrupt(); })
       .wasInterrupted();
@@ -120,8 +138,9 @@ bool containsChannelType(Type type) {
 bool containsQueueOrVarType(Type type) {
   return type
       .walk([](Type nested) {
-        return isa<QueueType, VarType>(nested) ? WalkResult::interrupt()
-                                               : WalkResult::advance();
+        return isa<QueueType, QueueValueType, VarType>(nested)
+                   ? WalkResult::interrupt()
+                   : WalkResult::advance();
       })
       .wasInterrupted();
 }
@@ -200,6 +219,17 @@ LogicalResult QueueType::verify(function_ref<InFlightDiagnostic()> emitError,
   if (isImmutablePayloadType(elementType))
     return success();
   return emitError() << "queue payload must be an immutable ACIR value type";
+}
+
+LogicalResult
+QueueValueType::verify(function_ref<InFlightDiagnostic()> emitError,
+                       Type elementType, QueueContractAttr contract) {
+  if (!isImmutablePayloadType(elementType))
+    return emitError()
+           << "v0.3 queue payload must be an immutable ACIR value type";
+  if (!contract)
+    return emitError() << "v0.3 queue requires a transport contract";
+  return success();
 }
 
 LogicalResult ArrayType::verify(function_ref<InFlightDiagnostic()> emitError,
@@ -295,11 +325,18 @@ ACIR_DEFINE_NAMED_LAYOUT(UnionType, false)
 
 #include "acir/Dialect/ACIR/ACIREnums.cpp.inc"
 
+#define GET_ATTRDEF_CLASSES
+#include "acir/Dialect/ACIR/ACIRAttributes.cpp.inc"
+
 #define GET_TYPEDEF_CLASSES
 #include "acir/Dialect/ACIR/ACIRTypes.cpp.inc"
 
 void acir::ac::ACIRDialect::initialize() {
   addInterfaces<StructuralProviderDialectInterface>();
+  addAttributes<
+#define GET_ATTRDEF_LIST
+#include "acir/Dialect/ACIR/ACIRAttributes.cpp.inc"
+      >();
   addTypes<
 #define GET_TYPEDEF_LIST
 #include "acir/Dialect/ACIR/ACIRTypes.cpp.inc"

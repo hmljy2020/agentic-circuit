@@ -66,6 +66,15 @@ def ACIR_QueueType : ACIR_Type<"Queue", "queue"> {
   let genVerifyDecl = 1;
 }
 
+// Epoch 0.3 carries its edge contract in the SSA type.  A distinct mnemonic
+// keeps payload-only v0.2 Queue artifacts parseable without ambiguity.
+def ACIR_QueueValueType : ACIR_Type<"QueueValue", "queue_v03"> {
+  let parameters = (ins "mlir::Type":$elementType,
+                        "::acir::ac::QueueContractAttr":$contract);
+  let assemblyFormat = "`<` $elementType `,` $contract `>`";
+  let genVerifyDecl = 1;
+}
+
 def ACIR_ArrayType : ACIR_Type<"Array", "array"> {
   let parameters = (ins "int64_t":$length, "mlir::Type":$elementType);
   let assemblyFormat = "`<` $length `x` $elementType `>`";

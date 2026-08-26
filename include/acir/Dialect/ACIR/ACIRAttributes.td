@@ -41,4 +41,31 @@ def ACIR_Unit : I32EnumAttr<"Unit", "ACIR exact measurement unit", [
   let cppNamespace = "::acir::ac";
 }
 
+def ACIR_QueueOrdering_FIFO
+    : I32EnumAttrCase<"FIFO", 0, "fifo">;
+
+def ACIR_QueueOrdering
+    : I32EnumAttr<"QueueOrdering", "ACIR Queue ordering", [
+        ACIR_QueueOrdering_FIFO
+      ]> {
+  let genSpecializedAttr = 0;
+  let cppNamespace = "::acir::ac";
+}
+
+def ACIR_QueueContractAttr
+    : AttrDef<ACIR_Dialect, "QueueContract"> {
+  let mnemonic = "queue_contract";
+  let parameters = (ins "int64_t":$depth,
+                        "int64_t":$latency,
+                        "int64_t":$rate,
+                        "mlir::FlatSymbolRefAttr":$domain,
+                        EnumParameter<ACIR_QueueOrdering>:$ordering);
+  let assemblyFormat = [{
+    `<` `depth` `=` $depth `,` `latency` `=` $latency `,`
+        `rate` `=` $rate `,` `domain` `=` $domain `,`
+        `ordering` `=` $ordering `>`
+  }];
+  let genVerifyDecl = 1;
+}
+
 #endif // ACIR_DIALECT_ACIR_ACIRATTRIBUTES_TD
