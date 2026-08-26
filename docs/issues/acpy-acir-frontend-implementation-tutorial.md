@@ -262,3 +262,45 @@ ac.observe(result)
 分析三组 native 测试全部通过，其中操作测试覆盖 1843 个用例。新增 operation 后，
 旧测试里写死的注册数量从 55 更新为 70，并显式列出新增名字；这不是放宽测试，
 而是让注册表闭集继续充当“没有意外私有 primitive 混入”的守门条件。
+
+## 11. 从 semantic graph 到 ACIR：为什么单独做 emitter
+
+前端现在有两道明确边界：
+
+```text
+Python AST
+  -> SemanticProgram（Queue、Block、VarRegion，仍与 MLIR 拼写无关）
+  -> ACIR v0.3 text（具体选择 source/compute/observe 和 !ac.* 类型）
+```
+
+如果 AST visitor 直接打印 MLIR，Python 语法识别、类型推导和 ACIR assembly 会耦合在
+同一个分支里。以后 primitive 的端口或拼写变化时，就很难判断是在改用户语义还是
+只改编码。独立 emitter 只接受已经验证的 `SemanticProgram`，因此它所做的工作很
+集中：
+
+1. 把 signless ACPy scalar 映射为 MLIR `iN`；
+2. 发射 struct declaration 和精确 DLTI size/alignment；
+3. 把冻结后的 QueueConstraint 写进 `!ac.queue`；
+4. 把 `source/compute/observe` block 和 Var region 按 semantic identity 发射；
+5. 另存 identity→source span 映射，不把 workspace 绝对路径写进 ACIR；
+6. 对 P3 以外的 primitive 明确失败，不私自退回 generic/unregistered op。
+
+`ac.system` 与根 `ac.module` 共享符号表，不能都叫 `@minimal`。自动发射第一次经过
+native verifier 时发现了这一点，因此固定生成 `@minimal_system` 和 `@minimal`。
+这说明 native round-trip 不只是格式测试，也会暴露前端模型忽略的 ACIR 结构规则。
+
+## 12. P3 用例为什么不只保留一个 happy path
+
+当前纵向测试包含以下 Python 程序：
+
+```text
+minimal       struct source -> compute -> observe，逐字 ACIR golden
+scalar_chain  scalar source -> compute -> compute -> 两个 observe
+multi_field   u8/u32 字段、两个表达式、带 padding 的 struct layout
+bool_literal  Python True -> typed !ac.var<i1> constant
+double_consume 同一 Queue 进入两个 compute，必须在发射前失败
+```
+
+每个合法程序的发射结果都连续经过两次 `acir-opt`。这同时回答三个问题：前端能否
+构造语义图、emitter 是否产生注册过的 ACIR、canonical printer 的输出能否再次解析。
+等价 workspace root 还会比较最终文本与 SHA-256，确认 source path 不会污染 artifact。
