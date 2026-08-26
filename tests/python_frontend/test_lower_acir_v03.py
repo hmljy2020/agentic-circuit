@@ -228,6 +228,37 @@ class AcirV03LoweringTest(unittest.TestCase):
             "retired Queue rate must equal retirement width",
         )
 
+    def test_davincioo_dual_cluster_example_emits_two_engines(self) -> None:
+        """One issue group may feed heterogeneous engine lane groups."""
+        from agentic_circuit._frontend_v03 import (
+            SemanticCaptureRequest,
+            elaborate_semantic_v03,
+        )
+        from agentic_circuit._lower_acir_v03 import lower_semantic_v03
+
+        entry = REPOSITORY / "examples" / "v03" / "davincioo_dual_cluster.py"
+        result = elaborate_semantic_v03(
+            SemanticCaptureRequest(
+                entry,
+                REPOSITORY,
+                "davincioo_dual_cluster",
+                (),
+            )
+        )
+        self.assertEqual((), result.diagnostics)
+        assert result.program is not None
+        artifact = lower_semantic_v03(result.program)
+
+        self.assertEqual(1, artifact.text.count("ac.v03.issue"))
+        self.assertIn("entries 24 width 3", artifact.text)
+        self.assertEqual(2, artifact.text.count("ac.v03.engine"))
+        self.assertIn('kind "integer"', artifact.text)
+        self.assertIn('kind "vector"', artifact.text)
+        self.assertIn("entries 48 width 2", artifact.text)
+        self.assertIn("rate = 2", artifact.text)
+        self.assertNotIn("deferred", artifact.text)
+        self._verify_native(artifact.text)
+
     def test_equivalent_workspace_roots_emit_identical_acir(self) -> None:
         """Absolute checkout paths must not leak into deterministic artifacts."""
         from agentic_circuit._frontend_v03 import (
