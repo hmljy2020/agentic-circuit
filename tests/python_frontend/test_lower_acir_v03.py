@@ -271,6 +271,10 @@ class AcirV03LoweringTest(unittest.TestCase):
         assert result.program is not None
         artifact = lower_semantic_v03(result.program)
 
+        self.assertEqual(
+            entry.with_suffix(".ac.mlir").read_text(encoding="utf-8"),
+            artifact.text,
+        )
         self.assertEqual(1, artifact.text.count("ac.v03.issue"))
         self.assertIn("entries 24 width 3", artifact.text)
         self.assertEqual(2, artifact.text.count("ac.v03.engine"))
