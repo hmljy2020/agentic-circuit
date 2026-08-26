@@ -434,3 +434,34 @@ fixture 都与旁边的 `.ac.mlir` 逐字相等，并显式经过 `ac-verify-mod
 model-analysis、binding 四组原生测试通过；8 个 transport/routing 反例逐项确认非零
 退出码和精确诊断。独立的 `v03-feedback-valid.mlir` 还特意不使用显式 `ac.queue`
 transport，证明普通正 latency Queue edge 本身就能合法闭合反馈。
+
+## 18. P5 后的能力边界探测
+
+完成纵向链路并不等于 Python 中任意相似写法都已经可编译。为区分“已端到端支持”、
+“会被明确拒绝”和“只完成了一半”，测试集新增了一组独立的 capability fixtures。
+
+成功样例覆盖：
+
+```text
+arithmetic_family     + - * & | ^ 六种 compute binary operator
+queue_contracts       source 与 transport 上不同的 depth/latency/rate/domain
+destructuring         route/fork 的平坦 tuple/list 解构和 list merge 输入
+static_specialization const if 裁剪、三参数 range 展开、scope outline
+multiple_feedback     两个 deferred identity、不同反馈 contract、同一 merge/fork 图
+```
+
+这些样例都执行完整的 `AST -> SemanticProgram -> ACIR`，逐字比较旁边的
+`.ac.mlir`，再交给真实 `acir-opt` 的 `ac-verify-model`。新增负例则证明以下写法会在
+ACIR 发射前得到确定性诊断：compute 中的除法、条件表达式、开放捕获和局部语句；
+动态 topology `while`；动态 Queue contract；名字重绑定；越界 collection index；
+零结果 arity 与嵌套解构。
+
+探测还暴露了一个值得单独记录的分层边界：`SemanticProgram` 和 catalog 当前能保存
+`priority`、`oldest` merge policy，但 ACIR emitter 只编码无参数 `round_robin`。
+因此 `boundary/merge_priority.py` 应当成功生成 semantic graph，却必须在
+semantic-to-ACIR 处明确失败。测试没有把这项能力写成 happy path，也没有把 policy
+静默改成 round-robin。这正体现了独立 semantic 层的价值：可以精确说明缺口位于哪一
+段，而不是笼统地说“前端不支持”。
+
+扩展后的基线是 90 个 Python 前端测试、11 个带相邻 ACIR 的成功 fixture。这个边界
+审计仍属于 P3-P5 的稳定化，没有引入 `table/pool/reorder`，也没有启动 P6。
