@@ -305,6 +305,11 @@ double_consume 同一 Queue 进入两个 compute，必须在发射前失败
 构造语义图、emitter 是否产生注册过的 ACIR、canonical printer 的输出能否再次解析。
 等价 workspace root 还会比较最终文本与 SHA-256，确认 source path 不会污染 artifact。
 
+为方便人工检阅，每个能够成功 lower 的正向 Python fixture 都在同一目录保存同名
+`.ac.mlir`，例如 `scalar_chain.py` 对应 `scalar_chain.ac.mlir`。测试逐字比较实际
+emitter 输出与该文件，所以人工看到的不是说明性伪代码，而是持续受回归保护的真实
+编译产物。尚未注册 shared primitive 的阶段不会提前放置伪 ACIR golden。
+
 ## 13. P4：静态 Python 为什么不能变成运行时控制流
 
 DavinciOO 中的 engine 数、scope 数量和 route result arity 都由 `ac.const` 决定。

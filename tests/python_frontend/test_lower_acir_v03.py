@@ -106,6 +106,10 @@ class AcirV03LoweringTest(unittest.TestCase):
                 self.assertEqual((), result.diagnostics)
                 assert result.program is not None
                 artifact = lower_semantic_v03(result.program)
+                golden = (FIXTURES / relative).with_suffix(".ac.mlir")
+                self.assertEqual(
+                    golden.read_text(encoding="utf-8"), artifact.text
+                )
                 self.assertEqual(count, artifact.text.count(needle))
                 self._verify_native(artifact.text)
 

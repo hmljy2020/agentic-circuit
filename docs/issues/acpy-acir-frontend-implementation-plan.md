@@ -364,6 +364,7 @@ DavinciOO ACPy
 每个阶段按适用性提供：
 
 - [ ] 合法 ACPy fixture；
+- [ ] 每个可成功 lower 的正向 `.py` fixture 旁保存同名 `.ac.mlir` 供人工检阅；
 - [ ] 非法 ACPy fixture和稳定 diagnostic code；
 - [ ] canonical semantic golden；
 - [ ] canonical ACIR golden；
