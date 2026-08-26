@@ -87,6 +87,9 @@ __all__ = (
     "s16",
     "s32",
     "s64",
+    "route",
+    "fork",
+    "merge",
 )
 
 
@@ -143,3 +146,15 @@ def atomic() -> Never:
 
 def compute(input: object, transform: object, **options: object) -> Never:
     return _not_implemented("compute")
+
+
+def route(input: object, **options: object) -> Never:
+    return _not_implemented("route")
+
+
+def fork(input: object, **options: object) -> Never:
+    return _not_implemented("fork")
+
+
+def merge(inputs: object, **options: object) -> Never:
+    return _not_implemented("merge")

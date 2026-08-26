@@ -304,3 +304,50 @@ double_consume 同一 Queue 进入两个 compute，必须在发射前失败
 每个合法程序的发射结果都连续经过两次 `acir-opt`。这同时回答三个问题：前端能否
 构造语义图、emitter 是否产生注册过的 ACIR、canonical printer 的输出能否再次解析。
 等价 workspace root 还会比较最终文本与 SHA-256，确认 source path 不会污染 artifact。
+
+## 13. P4：静态 Python 为什么不能变成运行时控制流
+
+DavinciOO 中的 engine 数、scope 数量和 route result arity 都由 `ac.const` 决定。
+这些值影响 ACIR 拓扑形状，因此 Python：
+
+```python
+if cfg.tap_input:
+    ac.observe(source)
+
+for lane in range(cfg.lanes):
+    ac.observe(copies[lane])
+```
+
+会在 elaboration 时选择和展开，而不是 lower 成 runtime branch/loop。这样 Queue SSA
+数量、variadic port arity 和 scope hierarchy 在 frozen ACIR 前已经完全确定。动态条件
+若被误当成 static，会在 operand 位置得到确定性 diagnostic。
+
+## 14. scope I/O 是怎样推导的
+
+前端为每条 Queue 记录 producer scope 和所有 use scope。对一个 scope：
+
+```text
+input  = scope 子树内使用、但在子树外产生的 Queue
+output = scope 子树内产生、但在子树外使用的 Queue
+```
+
+测试中的 topology 得到：
+
+```text
+dispatch:    input q0;     outputs q4, q5
+arbitration: inputs q1,q2; output q3
+```
+
+`observe` 虽然不消费 token，但仍是 def-use，所以它在 scope 外时仍会让被观察 Queue
+成为 scope output；区别只在 Queue linear consuming-use 计数。按 dense Queue identity
+排序边界使相同 Python 输入得到 byte-identical semantic artifact。
+
+## 15. P4 前端目前解决了什么
+
+前端已能表达并验证 `queue/route/fork/merge` 的 named port groups，route selector 使用
+typed `FieldDescriptor`，merge 使用 closed `Policy`。负例覆盖零 result arity、不同
+payload merge、非正 rate 和 selector root 错配。
+
+这一阶段暂时只证明到 `SemanticProgram`：native ACIR 还缺 B4 的 transport ops、
+field/policy attributes 和 scope outlining contract。保持这个 gate 很重要——在共享
+op 尚未注册时，emitter 会明确失败，不会用 generic operation 伪造“已打通”。

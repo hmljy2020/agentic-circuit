@@ -13,11 +13,13 @@ from pathlib import Path
 
 from ._diagnostics import Diagnostic, SourceSpan
 from ._semantic_v03 import (
+    FieldDescriptor,
     NamedType,
     PayloadDeclaration,
     PayloadField,
     PayloadType,
     PortGroup,
+    Policy,
     QueueConstraint,
     ScalarType,
     SemanticBuilder,
@@ -30,7 +32,14 @@ from ._semantic_v03 import (
     davincioo_core_catalog,
 )
 from ._source import DefinitionSite, SourceCaptureError, SourceUnit, load_source_unit
-from ._static_eval import FrozenMap, StaticValue, validate_ijson_value
+from ._static_eval import (
+    FrozenMap,
+    StaticEnvironment,
+    StaticEvalError,
+    StaticValue,
+    evaluate_static,
+    validate_ijson_value,
+)
 
 
 _SCALARS = {
@@ -167,6 +176,24 @@ class _TypeEnvironment:
             f"struct {root.name!r} has no field {name!r}",
             _span(self.unit, node),
         )
+
+    def descriptor(self, node: ast.expr) -> FieldDescriptor:
+        path: list[str] = []
+        cursor = node
+        while isinstance(cursor, ast.Attribute):
+            path.append(cursor.attr)
+            cursor = cursor.value
+        if not isinstance(cursor, ast.Name) or cursor.id not in self.declarations:
+            raise _ElaborationFailure(
+                "ACPY-V03-TYPE-004",
+                "field descriptor must start at a frozen payload declaration",
+                _span(self.unit, node),
+            )
+        root = NamedType("struct", cursor.id)
+        leaf: PayloadType = root
+        for component in reversed(path):
+            leaf = self.field(leaf, component, node)
+        return FieldDescriptor(root, tuple(reversed(path)), leaf)
 
 
 class _VarLowerer:
@@ -405,28 +432,143 @@ class _SystemElaborator:
         for declaration in types.declarations.values():
             self.builder.add_declaration(declaration)
         self.queues: dict[str, str] = {}
+        self.collections: dict[str, tuple[str, ...]] = {}
         self.queue_types: dict[str, PayloadType] = {}
+        self.queue_order: list[str] = []
         self.catalog = davincioo_core_catalog()
+        self.static_values: dict[str, StaticValue] = {}
+        self.static_locals: dict[str, StaticValue] = {}
+        self.scope_stack = [self.builder.root_scope]
+        self.scope_parents: dict[str, str | None] = {
+            self.builder.root_scope: None
+        }
+        self.producer_scope: dict[str, str] = {}
+        self.use_scopes: dict[str, list[str]] = {}
 
     def run(self) -> SemanticProgram:
         self._validate_consts()
         assert isinstance(self.system.node, ast.FunctionDef)
-        for statement in self.system.node.body:
-            if isinstance(statement, ast.Assign):
-                self._assignment(statement)
-            elif isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call):
-                self._observe(statement.value)
-            elif isinstance(statement, ast.Return) and statement.value is None:
-                continue
-            elif isinstance(statement, ast.Pass):
-                continue
-            else:
-                raise _ElaborationFailure(
-                    "ACPY-V03-SYNTAX-001",
-                    f"unsupported system statement {type(statement).__name__}",
-                    _span(self.unit, statement),
-                )
+        self._statements(self.system.node.body)
+        self._infer_scope_io()
         return self.builder.freeze()
+
+    @property
+    def current_scope(self) -> str:
+        return self.scope_stack[-1]
+
+    def _statements(self, statements: list[ast.stmt]) -> None:
+        for statement in statements:
+            self._statement(statement)
+
+    def _statement(self, statement: ast.stmt) -> None:
+        if isinstance(statement, ast.Assign):
+            self._assignment(statement)
+            return
+        if isinstance(statement, ast.Expr):
+            if isinstance(statement.value, ast.Constant) and isinstance(
+                statement.value.value, str
+            ):
+                return
+            if isinstance(statement.value, ast.Call):
+                self._observe(statement.value)
+                return
+        if isinstance(statement, ast.If):
+            condition = self._static(statement.test)
+            if type(condition) is not bool:
+                raise _ElaborationFailure(
+                    "ACPY-V03-STATIC-001",
+                    "static if condition must be boolean",
+                    _span(self.unit, statement.test),
+                )
+            self._statements(statement.body if condition else statement.orelse)
+            return
+        if isinstance(statement, ast.For):
+            self._for(statement)
+            return
+        if isinstance(statement, ast.With):
+            self._with_scope(statement)
+            return
+        if isinstance(statement, ast.Return) and statement.value is None:
+            return
+        if isinstance(statement, ast.Pass):
+            return
+        raise _ElaborationFailure(
+            "ACPY-V03-SYNTAX-001",
+            f"unsupported system statement {type(statement).__name__}",
+            _span(self.unit, statement),
+        )
+
+    def _static(self, node: ast.AST) -> StaticValue:
+        try:
+            return evaluate_static(
+                node,
+                StaticEnvironment({**self.static_values, **self.static_locals}),
+            )
+        except StaticEvalError as error:
+            raise _ElaborationFailure(
+                "ACPY-V03-STATIC-001", str(error), _span(self.unit, node)
+            ) from error
+
+    def _for(self, statement: ast.For) -> None:
+        if statement.orelse or not isinstance(statement.target, ast.Name):
+            raise _ElaborationFailure(
+                "ACPY-V03-STATIC-002",
+                "static for requires one name target and no else",
+                _span(self.unit, statement),
+            )
+        values = self._static(statement.iter)
+        if not isinstance(values, tuple):
+            raise _ElaborationFailure(
+                "ACPY-V03-STATIC-002",
+                "static for iterable must be a bounded tuple/range",
+                _span(self.unit, statement.iter),
+            )
+        name = statement.target.id
+        missing = object()
+        previous = self.static_locals.get(name, missing)
+        try:
+            for value in values:
+                self.static_locals[name] = value
+                self._statements(statement.body)
+        finally:
+            if previous is missing:
+                self.static_locals.pop(name, None)
+            else:
+                self.static_locals[name] = previous  # type: ignore[assignment]
+
+    def _with_scope(self, statement: ast.With) -> None:
+        if (
+            len(statement.items) != 1
+            or statement.items[0].optional_vars is not None
+            or not isinstance(statement.items[0].context_expr, ast.Call)
+        ):
+            raise _ElaborationFailure(
+                "ACPY-V03-SCOPE-001",
+                "with requires one ac.scope context without an as target",
+                _span(self.unit, statement),
+            )
+        call = statement.items[0].context_expr
+        if _call_name(call) != "scope" or len(call.args) != 1 or call.keywords:
+            raise _ElaborationFailure(
+                "ACPY-V03-SCOPE-001",
+                "ac.scope requires one static name",
+                _span(self.unit, call),
+            )
+        name = self._static(call.args[0])
+        if not isinstance(name, str) or not name:
+            raise _ElaborationFailure(
+                "ACPY-V03-SCOPE-001",
+                "scope name must be a non-empty static string",
+                _span(self.unit, call.args[0]),
+            )
+        parent = self.current_scope
+        scope = self.builder.add_scope(name, parent, _span(self.unit, statement))
+        self.scope_parents[scope] = parent
+        self.scope_stack.append(scope)
+        try:
+            self._statements(statement.body)
+        finally:
+            self.scope_stack.pop()
 
     def _validate_consts(self) -> None:
         assert isinstance(self.system.node, ast.FunctionDef)
@@ -452,6 +594,7 @@ class _SystemElaborator:
                 self.system.span,
             )
         values = dict(self.const_arguments)
+        self.static_values = values
         for argument in arguments:
             annotation = argument.annotation
             valid = (
@@ -482,64 +625,220 @@ class _SystemElaborator:
                     _span(self.unit, argument),
                 )
 
-    def _assignment(self, statement: ast.Assign) -> None:
-        if (
-            len(statement.targets) != 1
-            or not isinstance(statement.targets[0], ast.Name)
-            or not isinstance(statement.value, ast.Call)
-        ):
+    def _target_names(self, target: ast.expr) -> tuple[str, ...]:
+        if isinstance(target, ast.Name):
+            return (target.id,)
+        if isinstance(target, (ast.Tuple, ast.List)):
+            return tuple(
+                name for child in target.elts for name in self._target_names(child)
+            )
+        raise _ElaborationFailure(
+            "ACPY-V03-SYNTAX-001",
+            "primitive results require name or tuple/list targets",
+            _span(self.unit, target),
+        )
+
+    def _bind(self, target: ast.expr, queues: tuple[str, ...]) -> None:
+        names = self._target_names(target)
+        if any(name in self.queues or name in self.collections for name in names):
             raise _ElaborationFailure(
                 "ACPY-V03-SYNTAX-001",
-                "system assignments require one name and one primitive call",
+                "Queue or collection name is rebound",
+                _span(self.unit, target),
+            )
+        if isinstance(target, ast.Name):
+            if len(queues) == 1:
+                self.queues[target.id] = queues[0]
+            else:
+                self.collections[target.id] = queues
+            return
+        assert isinstance(target, (ast.Tuple, ast.List))
+        if len(target.elts) != len(queues):
+            raise _ElaborationFailure(
+                "ACPY-V03-SYNTAX-001",
+                "primitive result arity does not match assignment target",
+                _span(self.unit, target),
+            )
+        for child, queue in zip(target.elts, queues, strict=True):
+            if not isinstance(child, ast.Name):
+                raise _ElaborationFailure(
+                    "ACPY-V03-SYNTAX-001",
+                    "nested primitive result destructuring is not supported",
+                    _span(self.unit, child),
+                )
+            self.queues[child.id] = queue
+
+    def _assignment(self, statement: ast.Assign) -> None:
+        if len(statement.targets) != 1 or not isinstance(statement.value, ast.Call):
+            raise _ElaborationFailure(
+                "ACPY-V03-SYNTAX-001",
+                "system assignments require one target and one primitive call",
                 _span(self.unit, statement),
             )
-        target = statement.targets[0].id
-        if target in self.queues:
-            raise _ElaborationFailure(
-                "ACPY-V03-SYNTAX-001", f"Queue name {target!r} is rebound", _span(self.unit, statement.targets[0])
-            )
+        target = statement.targets[0]
         call = statement.value
         name = _call_name(call)
         if name == "source":
-            self._source(target, call)
+            outputs = self._source(call)
         elif name == "compute":
-            self._compute(target, call)
+            outputs = self._compute(call)
+        elif name == "queue":
+            outputs = self._transport(call)
+        elif name == "route":
+            outputs = self._route(call)
+        elif name == "fork":
+            outputs = self._fork(call)
+        elif name == "merge":
+            outputs = self._merge(call)
         else:
             raise _ElaborationFailure(
                 "ACPY-V03-CALL-001",
-                f"unsupported P3 primitive {name!r}",
+                f"unsupported P4 primitive {name!r}",
                 _span(self.unit, call),
             )
+        self._bind(target, outputs)
 
-    def _queue(self, payload: PayloadType, node: ast.AST) -> str:
-        return self.builder.add_queue(
-            QueueConstraint(payload, depth=1, latency=1, rate=1, domain="core"),
+    def _queue(
+        self,
+        payload: PayloadType,
+        node: ast.AST,
+        *,
+        depth: int = 1,
+        latency: int = 1,
+        rate: int = 1,
+        domain: str = "core",
+    ) -> str:
+        queue = self.builder.add_queue(
+            QueueConstraint(payload, depth, latency, rate, domain),
+            _span(self.unit, node),
+        )
+        self.queue_types[queue] = payload
+        self.queue_order.append(queue)
+        return queue
+
+    def _queue_like(self, queue: str, node: ast.AST) -> str:
+        return self._queue(self.queue_types[queue], node)
+
+    def _queue_ref(self, node: ast.expr) -> str:
+        if isinstance(node, ast.Name) and node.id in self.queues:
+            return self.queues[node.id]
+        if (
+            isinstance(node, ast.Subscript)
+            and isinstance(node.value, ast.Name)
+            and node.value.id in self.collections
+        ):
+            index = self._static(node.slice)
+            if type(index) is not int:
+                raise _ElaborationFailure(
+                    "ACPY-V03-CALL-003",
+                    "Queue collection index must be a static integer",
+                    _span(self.unit, node.slice),
+                )
+            try:
+                return self.collections[node.value.id][index]
+            except IndexError as error:
+                raise _ElaborationFailure(
+                    "ACPY-V03-CALL-003",
+                    "Queue collection index is out of range",
+                    _span(self.unit, node),
+                ) from error
+        raise _ElaborationFailure(
+            "ACPY-V03-CALL-003", "Queue reference does not resolve", _span(self.unit, node)
+        )
+
+    def _queue_collection(self, node: ast.expr) -> tuple[str, ...]:
+        if isinstance(node, ast.Name) and node.id in self.collections:
+            return self.collections[node.id]
+        if isinstance(node, (ast.Tuple, ast.List)):
+            return tuple(self._queue_ref(item) for item in node.elts)
+        raise _ElaborationFailure(
+            "ACPY-V03-CALL-003",
+            "expected a static Queue tuple/list",
             _span(self.unit, node),
         )
 
-    def _source(self, target: str, call: ast.Call) -> None:
-        if len(call.args) != 1 or call.keywords:
+    def _keywords(self, call: ast.Call, allowed: set[str]) -> dict[str, ast.expr]:
+        result: dict[str, ast.expr] = {}
+        for keyword in call.keywords:
+            if keyword.arg is None or keyword.arg not in allowed or keyword.arg in result:
+                raise _ElaborationFailure(
+                    "ACPY-V03-CALL-002",
+                    f"invalid keyword for ac.{_call_name(call)}",
+                    _span(self.unit, keyword),
+                )
+            result[keyword.arg] = keyword.value
+        return result
+
+    def _contract_values(
+        self, call: ast.Call, *, allowed: set[str] | None = None
+    ) -> dict[str, object]:
+        keywords = self._keywords(
+            call, allowed or {"depth", "latency", "rate", "domain"}
+        )
+        values = {name: self._static(node) for name, node in keywords.items()}
+        for name in ("depth", "latency", "rate"):
+            if name in values and type(values[name]) is not int:
+                raise _ElaborationFailure(
+                    "ACPY-V03-QUEUE-001",
+                    f"Queue {name} must be a static integer",
+                    _span(self.unit, keywords[name]),
+                )
+        if "domain" in values and not isinstance(values["domain"], str):
+            raise _ElaborationFailure(
+                "ACPY-V03-QUEUE-001",
+                "Queue domain must be a static string",
+                _span(self.unit, keywords["domain"]),
+            )
+        return values
+
+    def _add_block(
+        self,
+        opcode: str,
+        inputs: tuple[PortGroup, ...],
+        results: tuple[PortGroup, ...],
+        *,
+        regions: tuple[str, ...] = (),
+        parameters: tuple[SemanticParameter, ...] = (),
+        source: SourceSpan | None = None,
+    ) -> str:
+        block = self.builder.add_block(
+            opcode,
+            self.current_scope,
+            inputs,
+            results,
+            regions=regions,
+            parameters=tuple(sorted(parameters, key=lambda item: item.name)),
+            source=source,
+            catalog=self.catalog,
+        )
+        for group in inputs:
+            for queue in group.queues:
+                self.use_scopes.setdefault(queue, []).append(self.current_scope)
+        for group in results:
+            for queue in group.queues:
+                self.producer_scope[queue] = self.current_scope
+        return block
+
+    def _source(self, call: ast.Call) -> tuple[str, ...]:
+        if len(call.args) != 1:
             raise _ElaborationFailure(
                 "ACPY-V03-CALL-002", "ac.source requires one payload type", _span(self.unit, call)
             )
         payload = self.types.resolve(call.args[0])
-        queue = self._queue(payload, call)
-        self.builder.add_block(
+        values = self._contract_values(call)
+        queue = self._queue(payload, call, **values)  # type: ignore[arg-type]
+        self._add_block(
             "source",
-            self.builder.root_scope,
             (),
             (PortGroup("output", "produce", (queue,)),),
             source=_span(self.unit, call),
-            catalog=self.catalog,
         )
-        self.queues[target] = queue
-        self.queue_types[target] = payload
+        return (queue,)
 
-    def _compute(self, target: str, call: ast.Call) -> None:
+    def _compute(self, call: ast.Call) -> tuple[str, ...]:
         if (
             len(call.args) != 2
             or call.keywords
-            or not isinstance(call.args[0], ast.Name)
             or not isinstance(call.args[1], ast.Name)
         ):
             raise _ElaborationFailure(
@@ -547,11 +846,10 @@ class _SystemElaborator:
                 "ac.compute requires a Queue name and pure helper name",
                 _span(self.unit, call),
             )
-        input_name = call.args[0].id
-        input_queue = self.queues.get(input_name)
-        input_type = self.queue_types.get(input_name)
+        input_queue = self._queue_ref(call.args[0])
+        input_type = self.queue_types[input_queue]
         helper = self.helpers.get(call.args[1].id)
-        if input_queue is None or input_type is None or helper is None:
+        if helper is None:
             raise _ElaborationFailure(
                 "ACPY-V03-CALL-003",
                 "compute input or helper does not resolve",
@@ -568,41 +866,163 @@ class _SystemElaborator:
         ).lower()
         self.builder.add_region(region)
         output_queue = self._queue(output_type, call)
-        self.builder.add_block(
+        self._add_block(
             "compute",
-            self.builder.root_scope,
             (PortGroup("input", "consume", (input_queue,)),),
             (PortGroup("output", "produce", (output_queue,)),),
             regions=(region_id,),
             source=_span(self.unit, call),
-            catalog=self.catalog,
         )
-        self.queues[target] = output_queue
-        self.queue_types[target] = output_type
+        return (output_queue,)
+
+    def _transport(self, call: ast.Call) -> tuple[str, ...]:
+        if len(call.args) != 1:
+            raise _ElaborationFailure(
+                "ACPY-V03-CALL-002", "ac.queue requires one input Queue", _span(self.unit, call)
+            )
+        input_queue = self._queue_ref(call.args[0])
+        values = self._contract_values(call)
+        output = self._queue(self.queue_types[input_queue], call, **values)  # type: ignore[arg-type]
+        self._add_block(
+            "queue",
+            (PortGroup("input", "consume", (input_queue,)),),
+            (PortGroup("output", "produce", (output,)),),
+            source=_span(self.unit, call),
+        )
+        return (output,)
+
+    def _route(self, call: ast.Call) -> tuple[str, ...]:
+        if len(call.args) != 1:
+            raise _ElaborationFailure(
+                "ACPY-V03-CALL-002", "ac.route requires one input Queue", _span(self.unit, call)
+            )
+        keywords = self._keywords(call, {"by", "outputs"})
+        if set(keywords) != {"by", "outputs"}:
+            raise _ElaborationFailure(
+                "ACPY-V03-CALL-002", "ac.route requires by and outputs", _span(self.unit, call)
+            )
+        count = self._static(keywords["outputs"])
+        if type(count) is not int or count <= 0:
+            raise _ElaborationFailure(
+                "ACPY-V03-CALL-002", "route outputs must be positive", _span(self.unit, keywords["outputs"])
+            )
+        input_queue = self._queue_ref(call.args[0])
+        descriptor = self.types.descriptor(keywords["by"])
+        if descriptor.root != self.queue_types[input_queue]:
+            raise _ElaborationFailure(
+                "ACPY-V03-TYPE-003",
+                "route selector root must match its input payload",
+                _span(self.unit, keywords["by"]),
+            )
+        outputs = tuple(self._queue_like(input_queue, call) for _ in range(count))
+        self._add_block(
+            "route",
+            (PortGroup("input", "consume", (input_queue,)),),
+            (PortGroup("outputs", "produce", outputs),),
+            parameters=(SemanticParameter("by", descriptor),),
+            source=_span(self.unit, call),
+        )
+        return outputs
+
+    def _fork(self, call: ast.Call) -> tuple[str, ...]:
+        if len(call.args) != 1:
+            raise _ElaborationFailure(
+                "ACPY-V03-CALL-002", "ac.fork requires one input Queue", _span(self.unit, call)
+            )
+        keywords = self._keywords(call, {"outputs"})
+        if set(keywords) != {"outputs"}:
+            raise _ElaborationFailure(
+                "ACPY-V03-CALL-002", "ac.fork requires outputs", _span(self.unit, call)
+            )
+        count = self._static(keywords["outputs"])
+        if type(count) is not int or count <= 0:
+            raise _ElaborationFailure(
+                "ACPY-V03-CALL-002", "fork outputs must be positive", _span(self.unit, keywords["outputs"])
+            )
+        input_queue = self._queue_ref(call.args[0])
+        outputs = tuple(self._queue_like(input_queue, call) for _ in range(count))
+        self._add_block(
+            "fork",
+            (PortGroup("input", "consume", (input_queue,)),),
+            (PortGroup("outputs", "produce", outputs),),
+            source=_span(self.unit, call),
+        )
+        return outputs
+
+    def _merge(self, call: ast.Call) -> tuple[str, ...]:
+        if len(call.args) != 1:
+            raise _ElaborationFailure(
+                "ACPY-V03-CALL-002", "ac.merge requires one Queue collection", _span(self.unit, call)
+            )
+        keywords = self._keywords(call, {"policy"})
+        if set(keywords) != {"policy"}:
+            raise _ElaborationFailure(
+                "ACPY-V03-CALL-002", "ac.merge requires policy", _span(self.unit, call)
+            )
+        policy = self._static(keywords["policy"])
+        if policy not in {"round_robin", "priority", "oldest"}:
+            raise _ElaborationFailure(
+                "ACPY-V03-CALL-002", "unsupported merge policy", _span(self.unit, keywords["policy"])
+            )
+        inputs = self._queue_collection(call.args[0])
+        payloads = {self.queue_types[queue] for queue in inputs}
+        if not inputs or len(payloads) != 1:
+            raise _ElaborationFailure(
+                "ACPY-V03-TYPE-003", "merge inputs require one payload type", _span(self.unit, call.args[0])
+            )
+        output = self._queue(next(iter(payloads)), call)
+        self._add_block(
+            "merge",
+            (PortGroup("inputs", "consume", inputs),),
+            (PortGroup("output", "produce", (output,)),),
+            parameters=(SemanticParameter("policy", Policy(str(policy))),),
+            source=_span(self.unit, call),
+        )
+        return (output,)
 
     def _observe(self, call: ast.Call) -> None:
         if (
             _call_name(call) != "observe"
             or len(call.args) != 1
             or call.keywords
-            or not isinstance(call.args[0], ast.Name)
         ):
             raise _ElaborationFailure(
                 "ACPY-V03-CALL-002", "expression statement must be ac.observe(Queue)", _span(self.unit, call)
             )
-        queue = self.queues.get(call.args[0].id)
-        if queue is None:
-            raise _ElaborationFailure(
-                "ACPY-V03-CALL-003", "observe Queue does not resolve", _span(self.unit, call)
-            )
-        self.builder.add_block(
+        queue = self._queue_ref(call.args[0])
+        self._add_block(
             "observe",
-            self.builder.root_scope,
             (PortGroup("input", "observe", (queue,)),),
             (),
             source=_span(self.unit, call),
-            catalog=self.catalog,
         )
+
+    def _inside(self, candidate: str, scope: str) -> bool:
+        cursor: str | None = candidate
+        while cursor is not None:
+            if cursor == scope:
+                return True
+            cursor = self.scope_parents[cursor]
+        return False
+
+    def _infer_scope_io(self) -> None:
+        for scope in self.scope_parents:
+            if scope == self.builder.root_scope:
+                continue
+            inputs: list[str] = []
+            outputs: list[str] = []
+            for queue in self.queue_order:
+                producer = self.producer_scope.get(queue)
+                uses = self.use_scopes.get(queue, [])
+                if any(self._inside(use, scope) for use in uses) and (
+                    producer is None or not self._inside(producer, scope)
+                ):
+                    inputs.append(queue)
+                if producer is not None and self._inside(producer, scope) and any(
+                    not self._inside(use, scope) for use in uses
+                ):
+                    outputs.append(queue)
+            self.builder.set_scope_io(scope, tuple(inputs), tuple(outputs))
 
 
 def elaborate_semantic_v03(request: SemanticCaptureRequest) -> SemanticFrontendResult:

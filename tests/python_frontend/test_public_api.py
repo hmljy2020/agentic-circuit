@@ -49,6 +49,9 @@ PUBLIC = {
     "s16",
     "s32",
     "s64",
+    "route",
+    "fork",
+    "merge",
 }
 
 
@@ -131,6 +134,9 @@ class PublicApiTest(unittest.TestCase):
             ),
             lambda: api.atomic(),
             lambda: api.compute(object(), object()),
+            lambda: api.route(object(), outputs=2),
+            lambda: api.fork(object(), outputs=2),
+            lambda: api.merge((object(), object())),
         )
         for operation in operations:
             with self.subTest(operation=operation):
