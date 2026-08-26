@@ -134,6 +134,132 @@ def ACIR_VarWithOp : ACIR_Op<"var.with", [Pure]> {
   }];
 }
 
+// Pure v0.3 compute-region operations.  The v0.2 var.constant and var.get
+// operations above are intentionally reused so their established syntax and
+// verifier remain source-compatible.
+class ACIR_VarRegionOp<string mnemonic, list<Trait> traits = []>
+    : ACIR_Op<mnemonic, !listconcat([Pure], traits)> {
+  let hasVerifier = 1;
+}
+
+def ACIR_VarStructOp : ACIR_VarRegionOp<"var.struct"> {
+  let arguments = (ins Variadic<ACIR_VarType>:$values,
+                       StrArrayAttr:$fields);
+  let results = (outs ACIR_VarType:$result);
+  let assemblyFormat = [{
+    $fields `(` $values `)` attr-dict `:` functional-type($values, $result)
+  }];
+}
+
+def ACIR_VarUpdateOp : ACIR_VarRegionOp<"var.update"> {
+  let arguments = (ins ACIR_VarType:$record,
+                       Variadic<ACIR_VarType>:$values,
+                       StrArrayAttr:$fields);
+  let results = (outs ACIR_VarType:$result);
+  let assemblyFormat = [{
+    $record $fields `(` $values `)` attr-dict `:`
+    functional-type($record, $result) `with` type($values)
+  }];
+}
+
+def ACIR_VarArrayOp : ACIR_VarRegionOp<"var.array"> {
+  let arguments = (ins Variadic<ACIR_VarType>:$values);
+  let results = (outs ACIR_VarType:$result);
+  let assemblyFormat = [{
+    `(` $values `)` attr-dict `:` functional-type($values, $result)
+  }];
+}
+
+def ACIR_VarExtractOp : ACIR_VarRegionOp<"var.extract"> {
+  let arguments = (ins ACIR_VarType:$input, ACIR_VarType:$index);
+  let results = (outs ACIR_VarType:$result);
+  let assemblyFormat = [{
+    $input `[` $index `]` attr-dict `:`
+    functional-type($input, $result) `index` type($index)
+  }];
+}
+
+def ACIR_VarUnaryOp : ACIR_VarRegionOp<"var.unary"> {
+  let arguments = (ins ACIR_VarType:$input, StrAttr:$kind);
+  let results = (outs ACIR_VarType:$result);
+  let assemblyFormat = [{
+    $kind $input attr-dict `:` functional-type($input, $result)
+  }];
+}
+
+def ACIR_VarGenericBinaryOp : ACIR_VarRegionOp<"var.binary"> {
+  let arguments = (ins ACIR_VarType:$lhs, ACIR_VarType:$rhs,
+                       StrAttr:$kind);
+  let results = (outs ACIR_VarType:$result);
+  let assemblyFormat = [{
+    $kind $lhs `,` $rhs attr-dict `:`
+    functional-type($lhs, $result) `rhs` type($rhs)
+  }];
+}
+
+def ACIR_VarCompareOp : ACIR_VarRegionOp<"var.compare"> {
+  let arguments = (ins ACIR_VarType:$lhs, ACIR_VarType:$rhs,
+                       StrAttr:$predicate);
+  let results = (outs ACIR_VarType:$result);
+  let assemblyFormat = [{
+    $predicate $lhs `,` $rhs attr-dict `:`
+    functional-type($lhs, $result) `rhs` type($rhs)
+  }];
+}
+
+def ACIR_VarSelectOp : ACIR_VarRegionOp<"var.select"> {
+  let arguments = (ins ACIR_VarType:$condition, ACIR_VarType:$true_value,
+                       ACIR_VarType:$false_value);
+  let results = (outs ACIR_VarType:$result);
+  let assemblyFormat = [{
+    $condition `,` $true_value `,` $false_value attr-dict `:`
+    functional-type($true_value, $result) `condition` type($condition)
+    `false` type($false_value)
+  }];
+}
+
+def ACIR_VarCastOp : ACIR_VarRegionOp<"var.cast"> {
+  let arguments = (ins ACIR_VarType:$input);
+  let results = (outs ACIR_VarType:$result);
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type($input, $result)
+  }];
+}
+
+def ACIR_VarYieldOp : ACIR_VarRegionOp<"var.yield", [Terminator]> {
+  let arguments = (ins ACIR_VarType:$value);
+  let assemblyFormat = "$value attr-dict `:` type($value)";
+}
+
+// source/observe already exist in epoch 0.2 with incompatible assembly and
+// type contracts.  Their v0.3 forms are explicitly namespaced in the op name;
+// compute is new and therefore keeps the canonical ac.compute spelling.
+def ACIR_SourceV03Op : ACIR_Op<"v03.source", [Pure]> {
+  let arguments = (ins StrAttr:$boundary);
+  let results = (outs ACIR_QueueValueType:$output);
+  let hasVerifier = 1;
+  let assemblyFormat = "$boundary attr-dict `:` type($output)";
+}
+
+def ACIR_ComputeOp : ACIR_Op<"compute", [Pure, SingleBlock]> {
+  let arguments = (ins ACIR_QueueValueType:$input);
+  let results = (outs ACIR_QueueValueType:$output);
+  let regions = (region SizedRegion<1>:$body);
+  let hasVerifier = 1;
+  let assemblyFormat = [{
+    $input $body attr-dict `:` functional-type($input, $output)
+  }];
+}
+
+def ACIR_ObserveV03Op : ACIR_Op<"v03.observe", [Pure, ACIR_Observation]> {
+  let arguments = (ins ACIR_QueueValueType:$input, StrAttr:$name,
+                       StrArrayAttr:$fields);
+  let hasVerifier = 1;
+  let assemblyFormat = [{
+    $input `as` $name `fields` $fields attr-dict `:` type($input)
+  }];
+}
+
 def ACIR_PacketSerializeOp : ACIR_Op<"packet.serialize", [Pure]> {
   let arguments = (ins AnyType:$packet_value, SymbolRefAttr:$packet);
   let results = (outs AnyType:$bytes);

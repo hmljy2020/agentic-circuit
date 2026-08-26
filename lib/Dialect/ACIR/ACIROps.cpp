@@ -1154,6 +1154,249 @@ LogicalResult VarWithOp::verify() {
   return success();
 }
 
+namespace {
+
+LogicalResult requireV03(Operation *operation) {
+  auto file = operation->getParentOfType<mlir::ModuleOp>();
+  auto epoch =
+      file ? file->getAttrOfType<StringAttr>("ac.contract_epoch") : StringAttr();
+  if (epoch && epoch.getValue() == "0.3")
+    return success();
+  return operation->emitOpError(
+      "is only legal in an ACIR contract_epoch 0.3 file");
+}
+
+LogicalResult requireDirectGraphChild(Operation *operation) {
+  if (isa_and_nonnull<ModuleOp>(operation->getParentOp()))
+    return success();
+  return operation->emitOpError(
+      "must be a direct child of an ac.module Graph block");
+}
+
+LogicalResult requireComputeBodyOp(Operation *operation) {
+  if (isa_and_nonnull<ComputeOp>(operation->getParentOp()))
+    return requireV03(operation);
+  return operation->emitOpError(
+      "must be a direct operation in an ac.compute body");
+}
+
+Type varElement(Value value) {
+  return cast<VarType>(value.getType()).getElementType();
+}
+
+LogicalResult verifySameVarElement(Operation *operation, ValueRange values,
+                                   Type expected, StringRef context) {
+  for (Value value : values)
+    if (varElement(value) != expected)
+      return operation->emitOpError()
+             << context << " expects !ac.var<" << expected
+             << "> but received " << value.getType();
+  return success();
+}
+
+bool isCanonicalVarOperation(Operation *operation) {
+  return isa<VarConstantOp, VarStructOp, VarGetOp, VarUpdateOp, VarArrayOp,
+             VarExtractOp, VarUnaryOp, VarGenericBinaryOp, VarCompareOp,
+             VarSelectOp, VarCastOp, VarYieldOp>(operation);
+}
+
+LogicalResult verifyFieldNames(Operation *operation, ArrayAttr declaration,
+                               ArrayAttr names, ValueRange values) {
+  if (names.size() != declaration.size() || values.size() != declaration.size())
+    return operation->emitOpError()
+           << "fields must exactly match the struct declaration; names="
+           << names.size() << ", values=" << values.size()
+           << ", declaration=" << declaration.size();
+  for (auto [index, value] : llvm::enumerate(values)) {
+    auto field = cast<DictionaryAttr>(declaration[index]);
+    auto name = dyn_cast<StringAttr>(names[index]);
+    if (!name || name.getValue() != fieldName(field))
+      return operation->emitOpError()
+             << "field " << index << " must be '" << fieldName(field) << "'";
+    if (varElement(value) != fieldType(field))
+      return operation->emitOpError()
+             << "field '" << fieldName(field) << "' expects "
+             << fieldType(field) << " but received " << value.getType();
+  }
+  return success();
+}
+
+} // namespace
+
+LogicalResult VarStructOp::verify() {
+  if (failed(requireComputeBodyOp(*this)))
+    return failure();
+  Type resultType = varElement(getResult());
+  Operation *declaration = recordDecl(*this, resultType);
+  if (!declaration || !isa<StructOp>(declaration))
+    return emitOpError("var.struct result must resolve to ac.struct");
+  return verifyFieldNames(*this, declarationFields(declaration), getFields(),
+                          getValues());
+}
+
+LogicalResult VarUpdateOp::verify() {
+  if (failed(requireComputeBodyOp(*this)))
+    return failure();
+  Type recordType = varElement(getRecord());
+  if (varElement(getResult()) != recordType)
+    return emitOpError("var.update must preserve struct identity");
+  Operation *declaration = recordDecl(*this, recordType);
+  if (!declaration || !isa<StructOp>(declaration))
+    return emitOpError("var.update requires a struct Var operand");
+  if (getFields().size() != getValues().size())
+    return emitOpError("var.update fields and values must have equal arity");
+  llvm::SmallDenseSet<StringRef> seen;
+  for (auto [fieldAttribute, value] : llvm::zip(getFields(), getValues())) {
+    StringRef field = cast<StringAttr>(fieldAttribute).getValue();
+    if (!seen.insert(field).second)
+      return emitOpError() << "duplicate update field '" << field << "'";
+    auto index = findField(declaration, field);
+    if (!index)
+      return emitOpError() << "unknown struct field '" << field << "'";
+    if (varElement(value) != fieldType(declaration, *index))
+      return emitOpError() << "update field '" << field << "' expects "
+                           << fieldType(declaration, *index);
+  }
+  return success();
+}
+
+LogicalResult VarArrayOp::verify() {
+  if (failed(requireComputeBodyOp(*this)))
+    return failure();
+  auto resultType = dyn_cast<VectorType>(varElement(getResult()));
+  if (!resultType ||
+      static_cast<int64_t>(getValues().size()) != resultType.getLength())
+    return emitOpError(
+        "var.array operands must match the fixed vector result extent");
+  return verifySameVarElement(*this, getValues(), resultType.getElementType(),
+                              "var.array element");
+}
+
+LogicalResult VarExtractOp::verify() {
+  if (failed(requireComputeBodyOp(*this)))
+    return failure();
+  auto inputType = dyn_cast<VectorType>(varElement(getInput()));
+  if (!inputType || varElement(getResult()) != inputType.getElementType())
+    return emitOpError("var.extract input/result element types do not match");
+  if (!isa<IntegerType>(varElement(getIndex())))
+    return emitOpError("var.extract index must be an integer Var");
+  return success();
+}
+
+LogicalResult VarUnaryOp::verify() {
+  if (failed(requireComputeBodyOp(*this)))
+    return failure();
+  if (!llvm::is_contained(ArrayRef<StringRef>{"not", "neg", "bit_not"},
+                          getKind()))
+    return emitOpError() << "unsupported unary operator '" << getKind() << "'";
+  if (varElement(getInput()) != varElement(getResult()))
+    return emitOpError("var.unary must preserve element type");
+  return success();
+}
+
+LogicalResult VarGenericBinaryOp::verify() {
+  if (failed(requireComputeBodyOp(*this)))
+    return failure();
+  if (!llvm::is_contained(
+          ArrayRef<StringRef>{"add", "sub", "mul", "and", "or", "xor"},
+          getKind()))
+    return emitOpError() << "unsupported binary operator '" << getKind()
+                         << "'";
+  Type expected = varElement(getResult());
+  return verifySameVarElement(*this, ValueRange{getLhs(), getRhs()}, expected,
+                              "var.binary operand");
+}
+
+LogicalResult VarCompareOp::verify() {
+  if (failed(requireComputeBodyOp(*this)))
+    return failure();
+  if (!llvm::is_contained(
+          ArrayRef<StringRef>{"eq", "ne", "lt", "le", "gt", "ge"},
+          getPredicate()))
+    return emitOpError() << "unsupported comparison predicate '"
+                         << getPredicate() << "'";
+  if (varElement(getLhs()) != varElement(getRhs()))
+    return emitOpError("var.compare operands must have one element type");
+  auto resultType = dyn_cast<IntegerType>(varElement(getResult()));
+  if (!resultType || !resultType.isSignless() || resultType.getWidth() != 1)
+    return emitOpError("var.compare must return !ac.var<i1>");
+  return success();
+}
+
+LogicalResult VarSelectOp::verify() {
+  if (failed(requireComputeBodyOp(*this)))
+    return failure();
+  auto conditionType = dyn_cast<IntegerType>(varElement(getCondition()));
+  if (!conditionType || conditionType.getWidth() != 1)
+    return emitOpError("var.select condition must be !ac.var<i1>");
+  Type resultType = varElement(getResult());
+  return verifySameVarElement(
+      *this, ValueRange{getTrueValue(), getFalseValue()}, resultType,
+      "var.select branch");
+}
+
+LogicalResult VarCastOp::verify() {
+  if (failed(requireComputeBodyOp(*this)))
+    return failure();
+  if (!isa<IntegerType, FloatType>(varElement(getInput())) ||
+      !isa<IntegerType, FloatType>(varElement(getResult())))
+    return emitOpError("var.cast supports scalar element types only");
+  return success();
+}
+
+LogicalResult VarYieldOp::verify() {
+  if (failed(requireComputeBodyOp(*this)))
+    return failure();
+  auto compute = cast<ComputeOp>((*this)->getParentOp());
+  Type expected = compute.getOutput().getType().getElementType();
+  if (varElement(getValue()) != expected)
+    return emitOpError() << "yield element type must match compute output "
+                         << expected;
+  return success();
+}
+
+LogicalResult SourceV03Op::verify() {
+  if (failed(requireV03(*this)) || failed(requireDirectGraphChild(*this)))
+    return failure();
+  if (getBoundary().empty())
+    return emitOpError("boundary identity must be non-empty");
+  return success();
+}
+
+LogicalResult ComputeOp::verify() {
+  if (failed(requireV03(*this)) || failed(requireDirectGraphChild(*this)))
+    return failure();
+  if (getBody().empty() || !llvm::hasSingleElement(getBody()))
+    return emitOpError("compute requires one body block");
+  Block &body = getBody().front();
+  if (body.getNumArguments() != 1)
+    return emitOpError("compute body requires one Var argument");
+  Type inputPayload = getInput().getType().getElementType();
+  if (body.getArgument(0).getType() != VarType::get(getContext(), inputPayload))
+    return emitOpError("compute body argument must match input Queue payload");
+  if (body.empty() || !isa<VarYieldOp>(body.back()))
+    return emitOpError("compute body must terminate with ac.var.yield");
+  for (Operation &operation : body)
+    if (!isCanonicalVarOperation(&operation))
+      return operation.emitOpError(
+          "operation is outside the canonical ac.var family");
+  return success();
+}
+
+LogicalResult ObserveV03Op::verify() {
+  if (failed(requireV03(*this)) || failed(requireDirectGraphChild(*this)))
+    return failure();
+  if (getName().empty())
+    return emitOpError("observation name must be non-empty");
+  llvm::SmallDenseSet<StringRef> seen;
+  for (Attribute field : getFields()) {
+    StringRef name = cast<StringAttr>(field).getValue();
+    if (name.empty() || !seen.insert(name).second)
+      return emitOpError("observation fields must be non-empty and unique");
+  }
+  return success();
+}
+
 LogicalResult MemoryOp::verify() {
   if (getInput().getType() != getOutput().getType())
     return emitOpError("output queue must match input queue type");

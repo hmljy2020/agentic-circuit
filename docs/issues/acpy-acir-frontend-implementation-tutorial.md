@@ -154,12 +154,111 @@ endpoint/owned-state contract；如果标成 0.3，旧入口又会在看到任�
 - v0.3 primitive 自己会要求所在文件为 0.3；
 - 后端仍可用 capability inventory 明确报告“不支持 v0.3”，而不是误执行。
 
-## 7. 下一步阅读路线
+## 7. 三个最小 primitive 分别解决什么
 
-后续章节将在实现时继续加入：
+### Source
 
-1. 为什么 ACIR 文件需要显式 epoch 0.3；
-2. source/compute/observe 的 transaction 和 backpressure contract；
-3. Var helper 如何从 Python AST lower 成纯 region；
-4. Queue linear-use verifier 为什么把 observe 视为例外；
-5. 最小 ACPy 如何生成可 native round-trip 的 ACIR。
+`ac.source` 把 harness 输入建模为图内第一个 Queue producer：
+
+```text
+() -> Queue<T>
+```
+
+它只保存稳定 boundary identity，不保存 Python generator/callback。实际 trace reader
+由后续 harness 按 identity 绑定。因此 frozen ACIR 不会依赖产生它的 Python 进程。
+
+### Compute
+
+`ac.compute` 表达严格 1:1、无持久状态的 token 变换：
+
+```text
+Queue<T> -> Queue<U>
+region: Var<T> -> Var<U>
+```
+
+一次 transaction 只有两种结果：输入不被接受，什么都不发生；或者输入被消费且
+输出同时产生。region 内没有 Queue、pop/push、等待或状态写入，所以后端可以把它
+实现为组合逻辑或一个原子 functional provider，而不会改变拓扑语义。
+
+### Observe
+
+`ac.observe` 是附着在 Queue 上的只读 observation：
+
+```text
+Queue<T> -> ()
+```
+
+它不消费 token、不给 upstream 施加 backpressure，也不改变功能状态。它和 sink
+不同：sink 是真正的 consuming endpoint；observe 类似逻辑分析仪探针。
+
+三个 op 都检查自己是 `ac.module` Graph 的直接 child，并且只允许出现在 epoch
+0.3 文件中。这样它们不会被误放进 process region，也不会混进旧 contract。
+
+## 8. Python helper 为什么 lower 成 Var region
+
+Python helper：
+
+```python
+def transform(record: Input) -> Output:
+    return Output(value=record.value + 1)
+```
+
+不能以 callable 形式留在 ACIR，因为后端可能不是 Python，闭包也可能捕获可变或
+不可序列化状态。前端会把表达式逐步改写为：
+
+```text
+Var<Input> argument
+  -> var.get "value"
+  -> var.constant 1
+  -> var.binary "add"
+  -> var.struct Output
+  -> var.yield
+```
+
+ACIR 注册的 canonical family 是固定闭集：
+
+```text
+constant, struct, get, update, array, extract,
+unary, binary, compare, select, cast, yield
+```
+
+native verifier 检查 region 只有一个 block、输入 payload 对齐、最后是 yield、yield
+payload 对齐输出 Queue，并拒绝 `arith.*` 或任何 closed family 之外的 operation。
+这使“pure helper”成为可验证事实，而不只是前端的承诺。
+
+## 9. Queue linearity 为什么必须由 ACIR 再检查
+
+Python 前端已经检查 Queue single producer/use，但 ACIR 仍可能由手写文本或其他
+前端产生，因此 native verifier 必须再次建立信任边界。
+
+```python
+left = ac.compute(source, f)
+right = ac.compute(source, g)  # 非法：同一个 token 被消费两次
+```
+
+上述结构会得到两个 consuming uses，并提示显式插入 `ac.fork`。相反：
+
+```python
+ac.observe(result)
+ac.observe(result)
+```
+
+是合法的，因为 observation 不取得 token ownership。`ac.return` 也只是 hierarchy
+边界转交，不计为 primitive consumption。后续加入 fork/merge/scope 时会扩展这套
+分类，而不会改变 Queue 的线性原则。
+
+## 10. B2/B3 当前解决程度
+
+```text
+已解决：source/compute/observe 有注册、canonical assembly 和 native verifier；
+已解决：完整 canonical Var op 名字闭集可 parse/print；
+已解决：P3 使用的 Var ops 有字段、类型、operator 和 region 验证；
+已解决：Queue 多 consuming use 被拒绝，多个 observe 被允许；
+已解决：最小手写 ACIR 可做文本二次 round-trip 和 bytecode round-trip；
+下一步：让 ACPy semantic graph 自动发射同一份 ACIR，而不是维护手写 fixture。
+```
+
+回归结果给出了两层证据：73 条 Python 前端测试全部通过；ACIR 类型、操作和模型
+分析三组 native 测试全部通过，其中操作测试覆盖 1843 个用例。新增 operation 后，
+旧测试里写死的注册数量从 55 更新为 70，并显式列出新增名字；这不是放宽测试，
+而是让注册表闭集继续充当“没有意外私有 primitive 混入”的守门条件。
