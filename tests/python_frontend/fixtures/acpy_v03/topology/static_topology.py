@@ -12,7 +12,7 @@ class TopologyConfig:
 
 @ac.struct
 class Packet:
-    kind: ac.u2
+    kind: ac.i1
     value: ac.u32
 
 
