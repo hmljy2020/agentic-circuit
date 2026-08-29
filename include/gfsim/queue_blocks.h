@@ -1081,25 +1081,24 @@ template <typename T, typename R, typename Command, typename Context,
                     size_t endpoint, const T &item, const Context &saved,
                     const Data &oldData) {
     { std::invoke(index, endpoint, item) } -> std::integral;
-    { std::invoke(request, endpoint, item) } ->
-        std::convertible_to<Command>;
-    { std::invoke(context, endpoint, item) } ->
-        std::convertible_to<Context>;
-    { std::invoke(response, endpoint, saved, oldData) } ->
-        std::convertible_to<R>;
+    { std::invoke(request, endpoint, item) } -> std::convertible_to<Command>;
+    { std::invoke(context, endpoint, item) } -> std::convertible_to<Context>;
+    {
+      std::invoke(response, endpoint, saved, oldData)
+    } -> std::convertible_to<R>;
   }
 class QueueMemoryBankArray final : public SimObject {
 public:
   static constexpr std::string_view contractName = "ac.array.invoke";
   static constexpr ObjectKind componentKind = ObjectKind::Memory;
 
-  QueueMemoryBankArray(
-      std::string name, ObjectId id, SimObject *parent,
-      std::array<SimQueue<T> *, Endpoints> inputs,
-      std::array<SimQueue<R> *, Endpoints> outputs, size_t entries,
-      Data init = {}, size_t latency = 1, Index index = {}, Request request = {},
-      ContextPolicy context = {}, Response response = {},
-      ObservationSink *observations = nullptr)
+  QueueMemoryBankArray(std::string name, ObjectId id, SimObject *parent,
+                       std::array<SimQueue<T> *, Endpoints> inputs,
+                       std::array<SimQueue<R> *, Endpoints> outputs,
+                       size_t entries, Data init = {}, size_t latency = 1,
+                       Index index = {}, Request request = {},
+                       ContextPolicy context = {}, Response response = {},
+                       ObservationSink *observations = nullptr)
       : SimObject(componentKind, std::move(name), id, parent, observations),
         inputs_(inputs), outputs_(outputs), init_(init), latency_(latency),
         index_(std::move(index)), request_(std::move(request)),
@@ -1127,12 +1126,11 @@ public:
       if (!state.busy || !state.ready || epoch < *state.ready)
         continue;
       const size_t endpoint = state.endpoint;
-      if (endpoint >= Endpoints || outputClaimed[endpoint] ||
-          !state.context || !state.oldData ||
-          !outputs_[endpoint]->canProposePush())
+      if (endpoint >= Endpoints || outputClaimed[endpoint] || !state.context ||
+          !state.oldData || !outputs_[endpoint]->canProposePush())
         continue;
-      R value = std::invoke(std::as_const(response_), endpoint,
-                            *state.context, *state.oldData);
+      R value = std::invoke(std::as_const(response_), endpoint, *state.context,
+                            *state.oldData);
       if (!outputs_[endpoint]->proposePush(std::move(value)))
         continue;
       proposedCompletions_[bank] = true;
@@ -1187,8 +1185,7 @@ public:
       Accept accept;
       accept.endpoint = endpoint;
       accept.address = static_cast<size_t>(address);
-      accept.context =
-          std::invoke(std::as_const(context_), endpoint, *head);
+      accept.context = std::invoke(std::as_const(context_), endpoint, *head);
       accept.oldData = storage_[bank][address];
       accept.ready = Epoch{epoch.time + latency_, 0};
       if (static_cast<bool>(command.write))
@@ -1200,11 +1197,12 @@ public:
     bool waiting = false;
     for (const State &state : states_)
       waiting |= state.busy && state.ready && epoch < *state.ready;
-    fired_ = waiting || std::any_of(proposedCompletions_.begin(),
-                                   proposedCompletions_.end(),
-                                   [](bool value) { return value; }) ||
-             std::any_of(proposedAccepts_.begin(), proposedAccepts_.end(),
-                         [](const auto &value) { return value.has_value(); });
+    fired_ =
+        waiting ||
+        std::any_of(proposedCompletions_.begin(), proposedCompletions_.end(),
+                    [](bool value) { return value; }) ||
+        std::any_of(proposedAccepts_.begin(), proposedAccepts_.end(),
+                    [](const auto &value) { return value.has_value(); });
   }
 
   void doXfer(Epoch) override {
@@ -1215,9 +1213,8 @@ public:
         Accept &accept = *proposedAccepts_[bank];
         if (accept.writeData)
           storage_[bank][accept.address] = *accept.writeData;
-        states_[bank] = State{true, accept.endpoint,
-                              std::move(accept.context), accept.oldData,
-                              accept.ready};
+        states_[bank] = State{true, accept.endpoint, std::move(accept.context),
+                              accept.oldData, accept.ready};
       }
     }
     proposedCompletions_.fill(false);
@@ -1234,10 +1231,9 @@ public:
           (epoch < *states_[bank].ready ||
            outputs_[states_[bank].endpoint]->canProposePush()))
         return true;
-    return std::any_of(inputs_.begin(), inputs_.end(),
-                       [](const SimQueue<T> *queue) {
-                         return queue->canProposePop();
-                       });
+    return std::any_of(
+        inputs_.begin(), inputs_.end(),
+        [](const SimQueue<T> *queue) { return queue->canProposePop(); });
   }
 
   bool busy(size_t bank) const { return states_.at(bank).busy; }
