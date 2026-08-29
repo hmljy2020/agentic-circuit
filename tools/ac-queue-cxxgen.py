@@ -57,7 +57,12 @@ def main() -> int:
     program = parse_queue_program(
         arguments.source.read_text(encoding="utf-8"), arguments.system
     )
-    generated = lower_queue_program_to_cpp(program)
+    # The direct legacy emitter covers the scalar Queue subset.  When the
+    # canonical artifact pipeline is requested, let the ACIR QueueGraph
+    # generator be authoritative so new primitives need only one backend.
+    generated: str | None = None
+    if arguments.acir_output is None:
+        generated = lower_queue_program_to_cpp(program)
     canonical_acir: str | None = None
     queue_plan: str | None = None
     if arguments.acir_output is not None:
@@ -101,6 +106,7 @@ def main() -> int:
             if emitted.returncode != 0:
                 parser.error(f"native Queue C++ generation failed: {emitted.stderr}")
             generated = emitted.stdout
+    assert generated is not None
     _write_atomic(arguments.output, generated)
     if canonical_acir is not None and queue_plan is not None:
         assert arguments.acir_output is not None

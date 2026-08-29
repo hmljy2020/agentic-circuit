@@ -1083,6 +1083,28 @@ LogicalResult VarConstantOp::verify() {
   return success();
 }
 
+LogicalResult VarCreateOp::verify() {
+  auto result = cast<VarType>(getResult().getType());
+  Operation *decl = recordDecl(*this, result.getElementType());
+  if (!decl)
+    return emitOpError(
+        "var.create result must resolve to a record declaration");
+  ArrayAttr fields = declarationFields(decl);
+  if (getFieldNames().size() != fields.size() ||
+      getValues().size() != fields.size())
+    return emitOpError("var.create fields must exactly match declaration");
+  for (auto [index, value] : llvm::enumerate(getValues())) {
+    auto field = cast<DictionaryAttr>(fields[index]);
+    if (cast<StringAttr>(getFieldNames()[index]).getValue() != fieldName(field))
+      return emitOpError("var.create fields must exactly match declaration");
+    Type expected = VarType::get(getContext(), fieldType(field));
+    if (expected != value.getType())
+      return emitOpError() << "field '" << fieldName(field) << "' expects "
+                           << expected << " but received " << value.getType();
+  }
+  return success();
+}
+
 static LogicalResult verifyVarBinary(Operation *operation, Value lhs, Value rhs,
                                      Value result) {
   if (lhs.getType() != rhs.getType() || lhs.getType() != result.getType())
@@ -1126,6 +1148,29 @@ LogicalResult VarPopcountOp::verify() {
   return success();
 }
 
+#define ACIR_VERIFY_VAR_BINARY(OP)                                             \
+  LogicalResult OP::verify() {                                                 \
+    return verifyVarBinary(*this, getLhs(), getRhs(), getResult());            \
+  }
+ACIR_VERIFY_VAR_BINARY(VarAndOp)
+ACIR_VERIFY_VAR_BINARY(VarOrOp)
+ACIR_VERIFY_VAR_BINARY(VarXorOp)
+ACIR_VERIFY_VAR_BINARY(VarShlOp)
+ACIR_VERIFY_VAR_BINARY(VarLShrOp)
+ACIR_VERIFY_VAR_BINARY(VarAShrOp)
+ACIR_VERIFY_VAR_BINARY(VarUDivOp)
+ACIR_VERIFY_VAR_BINARY(VarSDivOp)
+ACIR_VERIFY_VAR_BINARY(VarURemOp)
+ACIR_VERIFY_VAR_BINARY(VarSRemOp)
+#undef ACIR_VERIFY_VAR_BINARY
+
+LogicalResult VarSelectOp::verify() {
+  if (getCondition().getType() !=
+      VarType::get(getContext(), IntegerType::get(getContext(), 1)))
+    return emitOpError("condition must be !ac.var<i1>");
+  return success();
+}
+
 LogicalResult VarCmpOp::verify() {
   if (getLhs().getType() != getRhs().getType())
     return emitOpError("operands must have the same Var type");
@@ -1135,10 +1180,11 @@ LogicalResult VarCmpOp::verify() {
   if (getResult().getType() !=
       VarType::get(getContext(), IntegerType::get(getContext(), 1)))
     return emitOpError("result must be !ac.var<i1>");
-  if (!llvm::is_contained(
-          ArrayRef<StringRef>{"eq", "ne", "slt", "sle", "sgt", "sge"},
-          getPredicate()))
-    return emitOpError("predicate must be eq, ne, slt, sle, sgt, or sge");
+  if (!llvm::is_contained(ArrayRef<StringRef>{"eq", "ne", "slt", "sle", "sgt",
+                                              "sge", "ult", "ule", "ugt",
+                                              "uge"},
+                          getPredicate()))
+    return emitOpError("predicate is not supported");
   return success();
 }
 
@@ -2505,12 +2551,16 @@ LogicalResult InstanceOp::verify() {
 }
 
 LogicalResult ArrayOp::verify() {
-  if (failed(verifyStructuralPlacement(*this)))
-    return failure();
   Operation *definition = lookupGraphSymbol(*this, getDefinitionAttr());
   if (!isa_and_nonnull<ModuleOp, ModuleExternOp, ModuleGeneratedOp>(definition))
     return emitOpError() << "unresolved array element definition '"
                          << getDefinitionAttr() << "'";
+  if (definition->hasAttr("ac.services")) {
+    if (failed(verifyOuterPlacement(*this)))
+      return failure();
+  } else if (failed(verifyStructuralPlacement(*this))) {
+    return failure();
+  }
   if (!isStableHierarchySegment(getSymName()) ||
       !isStableHierarchySegment(getStableId()) ||
       !isStableHierarchySegment(getPath()))
@@ -2562,6 +2612,147 @@ LogicalResult ArrayOp::verify() {
                                 signature.getResults()))
     return emitOpError("array flattened interface shape does not match element "
                        "signature and static cardinality");
+  if (definition->hasAttr("ac.services")) {
+    constexpr uint64_t maxServiceElements = 1024;
+    if (count == 0 || count > maxServiceElements)
+      return emitOpError(
+          "service array cardinality must be in the range [1, 1024]");
+    if (signature.getNumInputs() != 0 || signature.getNumResults() != 0 ||
+        !getInputs().empty() || !getOutputs().empty())
+      return emitOpError(
+          "service arrays must have an ownership-only interface");
+    auto owner = (*this)->getAttrOfType<StringAttr>("ac.owner");
+    if (!owner || owner.getValue().empty() ||
+        !owner.getValue().starts_with('/') ||
+        (owner.getValue().size() > 1 && owner.getValue().ends_with('/')))
+      return emitOpError(
+          "service arrays require a canonical absolute ac.owner path");
+  }
+  return success();
+}
+
+LogicalResult ArrayInvokeOp::verify() {
+  if (getOrdinal() < 0 || getDepth() <= 0)
+    return emitOpError("ordinal must be non-negative and depth positive");
+  if (getPolicy() != "priority")
+    return emitOpError("policy must be 'priority'");
+
+  ArrayOp array;
+  if (auto file = (*this)->getParentOfType<mlir::ModuleOp>())
+    for (Operation &operation : file.getBody()->getOperations())
+      if (auto candidate = dyn_cast<ArrayOp>(operation);
+          candidate &&
+          candidate.getSymName() == getArray().getRootReference().getValue()) {
+        if (array)
+          return emitOpError() << "ambiguous service array " << getArray();
+        array = candidate;
+      }
+  if (!array)
+    return emitOpError() << "unresolved service array " << getArray();
+  Operation *definition = lookupGraphSymbol(array, array.getDefinitionAttr());
+  if (!definition)
+    return emitOpError("service array element definition is unresolved");
+  auto services = definition->getAttrOfType<ArrayAttr>("ac.services");
+  if (!services)
+    return emitOpError("referenced array element does not declare services");
+
+  DictionaryAttr service;
+  for (Attribute candidate : services) {
+    auto dictionary = dyn_cast<DictionaryAttr>(candidate);
+    auto name =
+        dictionary ? dictionary.getAs<StringAttr>("name") : StringAttr();
+    if (name && name.getValue() == getService()) {
+      if (service)
+        return emitOpError("array element declares a duplicate service name");
+      service = dictionary;
+    }
+  }
+  if (!service)
+    return emitOpError() << "array element has no service named '"
+                         << getService() << "'";
+  auto requestType = service.getAs<TypeAttr>("request");
+  auto responseType = service.getAs<TypeAttr>("response");
+  auto maximumOutstanding = service.getAs<IntegerAttr>("max_outstanding");
+  if (!requestType || !responseType || !maximumOutstanding ||
+      maximumOutstanding.getInt() != 1)
+    return emitOpError("service metadata requires request/response types and "
+                       "max_outstanding 1");
+
+  Type inputPayload = cast<QueueType>(getInput().getType()).getElementType();
+  Type outputPayload = cast<QueueType>(getOutput().getType()).getElementType();
+  Type inputVar = VarType::get(getContext(), inputPayload);
+  auto verifyPureRegion = [&](Region &region, StringRef name,
+                              TypeRange arguments,
+                              TypeRange yields) -> LogicalResult {
+    Block &block = region.front();
+    if (!llvm::equal(block.getArgumentTypes(), arguments))
+      return emitOpError() << name << " region argument types do not match";
+    for (Operation &operation : block.without_terminator())
+      if (!isMemoryEffectFree(&operation))
+        return emitOpError() << name << " operation '" << operation.getName()
+                             << "' must be pure";
+    auto yield = dyn_cast<ArrayInvokeYieldOp>(block.getTerminator());
+    if (!yield)
+      return emitOpError() << name
+                           << " must terminate with ac.array.invoke.yield";
+    if (!llvm::equal(yield.getValues().getTypes(), yields))
+      return emitOpError() << name << " yielded value types do not match";
+    return success();
+  };
+
+  Block &indexBlock = getIndex().front();
+  if (indexBlock.getNumArguments() != 1 ||
+      indexBlock.getArgument(0).getType() != inputVar)
+    return emitOpError("index region argument types do not match");
+  for (Operation &operation : indexBlock.without_terminator())
+    if (!isMemoryEffectFree(&operation))
+      return emitOpError() << "index operation '" << operation.getName()
+                           << "' must be pure";
+  auto indexYield = dyn_cast<ArrayInvokeYieldOp>(indexBlock.getTerminator());
+  if (!indexYield || indexYield.getValues().size() != array.getShape().size())
+    return emitOpError("index must yield exactly one value per array rank");
+  for (auto [value, extent] :
+       llvm::zip_equal(indexYield.getValues(), array.getShape())) {
+    auto var = dyn_cast<VarType>(value.getType());
+    auto integer =
+        var ? dyn_cast<IntegerType>(var.getElementType()) : IntegerType();
+    if (!integer || integer.getWidth() > 64 ||
+        (integer.getWidth() < 64 &&
+         static_cast<uint64_t>(extent) > (uint64_t{1} << integer.getWidth())))
+      return emitOpError(
+          "index values must be integer Vars wide enough for each extent");
+  }
+
+  Type requestVar = VarType::get(getContext(), requestType.getValue());
+  if (failed(
+          verifyPureRegion(getRequest(), "request", {inputVar}, {requestVar})))
+    return failure();
+
+  Block &contextBlock = getIdContext().front();
+  if (contextBlock.getNumArguments() != 1 ||
+      contextBlock.getArgument(0).getType() != inputVar)
+    return emitOpError("context region argument types do not match");
+  auto contextYield =
+      dyn_cast<ArrayInvokeYieldOp>(contextBlock.getTerminator());
+  if (!contextYield || contextYield.getValues().size() != 1)
+    return emitOpError(
+        "context must terminate with one ac.array.invoke.yield value");
+  for (Operation &operation : contextBlock.without_terminator())
+    if (!isMemoryEffectFree(&operation))
+      return emitOpError() << "context operation '" << operation.getName()
+                           << "' must be pure";
+  auto contextVar = dyn_cast<VarType>(contextYield.getValues()[0].getType());
+  auto contextInteger = contextVar
+                            ? dyn_cast<IntegerType>(contextVar.getElementType())
+                            : IntegerType();
+  if (!contextInteger || contextInteger.getWidth() > 64)
+    return emitOpError("context must yield one integer ID Var at most 64 bits");
+
+  Type responseVar = VarType::get(getContext(), responseType.getValue());
+  Type outputVar = VarType::get(getContext(), outputPayload);
+  if (failed(verifyPureRegion(getResponse(), "response",
+                              {contextVar, responseVar}, {outputVar})))
+    return failure();
   return success();
 }
 

@@ -59,7 +59,7 @@ using namespace mlir;
 namespace acir {
 namespace {
 
-constexpr llvm::StringLiteral kEpoch = "0.3";
+constexpr llvm::StringLiteral kEpoch = "0.4";
 constexpr llvm::StringLiteral kResultRoleIdentity = "acsim.result.role";
 constexpr uint64_t kMaxExpandedRows = 1U << 20;
 

@@ -1,7 +1,7 @@
 {
   "schema_kind": "agentic-circuit-component",
   "schema_version": "0.1",
-  "contract_epoch": "0.3",
+  "contract_epoch": "0.4",
   "canonical_name": "workspace.NpuNode",
   "family": "compute",
   "provider_namespace": "workspace.npu.provider",
@@ -23,7 +23,9 @@
   "effect": {
     "kind": "stateful",
     "requirements": [],
-    "guarantees": ["stable generated hierarchy placement"],
+    "guarantees": [
+      "stable generated hierarchy placement"
+    ],
     "observable_effects": [],
     "failure_behavior": "none"
   },
@@ -39,5 +41,5 @@
     "gauges": [],
     "histograms": []
   },
-  "schema_fingerprint": "sha256:3b96b9435f28a5fa08f41dc396618678cede4071171fe56628b11f14071205e3"
+  "schema_fingerprint": "sha256:764398833713a4cde7a0ab31559cd2065902b568af261a82d25024c47d4e103a"
 }

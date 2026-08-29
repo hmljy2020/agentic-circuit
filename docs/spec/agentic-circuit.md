@@ -3,8 +3,8 @@
 | Field | Value |
 | --- | --- |
 | Specification | Serial Python, Queue/Var ACIR, typed gfsim, and PYC refinement |
-| Target contract epoch | `0.3` |
-| Status | Current implementation contract; serialized epoch `0.3` is active on `main` |
+| Target contract epoch | `0.4` |
+| Status | Current implementation contract; serialized epoch `0.4` is active on `main` |
 | Public namespace | `ac` |
 | Audience | Frontend, compiler, simulator, and RTL contributors |
 | Design background | [NDF block-model decision](decisions/D-BLOCK-MODEL-001.md) |
@@ -36,9 +36,9 @@ The editable diagram source is
 The words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY** are
 normative requirements for the current contract.
 
-Producers emit exact serialized epoch `0.3`; consumers reject other epochs
-before interpreting the artifact. The toolchain provides no compatibility
-alias or best-effort conversion.
+Producers emit exact epoch `0.4`; consumers reject earlier epochs before
+interpreting the artifact. The toolchain provides no compatibility alias or
+best-effort conversion.
 
 When this manual and implementation disagree, use the following authority
 order:
@@ -897,14 +897,16 @@ request endpoints are backpressured; `busy` is released only when the selected
 response Queue accepts the response, and no request is reaccepted in that same
 epoch. Every backend realizes exactly one physical memory per instance.
 
-The Python frontend may statically elaborate a homogeneous memory array without
-adding a frozen operation. `banks.select(requests, key=...).request(...)`
-lowers to one `ac.route`, one ordinary memory instance and request per bank,
-and one response `ac.merge`. The route key selects exactly one bank. Banks have
-independent outstanding state, so responses from different banks may be
-reordered; callers that require request order retain a tag and use `reorder`.
-Memory arrays are one-dimensional in epoch 0.3 and require identical data type,
-entry count, and initialization across all banks.
+Epoch 0.4 represents a homogeneous memory array with one ownership-only
+`ac.array` and dynamic service calls with `ac.array.invoke`. The Python form is
+`banks = ac.array((rows, cols), ac.memory(...))` followed by
+`banks[row, col].request(id=..., address=..., write=..., data=...)`. Its index,
+request adapter, ID context, and response adapter are pure Var regions. Only
+the selected bank observes the request. Banks have independent
+single-outstanding state, so requests to different banks overlap and responses
+may complete out of request order. Same-cycle completions use fixed row-major
+priority. Shape, data type, entries, initialization, and latency are static;
+the frontend requires an explicit user ID and produces a `{id, data}` response.
 
 ### Explicit firing example
 

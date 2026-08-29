@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-CONTRACT_EPOCH = "0.3"
+CONTRACT_EPOCH = "0.4"
 LLVM_LOCK = {
     "release": "22.1.8",
     "upstream_commit": "ca7933e47d3a3451d81e72ac174dcb5aa28b59d1",
@@ -152,6 +152,8 @@ class RepositoryContractsTest(unittest.TestCase):
         catalog = json.loads((ROOT / "schemas/opcodes.json").read_text())
         Draft202012Validator(schema).validate(catalog)
         expected = {
+            "ac.array",
+            "ac.array.invoke",
             "ac.barrier",
             "ac.broadcast",
             "ac.credit",
@@ -177,6 +179,8 @@ class RepositoryContractsTest(unittest.TestCase):
         forbidden = {"decode", "dispatch", "rename", "retire"}
         for entry in catalog["entries"]:
             operation_kind = entry["operation"].removeprefix("ac.").replace(".", "_")
+            if entry["operation"] == "ac.array":
+                operation_kind = "array_instance"
             self.assertEqual(entry["kind"], operation_kind)
             self.assertTrue(entry["gfsim"]["available"])
             if entry["role"] == "design":
@@ -516,9 +520,9 @@ class RepositoryContractsTest(unittest.TestCase):
             "operation_path": "@Top::@workload/r0/b0/o0",
         }
         descriptor = {
-            "cpp": "acir::generated::impl_wake_next_delta_28670f81a4b5f79039c0859878e49d133debaaa96ce07fd057110aa5fba8f36c",
+            "cpp": "acir::generated::impl_wake_next_delta_043ae4e869cdd2b9059e1696f276b6844179f19aa6a52872ad0ac2d273a4c550",
             "effect": "stateful",
-            "fingerprint": "sha256:28670f81a4b5f79039c0859878e49d133debaaa96ce07fd057110aa5fba8f36c",
+            "fingerprint": "sha256:043ae4e869cdd2b9059e1696f276b6844179f19aa6a52872ad0ac2d273a4c550",
             "inputs": [],
             "kind": "implementation",
             "ordinal": 0,
@@ -526,11 +530,11 @@ class RepositoryContractsTest(unittest.TestCase):
             "results": ["@acir_wake_next_delta"],
             "role": "wake_next_delta",
             "source_paths": [],
-            "symbol": "@acir_impl_wake_next_delta_28670f81a4b5f79039c0859878e49d133debaaa96ce07fd057110aa5fba8f36c",
+            "symbol": "@acir_impl_wake_next_delta_043ae4e869cdd2b9059e1696f276b6844179f19aa6a52872ad0ac2d273a4c550",
         }
         fixture = {
             "callees": [descriptor],
-            "contract_epoch": "0.3",
+            "contract_epoch": "0.4",
             "processes": [{
                 "blocks": [{"actions": [], "cost": 2, "edge": {"kind": "suspend", "transition": 0}, "frames": [], "loads": [], "ordinal": 0, "path": "@Top::@workload/plan/pc/entry/b00000000", "pc": 0}],
                 "captures": [], "definition_key": "@Top::@workload", "entry_pc": 0,

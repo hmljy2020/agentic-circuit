@@ -86,6 +86,31 @@ struct MemoryRequestPlan {
   std::string resultField;
 };
 
+struct ArrayInstancePlan {
+  std::string name;
+  std::vector<uint64_t> shape;
+  std::string dataType;
+  std::string commandType;
+  uint64_t entries = 0;
+  uint64_t init = 0;
+  uint64_t latency = 1;
+  std::string ownerPath;
+};
+
+struct ArrayInvokePlan {
+  std::string array;
+  std::string name;
+  std::string scope;
+  std::string input;
+  std::string output;
+  uint64_t ordinal = 0;
+  uint64_t depth = 1;
+  QueueBlockPlan index;
+  QueueBlockPlan request;
+  QueueBlockPlan context;
+  QueueBlockPlan response;
+};
+
 struct QueueGraphPlan {
   std::string system;
   std::string specializationFingerprint;
@@ -95,6 +120,8 @@ struct QueueGraphPlan {
   std::vector<QueueBlockPlan> blocks;
   std::vector<MemoryInstancePlan> memoryInstances;
   std::vector<MemoryRequestPlan> memoryRequests;
+  std::vector<ArrayInstancePlan> arrayInstances;
+  std::vector<ArrayInvokePlan> arrayInvokes;
 
   llvm::Expected<std::string> canonicalJson() const;
 };

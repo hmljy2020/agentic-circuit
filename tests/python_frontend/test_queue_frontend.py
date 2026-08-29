@@ -687,6 +687,14 @@ class QueueFrontendTest(unittest.TestCase):
                 MEMORY_SOURCE.replace("depth=4,", "depth=4,\n        latency=1,"),
                 "pipeline",
             )
+        with self.assertRaisesRegex(QueueFrontendError, "requires Queue rate 1"):
+            lower_queue_source(
+                MEMORY_SOURCE.replace(
+                    "requests = ac.source(Request)",
+                    "requests = ac.source(Request, depth=2, rate=2)",
+                ),
+                "pipeline",
+            )
 
     def test_memory_instance_freezes_multiple_endpoint_priority(self) -> None:
         from agentic_circuit._queue_frontend import lower_queue_source
@@ -762,9 +770,7 @@ class QueueFrontendTest(unittest.TestCase):
             lower_queue_source,
         )
 
-        heterogeneous = MEMORY_ARRAY_SOURCE.replace(
-            "entries=16", "entries=_ + 1"
-        )
+        heterogeneous = MEMORY_ARRAY_SOURCE.replace("entries=16", "entries=_ + 1")
         with self.assertRaisesRegex(QueueFrontendError, "must be homogeneous"):
             lower_queue_source(heterogeneous, "pipeline")
 
@@ -789,6 +795,13 @@ class QueueFrontendTest(unittest.TestCase):
         )
         with self.assertRaisesRegex(QueueFrontendError, "same lexical scope"):
             lower_queue_source(wrong_scope, "pipeline")
+
+        multirate = MEMORY_ARRAY_SOURCE.replace(
+            "requests = ac.source(BankRequest, depth=8, latency=1)",
+            "requests = ac.source(BankRequest, depth=8, latency=1, rate=2)",
+        )
+        with self.assertRaisesRegex(QueueFrontendError, "requires Queue rate 1"):
+            lower_queue_source(multirate, "pipeline")
 
     def test_memory_rejects_legacy_unconnected_type_and_scope_forms(self) -> None:
         from agentic_circuit._queue_frontend import (
@@ -866,7 +879,7 @@ class QueueFrontendTest(unittest.TestCase):
         from agentic_circuit._queue_frontend import lower_queue_source
 
         self.assertEqual(
-            """module attributes {ac.contract_epoch = "0.3", ac.system = "pipeline"} {
+            """module attributes {ac.contract_epoch = "0.4", ac.system = "pipeline"} {
   %input_queue = ac.source depth 4 latency 1 {ac.name = "input_queue"} : !ac.queue<i64>
   %output_queue = ac.transform %input_queue depths [8] latencies [2] {
   ^transform(%item: !ac.var<i64>):

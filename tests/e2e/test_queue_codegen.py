@@ -74,12 +74,15 @@ int main() {{
       ac_generated::Token{{0, 0}},
       ac_generated::Token{{1, 10}},
   }};
-  for (const auto &item : input)
-    if (!model.completed().proposePush(item))
-      return 1;
   auto rows = model.dispatch_rows();
+  std::size_t inputIndex = 0;
   for (std::size_t tick = 0; tick < 20; ++tick) {{
     const gfsim::Epoch epoch{{tick, 0}};
+    if (inputIndex < input.size()) {{
+      if (!model.completed().proposePush(input[inputIndex]))
+        return 1;
+      ++inputIndex;
+    }}
     for (auto &row : rows)
       row.work(row.object, epoch);
     for (auto &row : rows)
@@ -163,7 +166,7 @@ int main() {{
             self.assertIn("gfsim::QueueTransform<Item, Item", content)
             self.assertIn("gfsim::QueueMerge<Item, 2>", content)
             plan_document = json.loads(plan.read_text(encoding="utf-8"))
-            self.assertEqual("0.3", plan_document["contract_epoch"])
+            self.assertEqual("0.4", plan_document["contract_epoch"])
 
             harness = root / "harness.cpp"
             executable = root / "conditional"
@@ -174,12 +177,17 @@ int main() {{
 
 int main() {{
   ac_generated::PycConditionalPipeline model;
-  if (!model.input_queue().proposePush(ac_generated::Item{{1, 0}}) ||
-      !model.input_queue().proposePush(ac_generated::Item{{1, 1}}))
-    return 1;
+  const std::array<ac_generated::Item, 2> input{{
+      ac_generated::Item{{1, 0}}, ac_generated::Item{{1, 1}}}};
   auto rows = model.dispatch_rows();
+  std::size_t inputIndex = 0;
   for (std::size_t tick = 0; tick < 16; ++tick) {{
     const gfsim::Epoch epoch{{tick, 0}};
+    if (inputIndex < input.size()) {{
+      if (!model.input_queue().proposePush(input[inputIndex]))
+        return 1;
+      ++inputIndex;
+    }}
     for (auto &row : rows)
       row.work(row.object, epoch);
     for (auto &row : rows)
@@ -492,16 +500,19 @@ int main() {{
   const std::array<ac_generated::WorkItem, 15> input{{
       {input_rows},
   }};
-  for (const auto &item : input)
-    if (!model.trace().proposePush(item))
-      return 1;
   auto rows = model.dispatch_rows();
+  std::size_t inputIndex = 0;
   std::size_t simulatedCycles = 0;
   std::size_t dependencyPeak = 0;
   std::size_t reorderPeak = 0;
   std::array<std::size_t, 4> resourcePeaks{{}};
   for (std::size_t tick = 0; tick < 600; ++tick) {{
     const gfsim::Epoch epoch{{tick, 0}};
+    if (inputIndex < input.size()) {{
+      if (!model.trace().proposePush(input[inputIndex]))
+        return 1;
+      ++inputIndex;
+    }}
     for (auto &row : rows)
       row.work(row.object, epoch);
     for (auto &row : rows)

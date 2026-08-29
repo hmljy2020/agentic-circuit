@@ -6,7 +6,7 @@
 # or type must be reflected here in the same commit, and every entry must
 # have observable lit coverage.
 schema: acir-ir-inventory
-contract_epoch: "0.3"
+contract_epoch: "0.4"
 dialect: acir
 operations:
   - ac.system
@@ -17,6 +17,8 @@ operations:
   - ac.module.generated
   - ac.instance
   - ac.array
+  - ac.array.invoke
+  - ac.array.invoke.yield
   - ac.instances
   - ac.view
   - ac.port
@@ -47,6 +49,18 @@ operations:
   - ac.var.add
   - ac.var.sub
   - ac.var.mul
+  - ac.var.and
+  - ac.var.or
+  - ac.var.xor
+  - ac.var.shl
+  - ac.var.lshr
+  - ac.var.ashr
+  - ac.var.udiv
+  - ac.var.sdiv
+  - ac.var.urem
+  - ac.var.srem
+  - ac.var.select
+  - ac.var.create
   - ac.var.cmp
   - ac.var.get
   - ac.var.with

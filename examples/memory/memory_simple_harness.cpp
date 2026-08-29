@@ -12,17 +12,17 @@ int main() {
   }};
   const ac_generated::MemoryRequest read{3, 0, 3};
 
-  // Both logical endpoints are valid before the first simulated epoch. Fixed
-  // priority drains both writer requests before accepting the reader request.
-  for (const auto &request : writes)
-    if (!model.writes().proposePush(request))
-      return 1;
-  if (!model.reads().proposePush(read))
+  // Queue rate is one token per epoch. Publish the first writer, then publish
+  // the second writer and reader together so endpoint priority is observable.
+  if (!model.writes().proposePush(writes[0]))
     return 1;
 
   auto rows = model.dispatch_rows();
   std::size_t cycles = 0;
   for (std::size_t tick = 0; tick < 32; ++tick) {
+    if (tick == 1 && (!model.writes().proposePush(writes[1]) ||
+                      !model.reads().proposePush(read)))
+      return 1;
     const gfsim::Epoch epoch{tick, 0};
     for (auto &row : rows)
       row.work(row.object, epoch);

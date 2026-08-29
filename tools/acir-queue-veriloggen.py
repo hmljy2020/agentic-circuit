@@ -183,6 +183,10 @@ def _port_decl(direction: str, value: Value) -> str:
 
 
 def _literal(value: str, width: int) -> str:
+    if value == "true":
+        return f"{width}'d1"
+    if value == "false":
+        return f"{width}'d0"
     try:
         number = int(value, 0)
     except ValueError as exc:
@@ -334,6 +338,92 @@ def emit_verilog(module: Module, runtime_dir: Path) -> str:
             )
             continue
 
+        if rhs.startswith("pyc.sync_mem "):
+            match = re.fullmatch(
+                r"pyc\.sync_mem\s+(.*?)\s*\{(.*?)\}\s*:\s*"
+                r"(\S+)\s*,\s*(\S+)\s*,\s*(\S+)",
+                rhs,
+            )
+            if not match or len(lhs) != 1:
+                raise PYCVerilogError(f"cannot parse synchronous memory: {line}")
+            inputs = _ssa_names(match.group(1))
+            if len(inputs) != 8:
+                raise PYCVerilogError(
+                    f"synchronous memory expects eight operands: {line}"
+                )
+            attrs = match.group(2)
+            depth = _parse_attr_int(attrs, "depth")
+            name_match = re.search(
+                r'\bname\s*=\s*"([A-Za-z_][A-Za-z0-9_]*)"', attrs
+            )
+            if depth <= 0 or not name_match:
+                raise PYCVerilogError(
+                    "synchronous memory requires positive depth and safe name"
+                )
+            address_type, data_type, strobe_type = match.group(3, 4, 5)
+            (
+                clk,
+                rst,
+                read_enable,
+                read_address,
+                write_enable,
+                write_address,
+                write_data,
+                strobe,
+            ) = (_value(values, item) for item in inputs)
+            if (
+                clk.type != "!pyc.clock"
+                or rst.type != "!pyc.reset"
+                or read_enable.type != "i1"
+                or write_enable.type != "i1"
+                or read_address.type != address_type
+                or write_address.type != address_type
+                or write_data.type != data_type
+                or strobe.type != strobe_type
+            ):
+                raise PYCVerilogError(
+                    "synchronous memory operand annotations are inconsistent"
+                )
+            out = add_value(lhs[0], data_type)
+            memory_name = name_match.group(1)
+            storage = f"sync_mem_{memory_name}_{out.net}"
+            read_register = f"{storage}_read"
+            reset_index = f"{storage}_reset_index"
+            declarations.extend(
+                (
+                    f"  reg [{out.width - 1}:0] {storage} [0:{depth - 1}];",
+                    f"  reg [{out.width - 1}:0] {read_register};",
+                    f"  integer {reset_index};",
+                )
+            )
+            assigns.append(f"  assign {out.net} = {read_register};")
+            body_lines = [
+                f"  always @(posedge {clk.net}) begin",
+                f"    if ({rst.net}) begin",
+                f"      {read_register} <= {out.width}'d0;",
+                f"      for ({reset_index} = 0; {reset_index} < {depth}; "
+                f"{reset_index} = {reset_index} + 1)",
+                f"        {storage}[{reset_index}] <= {out.width}'d0;",
+                "    end else begin",
+                f"      if ({read_enable.net})",
+                f"        {read_register} <= {storage}[{read_address.net}];",
+            ]
+            for byte in range(strobe.width):
+                low = byte * 8
+                high = min(out.width, low + 8) - 1
+                if low >= out.width:
+                    break
+                body_lines.extend(
+                    (
+                        f"      if ({write_enable.net} && {strobe.net}[{byte}])",
+                        f"        {storage}[{write_address.net}][{high}:{low}] "
+                        f"<= {write_data.net}[{high}:{low}];",
+                    )
+                )
+            body_lines.extend(("    end", "  end"))
+            instances.append("\n".join(body_lines))
+            continue
+
         if rhs.startswith("pyc.rr_arbiter "):
             match = re.fullmatch(
                 r"pyc\.rr_arbiter\s+(.*?)\s*\{(.*?)\}\s*:\s*(.*?)\s*->\s*(\S+)", rhs
@@ -465,7 +555,8 @@ def emit_verilog(module: Module, runtime_dir: Path) -> str:
             continue
 
         binary = re.fullmatch(
-            r"pyc\.(and|or|xor|add|sub|mul|eq|ne|ult|ule|ugt|uge)\s+(.*?)\s*:\s*(\S+)",
+            r"pyc\.(and|or|xor|add|sub|mul|shl|lshr|ashr|udiv|sdiv|urem|srem|"
+            r"eq|ne|slt|ult|ule|ugt|uge)\s+(.*?)\s*:\s*(\S+)",
             rhs,
         )
         if binary and len(lhs) == 1:
@@ -476,7 +567,15 @@ def emit_verilog(module: Module, runtime_dir: Path) -> str:
             operand_type = binary.group(3)
             if left.type != operand_type or right.type != operand_type:
                 raise PYCVerilogError("binary operand annotations are inconsistent")
-            comparison = binary.group(1) in {"eq", "ne", "ult", "ule", "ugt", "uge"}
+            comparison = binary.group(1) in {
+                "eq",
+                "ne",
+                "slt",
+                "ult",
+                "ule",
+                "ugt",
+                "uge",
+            }
             out = add_value(lhs[0], "i1" if comparison else operand_type)
             operator = {
                 "and": "&",
@@ -485,14 +584,27 @@ def emit_verilog(module: Module, runtime_dir: Path) -> str:
                 "add": "+",
                 "sub": "-",
                 "mul": "*",
+                "shl": "<<",
+                "lshr": ">>",
+                "ashr": ">>>",
+                "udiv": "/",
+                "sdiv": "/",
+                "urem": "%",
+                "srem": "%",
                 "eq": "==",
                 "ne": "!=",
+                "slt": "<",
                 "ult": "<",
                 "ule": "<=",
                 "ugt": ">",
                 "uge": ">=",
             }[binary.group(1)]
-            assigns.append(f"  assign {out.net} = {left.net} {operator} {right.net};")
+            signed = binary.group(1) in {"ashr", "sdiv", "srem", "slt"}
+            left_net = f"$signed({left.net})" if signed else left.net
+            right_net = f"$signed({right.net})" if signed else right.net
+            assigns.append(
+                f"  assign {out.net} = {left_net} {operator} {right_net};"
+            )
             continue
 
         unary = re.fullmatch(r"pyc\.not\s+(.*?)\s*:\s*(\S+)", rhs)

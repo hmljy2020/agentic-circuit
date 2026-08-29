@@ -6,6 +6,7 @@
 #include "acir/Dialect/ACIR/ACIRTypes.h"
 
 #include "mlir/IR/Operation.h"
+#include "mlir/IR/SymbolTable.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
@@ -159,6 +160,75 @@ llvm::Error extractExpressions(mlir::Region &region, QueueBlockPlan &plan) {
         return error;
       continue;
     }
+    auto appendBinary = [&](llvm::StringRef kind) -> llvm::Error {
+      return append(operation, kind);
+    };
+    if (mlir::isa<ac::VarAndOp>(operation)) {
+      if (auto error = appendBinary("and"))
+        return error;
+      continue;
+    }
+    if (mlir::isa<ac::VarOrOp>(operation)) {
+      if (auto error = appendBinary("or"))
+        return error;
+      continue;
+    }
+    if (mlir::isa<ac::VarXorOp>(operation)) {
+      if (auto error = appendBinary("xor"))
+        return error;
+      continue;
+    }
+    if (mlir::isa<ac::VarShlOp>(operation)) {
+      if (auto error = appendBinary("shl"))
+        return error;
+      continue;
+    }
+    if (mlir::isa<ac::VarLShrOp>(operation)) {
+      if (auto error = appendBinary("lshr"))
+        return error;
+      continue;
+    }
+    if (mlir::isa<ac::VarAShrOp>(operation)) {
+      if (auto error = appendBinary("ashr"))
+        return error;
+      continue;
+    }
+    if (mlir::isa<ac::VarUDivOp>(operation)) {
+      if (auto error = appendBinary("udiv"))
+        return error;
+      continue;
+    }
+    if (mlir::isa<ac::VarSDivOp>(operation)) {
+      if (auto error = appendBinary("sdiv"))
+        return error;
+      continue;
+    }
+    if (mlir::isa<ac::VarURemOp>(operation)) {
+      if (auto error = appendBinary("urem"))
+        return error;
+      continue;
+    }
+    if (mlir::isa<ac::VarSRemOp>(operation)) {
+      if (auto error = appendBinary("srem"))
+        return error;
+      continue;
+    }
+    if (mlir::isa<ac::VarSelectOp>(operation)) {
+      if (auto error = append(operation, "select"))
+        return error;
+      continue;
+    }
+    if (auto create = mlir::dyn_cast<ac::VarCreateOp>(operation)) {
+      std::string fields;
+      for (mlir::Attribute value : create.getFieldNames()) {
+        if (!fields.empty())
+          fields.push_back(',');
+        fields.append(mlir::cast<mlir::StringAttr>(value).getValue());
+      }
+      if (auto error = append(operation, "create", fields))
+        return error;
+      continue;
+    }
     if (auto compare = mlir::dyn_cast<ac::VarCmpOp>(operation)) {
       if (auto error = append(operation, "cmp", {}, compare.getPredicate()))
         return error;
@@ -194,7 +264,9 @@ llvm::Error extractExpressions(mlir::Region &region, QueueBlockPlan &plan) {
     else if (auto yield = mlir::dyn_cast<ac::FeedbackYieldOp>(operation)) {
       yielded.push_back(yield.getValue());
       yielded.push_back(yield.getContinueValue());
-    } else
+    } else if (auto yield = mlir::dyn_cast<ac::ArrayInvokeYieldOp>(operation))
+      yielded.append(yield.getValues().begin(), yield.getValues().end());
+    else
       return planError("unsupported operation in Queue Var region: " +
                        operation.getName().getStringRef());
     auto names = operandNames(yielded);
@@ -213,8 +285,8 @@ public:
 
   llvm::Expected<QueueGraphPlan> run() {
     auto epoch = module->getAttrOfType<mlir::StringAttr>("ac.contract_epoch");
-    if (!epoch || epoch.getValue() != "0.3")
-      return planError("module requires ac.contract_epoch exactly '0.3'");
+    if (!epoch || epoch.getValue() != "0.4")
+      return planError("module requires ac.contract_epoch exactly '0.4'");
     auto system = module->getAttrOfType<mlir::StringAttr>("ac.system");
     if (!system || system.getValue().empty())
       return planError("module requires non-empty ac.system");
@@ -283,6 +355,13 @@ private:
 
   llvm::Error extractBlock(mlir::Block &block, std::vector<std::string> scope) {
     for (mlir::Operation &operation : block) {
+      if (mlir::isa<ac::ModuleGeneratedOp, ac::ModuleExternOp>(operation))
+        continue;
+      if (auto graph = mlir::dyn_cast<ac::ModuleOp>(operation)) {
+        if (auto error = extractBlock(graph.getBody().front(), scope))
+          return error;
+        continue;
+      }
       if (auto typeScope = mlir::dyn_cast<ac::TypeScopeOp>(operation)) {
         for (mlir::Operation &declaration : typeScope.getBody().front()) {
           auto structure = mlir::dyn_cast<ac::StructOp>(declaration);
@@ -304,6 +383,44 @@ private:
           }
           plan.payloads.push_back(std::move(payload));
         }
+        continue;
+      }
+      if (auto array = mlir::dyn_cast<ac::ArrayOp>(operation)) {
+        auto file = array->getParentOfType<mlir::ModuleOp>();
+        auto target = file ? mlir::SymbolTable::lookupSymbolIn(
+                                 file, array.getDefinitionAttr())
+                           : nullptr;
+        if (!target || !target->hasAttr("ac.services"))
+          continue;
+        auto memory = target->getAttrOfType<mlir::DictionaryAttr>("ac.memory");
+        auto services = target->getAttrOfType<mlir::ArrayAttr>("ac.services");
+        auto owner = array->getAttrOfType<mlir::StringAttr>("ac.owner");
+        auto dataType = memory ? memory.getAs<mlir::TypeAttr>("data_type")
+                               : mlir::TypeAttr();
+        auto entries = memory ? memory.getAs<mlir::IntegerAttr>("entries")
+                              : mlir::IntegerAttr();
+        auto init = memory ? memory.getAs<mlir::IntegerAttr>("init")
+                           : mlir::IntegerAttr();
+        auto latency = memory ? memory.getAs<mlir::IntegerAttr>("latency")
+                              : mlir::IntegerAttr();
+        auto service = services && !services.empty()
+                           ? mlir::dyn_cast<mlir::DictionaryAttr>(services[0])
+                           : mlir::DictionaryAttr();
+        auto command = service ? service.getAs<mlir::TypeAttr>("request")
+                               : mlir::TypeAttr();
+        if (!owner || !dataType || !entries || !init || !latency || !command)
+          return planError("service memory array metadata is incomplete");
+        ArrayInstancePlan instance;
+        instance.name = array.getSymName().str();
+        for (int64_t extent : array.getShape())
+          instance.shape.push_back(static_cast<uint64_t>(extent));
+        instance.dataType = printType(dataType.getValue());
+        instance.commandType = printType(command.getValue());
+        instance.entries = entries.getUInt();
+        instance.init = init.getUInt();
+        instance.latency = latency.getUInt();
+        instance.ownerPath = owner.getValue().str();
+        plan.arrayInstances.push_back(std::move(instance));
         continue;
       }
       if (auto instance = mlir::dyn_cast<ac::MemoryInstanceOp>(operation)) {
@@ -350,6 +467,44 @@ private:
         if (auto error = extractExpressions(transform.getBody(), blockPlan))
           return error;
         plan.blocks.push_back(std::move(blockPlan));
+        continue;
+      }
+      if (auto invoke = mlir::dyn_cast<ac::ArrayInvokeOp>(operation)) {
+        auto input = queueName(invoke.getInput(), names);
+        if (!input)
+          return input.takeError();
+        std::vector<std::string> outputs;
+        if (auto error =
+                addOutputs(invoke, invoke->getResults(),
+                           {int64_t(invoke.getDepth())}, {1}, scope, outputs))
+          return error;
+        ArrayInvokePlan invocation;
+        invocation.array = invoke.getArray().getLeafReference().str();
+        invocation.name = outputs.front();
+        invocation.scope = scopePath(scope);
+        invocation.input = *input;
+        invocation.output = outputs.front();
+        invocation.ordinal = invoke.getOrdinal();
+        invocation.depth = invoke.getDepth();
+        auto extract = [&](mlir::Region &region, QueueBlockPlan &regionPlan,
+                           llvm::StringRef kind) -> llvm::Error {
+          regionPlan.kind = kind.str();
+          regionPlan.name = invocation.name + "." + kind.str();
+          regionPlan.region = printRegion(region);
+          return extractExpressions(region, regionPlan);
+        };
+        if (auto error = extract(invoke.getIndex(), invocation.index, "index"))
+          return error;
+        if (auto error =
+                extract(invoke.getRequest(), invocation.request, "request"))
+          return error;
+        if (auto error =
+                extract(invoke.getIdContext(), invocation.context, "context"))
+          return error;
+        if (auto error =
+                extract(invoke.getResponse(), invocation.response, "response"))
+          return error;
+        plan.arrayInvokes.push_back(std::move(invocation));
         continue;
       }
       if (auto broadcast = mlir::dyn_cast<ac::BroadcastOp>(operation)) {
@@ -770,6 +925,58 @@ llvm::Error verifyQueueGraphPlan(const QueueGraphPlan &plan) {
     indegree[queue.name] = 0;
   }
 
+  llvm::StringMap<uint64_t> queueRates;
+  for (const QueuePlan &queue : plan.queues)
+    queueRates[queue.name] = queue.rate;
+  for (const MemoryRequestPlan &request : plan.memoryRequests) {
+    auto input = queueRates.find(request.input);
+    auto output = queueRates.find(request.output);
+    if (input == queueRates.end() || output == queueRates.end())
+      return planError("memory request references unknown Queue");
+    if (input->getValue() != 1 || output->getValue() != 1)
+      return planError("memory request Queues require rate=1");
+  }
+
+  llvm::StringMap<const ArrayInstancePlan *> arrays;
+  for (const ArrayInstancePlan &array : plan.arrayInstances) {
+    uint64_t cardinality = 1;
+    for (uint64_t extent : array.shape)
+      cardinality *= extent;
+    if (array.name.empty() || !arrays.try_emplace(array.name, &array).second ||
+        array.shape.empty() || cardinality == 0 || cardinality > 1024 ||
+        array.dataType.empty() || array.commandType.empty() ||
+        array.entries == 0 || array.init != 0 || array.latency == 0 ||
+        array.ownerPath.empty())
+      return planError("service array metadata is incomplete");
+  }
+  llvm::StringMap<llvm::DenseSet<uint64_t>> arrayOrdinals;
+  for (const ArrayInvokePlan &invoke : plan.arrayInvokes) {
+    if (!arrays.contains(invoke.array))
+      return planError(
+          "array invoke references unknown array '" + invoke.array +
+          "' (declared service arrays: " + std::to_string(arrays.size()) + ")");
+    if (!arrayOrdinals[invoke.array].insert(invoke.ordinal).second)
+      return planError("array invoke endpoint ordinals must be unique");
+    if (!queueNames.contains(invoke.input) ||
+        !queueNames.contains(invoke.output))
+      return planError("array invoke references unknown Queue");
+    if (queueRates[invoke.input] != 1 || queueRates[invoke.output] != 1)
+      return planError("array invoke Queues require rate=1");
+    ++consumers[invoke.input];
+    ++producers[invoke.output];
+    successors[invoke.input].push_back(invoke.output);
+    ++indegree[invoke.output];
+  }
+  for (const auto &entry : arrays) {
+    auto found = arrayOrdinals.find(entry.getKey());
+    if (found == arrayOrdinals.end())
+      return planError("service array has no invoke endpoints");
+    for (uint64_t ordinal = 0; ordinal < found->getValue().size(); ++ordinal)
+      if (!found->getValue().contains(ordinal))
+        return planError(
+            "array invoke endpoint ordinals must be contiguous from zero");
+  }
+
   for (const QueueBlockPlan &block : plan.blocks) {
     if (block.kind == "memory_request" &&
         !memoryInstances.contains(block.memoryInstance))
@@ -925,9 +1132,40 @@ llvm::Expected<std::string> QueueGraphPlan::canonicalJson() const {
                            {"output", request.output},
                            {"result_field", request.resultField},
                            {"scope", request.scope}});
+  llvm::json::Array arrayInstanceValues;
+  for (const ArrayInstancePlan &array : arrayInstances) {
+    llvm::json::Array shape;
+    for (uint64_t extent : array.shape)
+      shape.push_back(extent);
+    arrayInstanceValues.push_back(
+        llvm::json::Object{{"command_type", array.commandType},
+                           {"data_type", array.dataType},
+                           {"entries", array.entries},
+                           {"init", array.init},
+                           {"latency", array.latency},
+                           {"name", array.name},
+                           {"owner_path", array.ownerPath},
+                           {"shape", std::move(shape)}});
+  }
+  llvm::json::Array arrayInvokeValues;
+  for (const ArrayInvokePlan &invoke : arrayInvokes)
+    arrayInvokeValues.push_back(
+        llvm::json::Object{{"array", invoke.array},
+                           {"context_region", invoke.context.region},
+                           {"depth", invoke.depth},
+                           {"index_region", invoke.index.region},
+                           {"input", invoke.input},
+                           {"name", invoke.name},
+                           {"ordinal", invoke.ordinal},
+                           {"output", invoke.output},
+                           {"request_region", invoke.request.region},
+                           {"response_region", invoke.response.region},
+                           {"scope", invoke.scope}});
   llvm::json::Object root{
       {"blocks", std::move(blockValues)},
-      {"contract_epoch", "0.3"},
+      {"array_instances", std::move(arrayInstanceValues)},
+      {"array_invokes", std::move(arrayInvokeValues)},
+      {"contract_epoch", "0.4"},
       {"memory_instances", std::move(memoryInstanceValues)},
       {"memory_requests", std::move(memoryRequestValues)},
       {"payloads", std::move(payloadValues)},
@@ -938,7 +1176,7 @@ llvm::Expected<std::string> QueueGraphPlan::canonicalJson() const {
                              ? llvm::json::Value(nullptr)
                              : llvm::json::Value(specializationFingerprint)},
       {"system", system},
-      {"version", "0.3"}};
+      {"version", "0.4"}};
   return bindings::canonicalizeJson(llvm::json::Value(std::move(root)));
 }
 

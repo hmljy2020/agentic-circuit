@@ -2,7 +2,7 @@
 
 | 字段 | 内容 |
 | --- | --- |
-| 目标版本 | Explicit Memory contract epoch `0.3` |
+| 目标版本 | Explicit Memory contract epoch `0.4` |
 | 状态 | 已在 `main` 实现；本文是团队阅读入口 |
 | 适用读者 | Python 前端、ACIR、gfsim、PYC/Verilog 和模型验证开发者 |
 | 规范主文档 | [Agentic Circuit Specification Manual](agentic-circuit.md) |
@@ -333,16 +333,18 @@ def memory_pipeline() -> None:
 冻结 ordinal 固定优先级仲裁；访问延迟期间及 response Queue 阻塞时全部反压，直到
 选中 response Queue 接纳响应。PYC 每个实例只生成一个 `pyc.sync_mem`。
 
-Python 前端允许用同构 `ac.array` 静态声明 memory banks，并以
-`banks.select(requests, key=...).request(...)` 明确选择 bank。该写法只在前端展开：
-冻结 ACIR 包含一个 `ac.route`、每个 bank 各一个普通 memory instance/request，以及
-一个 response `ac.merge`，不会引入新的 primitive。各 bank 的 outstanding 状态独立，
-因此跨 bank response 可能乱序；需要保序时应在 payload 中保留 tag 并显式接
-`reorder`。epoch 0.3 仅支持一维、data type、entries、init 和 latency 完全相同的 memory
-array。
+epoch 0.4 用一个 ownership-only `ac.array` 表达同构 memory banks，并用通用
+`ac.array.invoke` 表达动态服务调用。前端写法为
+`banks = ac.array((rows, cols), ac.memory(...))`，随后直接调用
+`banks[row, col].request(id=..., address=..., write=..., data=...)`。index、request
+适配、ID context 和 response 适配均 lower 为纯 Var region；未选中的 bank 不会收到
+request。各 bank 保持独立的 single-outstanding 状态，因此不同 bank 可以重叠访问，
+response 以完成顺序返回；同拍完成按 row-major 固定优先级选择。shape、data type、
+entries、init 和 latency 均为静态参数，调用者必须显式携带 ID。
 
 可执行示例：
 [`pyc_memory_pipeline.py`](../../examples/pipelines/pyc_memory_pipeline.py)。
+动态阵列示例：[`memory_array.py`](../../examples/memory/memory_array.py)。
 
 ### Credit
 
@@ -652,7 +654,7 @@ QueueGraph、gfsim、PYC、测试和 opcode catalog。
 | loop 被拒绝 | 不是受支持的单 Queue 有界 feedback 形状 | 简化为一次 Queue update，或显式组合 route/merge/feedback |
 | PYC 拒绝 `ac.expect` | verification leaf 不能进入 design | 把 assertion 放入 PYC testbench boundary |
 | 后端结果内部 cycle 不同 | gfsim 与 RTL IR 不同 | 比较声明的 transaction/state/refinement projection |
-| artifact epoch 不匹配 | serialized epoch 是 hard break | 重新生成 exact epoch `0.3` artifact，不使用兼容 shim |
+| artifact epoch 不匹配 | v0.4 是 hard break | 重新生成 exact epoch `0.4` artifact，不使用兼容 shim |
 
 ## 修改公共契约的完成条件
 

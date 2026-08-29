@@ -2,6 +2,7 @@
 #include "acir/CodeGen/QueueBlockContract.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
 
@@ -173,7 +174,12 @@ emitTransform(const QueueGraphPlan &plan, const QueueBlockPlan &block,
                 "\"INT-11/smoke/comparison_report.json\"} : "
              << *sourceType << " -> " << *resultType << "\n";
       } else if (expression.kind == "add" || expression.kind == "sub" ||
-                 expression.kind == "mul") {
+                 expression.kind == "mul" || expression.kind == "and" ||
+                 expression.kind == "or" || expression.kind == "xor" ||
+                 expression.kind == "shl" || expression.kind == "lshr" ||
+                 expression.kind == "ashr" || expression.kind == "udiv" ||
+                 expression.kind == "sdiv" || expression.kind == "urem" ||
+                 expression.kind == "srem") {
         result = newValue();
         if (expression.operands.size() != 2)
           return pycError("binary transform expression arity mismatch");
@@ -219,6 +225,15 @@ emitTransform(const QueueGraphPlan &plan, const QueueBlockPlan &block,
           opcode = "slt";
           std::swap(lhs, rhs);
           negate = expression.predicate == "sle";
+        } else if (expression.predicate == "ult" ||
+                   expression.predicate == "uge") {
+          opcode = "ult";
+          negate = expression.predicate == "uge";
+        } else if (expression.predicate == "ugt" ||
+                   expression.predicate == "ule") {
+          opcode = "ult";
+          std::swap(lhs, rhs);
+          negate = expression.predicate == "ule";
         } else {
           return pycError("unsupported comparison predicate");
         }
@@ -248,6 +263,64 @@ emitTransform(const QueueGraphPlan &plan, const QueueBlockPlan &block,
         body << "    " << result << " = pyc.extract " << *first
              << " {lsb = " << layout->lsb << "} : " << *sourceType << " -> "
              << *resultType << "\n";
+      } else if (expression.kind == "create") {
+        llvm::SmallVector<llvm::StringRef> fields;
+        llvm::StringRef(expression.field).split(fields, ',', -1, false);
+        const QueuePayloadPlan *payload = findPayload(plan, expression.type);
+        if (!payload || fields.size() != expression.operands.size() ||
+            fields.size() != payload->fields.size())
+          return pycError("packed struct construction arity mismatch");
+        std::vector<std::string> operands;
+        std::vector<std::string> operandTypes;
+        for (auto [index, field] : llvm::enumerate(fields)) {
+          if (payload->fields[index].name != field)
+            return pycError("packed struct construction field order mismatch");
+          auto operand = value(expression.operands[index]);
+          auto operandType = pycType(plan, payload->fields[index].type);
+          if (!operand)
+            return operand.takeError();
+          if (!operandType)
+            return operandType.takeError();
+          operands.push_back(std::move(*operand));
+          operandTypes.push_back(std::move(*operandType));
+        }
+        if (operands.size() == 1) {
+          result = operands.front();
+        } else {
+          auto resultType = pycType(plan, expression.type);
+          if (!resultType)
+            return resultType.takeError();
+          result = newValue();
+          body << "    " << result << " = pyc.concat(";
+          for (auto [index, operand] : llvm::enumerate(operands)) {
+            if (index)
+              body << ", ";
+            body << operand;
+          }
+          body << ") : (";
+          for (auto [index, type] : llvm::enumerate(operandTypes)) {
+            if (index)
+              body << ", ";
+            body << type;
+          }
+          body << ") -> " << *resultType << "\n";
+        }
+      } else if (expression.kind == "select") {
+        if (expression.operands.size() != 3)
+          return pycError("select expression arity mismatch");
+        auto trueValue = value(expression.operands[1]);
+        auto falseValue = value(expression.operands[2]);
+        auto resultType = pycType(plan, expression.type);
+        if (!trueValue)
+          return trueValue.takeError();
+        if (!falseValue)
+          return falseValue.takeError();
+        if (!resultType)
+          return resultType.takeError();
+        result = newValue();
+        body << "    " << result << " = pyc.mux " << *first << ", "
+             << *trueValue << ", " << *falseValue << " : " << *resultType
+             << "\n";
       } else if (expression.kind == "with") {
         if (expression.operands.size() != 2)
           return pycError("packed field update arity mismatch");
@@ -468,6 +541,7 @@ llvm::Expected<std::string> generateQueueGraphPyc(const QueueGraphPlan &plan) {
   llvm::StringMap<const QueueBlockPlan *> mergeByOutput;
   llvm::StringMap<const QueueBlockPlan *> creditByOutput;
   llvm::StringMap<const QueueBlockPlan *> memoryByOutput;
+  llvm::StringMap<const ArrayInvokePlan *> arrayByOutput;
   llvm::StringMap<const QueueBlockPlan *> dependencyByOutput;
   llvm::StringMap<const QueueBlockPlan *> reorderByOutput;
   llvm::StringMap<const QueueBlockPlan *> feedbackByOutput;
@@ -559,6 +633,8 @@ llvm::Expected<std::string> generateQueueGraphPyc(const QueueGraphPlan &plan) {
           "observe/sink");
     }
   }
+  for (const ArrayInvokePlan &invoke : plan.arrayInvokes)
+    arrayByOutput[invoke.output] = &invoke;
   if (auto error = verifyQueueGraphPlan(plan))
     return std::move(error);
   if (sources.empty() || sinks.empty())
@@ -620,6 +696,8 @@ llvm::Expected<std::string> generateQueueGraphPyc(const QueueGraphPlan &plan) {
   llvm::StringMap<CreditState> creditStates;
   llvm::StringMap<std::string> memoryResponseValid;
   llvm::StringMap<std::string> memoryResponseData;
+  llvm::StringMap<std::string> arrayResponseValid;
+  llvm::StringMap<std::string> arrayResponseData;
   llvm::StringMap<DependencyState> dependencyStates;
   llvm::StringMap<ReorderState> reorderStates;
   llvm::StringMap<std::string> forkOfferValid;
@@ -765,6 +843,7 @@ llvm::Expected<std::string> generateQueueGraphPyc(const QueueGraphPlan &plan) {
       auto mergeProducer = mergeByOutput.find(queue.name);
       auto creditProducer = creditByOutput.find(queue.name);
       auto memoryProducer = memoryByOutput.find(queue.name);
+      auto arrayProducer = arrayByOutput.find(queue.name);
       auto dependencyProducer = dependencyByOutput.find(queue.name);
       auto reorderProducer = reorderByOutput.find(queue.name);
       auto feedbackProducer = feedbackByOutput.find(queue.name);
@@ -1142,6 +1221,18 @@ llvm::Expected<std::string> generateQueueGraphPyc(const QueueGraphPlan &plan) {
              << "\n";
         memoryResponseValid[memory.outputs.front()] = producerValid;
         memoryResponseData[memory.outputs.front()] = producerData;
+      } else if (arrayProducer != arrayByOutput.end()) {
+        const ArrayInvokePlan &invoke = *arrayProducer->getValue();
+        auto resultType = pycType(plan, queue.payloadType);
+        if (!resultType)
+          return resultType.takeError();
+        producerValid = newValue();
+        producerData = newValue();
+        body << "    " << producerValid << " = pyc.wire : i1\n";
+        body << "    " << producerData << " = pyc.wire : " << *resultType
+             << "\n";
+        arrayResponseValid[invoke.output] = producerValid;
+        arrayResponseData[invoke.output] = producerData;
       } else if (dependencyProducer != dependencyByOutput.end()) {
         const QueueBlockPlan &dependency = *dependencyProducer->getValue();
         auto inputValidValue = outputValid.find(dependency.inputs.front());
@@ -1540,6 +1631,307 @@ llvm::Expected<std::string> generateQueueGraphPyc(const QueueGraphPlan &plan) {
     inputReady[queue.name] = std::move(firstReady);
     outputValid[queue.name] = std::move(currentValid);
     outputData[queue.name] = std::move(currentData);
+  }
+  for (const ArrayInstancePlan &instance : plan.arrayInstances) {
+    std::vector<const ArrayInvokePlan *> invokes;
+    for (const ArrayInvokePlan &invoke : plan.arrayInvokes)
+      if (invoke.array == instance.name)
+        invokes.push_back(&invoke);
+    llvm::sort(invokes,
+               [](const ArrayInvokePlan *left, const ArrayInvokePlan *right) {
+                 return left->ordinal < right->ordinal;
+               });
+    // The ACIR and gfsim contracts allow several logical endpoints.  PYC keeps
+    // this first implementation deliberately narrow until heterogeneous
+    // adapter packing has an explicit RTL ABI.
+    if (invokes.size() != 1)
+      return pycError(
+          "PYC service-array lowering currently requires exactly one invoke "
+          "endpoint per array");
+    const ArrayInvokePlan &invoke = *invokes.front();
+    const QueuePlan *input = findQueue(plan, invoke.input);
+    const QueuePlan *result = findQueue(plan, invoke.output);
+    auto inputValidValue = outputValid.find(invoke.input);
+    auto inputDataValue = outputData.find(invoke.input);
+    if (!input || !result || inputValidValue == outputValid.end() ||
+        inputDataValue == outputData.end())
+      return pycError("array invoke input is unavailable after Queue lowering");
+    auto inputType = pycType(plan, input->payloadType);
+    auto resultType = pycType(plan, result->payloadType);
+    auto commandType = pycType(plan, instance.commandType);
+    auto dataType = pycType(plan, instance.dataType);
+    auto dataWidth = typeWidth(plan, instance.dataType);
+    if (!inputType)
+      return inputType.takeError();
+    if (!resultType)
+      return resultType.takeError();
+    if (!commandType)
+      return commandType.takeError();
+    if (!dataType)
+      return dataType.takeError();
+    if (!dataWidth)
+      return dataWidth.takeError();
+    if (invoke.context.yields.size() != 1 ||
+        invoke.request.yields.size() != 1 ||
+        invoke.response.yields.size() != 1 ||
+        invoke.index.yields.size() != instance.shape.size())
+      return pycError("array invoke adapter arity is unsupported");
+
+    auto command =
+        emitTransform(plan, invoke.request, {inputDataValue->getValue()},
+                      {input->payloadType}, 0, nextValue, body);
+    auto context =
+        emitTransform(plan, invoke.context, {inputDataValue->getValue()},
+                      {input->payloadType}, 0, nextValue, body);
+    auto contextLogicalType = yieldedType(
+        invoke.context, invoke.context.yields.front(), input->payloadType);
+    if (!command)
+      return command.takeError();
+    if (!context)
+      return context.takeError();
+    if (!contextLogicalType)
+      return contextLogicalType.takeError();
+    auto contextType = pycType(plan, *contextLogicalType);
+    if (!contextType)
+      return contextType.takeError();
+
+    std::vector<std::string> indices;
+    std::vector<unsigned> indexWidths;
+    unsigned selectorWidth = 1;
+    uint64_t bankCount = 1;
+    for (uint64_t extent : instance.shape)
+      bankCount *= extent;
+    selectorWidth =
+        std::max(selectorWidth, static_cast<unsigned>(std::max<uint64_t>(
+                                    1, std::bit_width(bankCount - 1))));
+    for (size_t dimension = 0; dimension < instance.shape.size(); ++dimension) {
+      auto index =
+          emitTransform(plan, invoke.index, {inputDataValue->getValue()},
+                        {input->payloadType}, dimension, nextValue, body);
+      auto logicalType = yieldedType(
+          invoke.index, invoke.index.yields[dimension], input->payloadType);
+      if (!index)
+        return index.takeError();
+      if (!logicalType)
+        return logicalType.takeError();
+      auto width = typeWidth(plan, *logicalType);
+      if (!width)
+        return width.takeError();
+      indices.push_back(std::move(*index));
+      indexWidths.push_back(*width);
+      selectorWidth = std::max(selectorWidth, *width);
+    }
+    const std::string selectorType = "i" + std::to_string(selectorWidth);
+    for (size_t dimension = 0; dimension < indices.size(); ++dimension) {
+      std::string rawIndexType = "i" + std::to_string(indexWidths[dimension]);
+      const bool fullIndexRange =
+          indexWidths[dimension] < 64 &&
+          instance.shape[dimension] == (uint64_t{1} << indexWidths[dimension]);
+      if (!fullIndexRange) {
+        std::string extent =
+            emitConstant(instance.shape[dimension], rawIndexType);
+        std::string extentSafe =
+            emitBinary("ult", indices[dimension], extent, rawIndexType);
+        body << "    pyc.assert " << extentSafe
+             << " {msg = \"memory_bank_index_out_of_range\"}\n";
+      }
+      if (indexWidths[dimension] < selectorWidth) {
+        std::string zero = emitConstant(
+            0, "i" + std::to_string(selectorWidth - indexWidths[dimension]));
+        std::string extended = newValue();
+        body << "    " << extended << " = pyc.concat(" << zero << ", "
+             << indices[dimension] << ") : (i"
+             << selectorWidth - indexWidths[dimension] << ", i"
+             << indexWidths[dimension] << ") -> " << selectorType << "\n";
+        indices[dimension] = std::move(extended);
+      }
+    }
+    std::string flatIndex = emitConstant(0, selectorType);
+    for (size_t dimension = 0; dimension < indices.size(); ++dimension) {
+      std::string extent =
+          emitConstant(instance.shape[dimension], selectorType);
+      flatIndex = emitBinary("mul", flatIndex, extent, selectorType);
+      flatIndex =
+          emitBinary("add", flatIndex, indices[dimension], selectorType);
+    }
+
+    auto addressLayout = fieldLayout(plan, instance.commandType, "address");
+    auto writeLayout = fieldLayout(plan, instance.commandType, "write");
+    auto dataLayout = fieldLayout(plan, instance.commandType, "data");
+    auto commandWidth = typeWidth(plan, instance.commandType);
+    if (!addressLayout)
+      return addressLayout.takeError();
+    if (!writeLayout)
+      return writeLayout.takeError();
+    if (!dataLayout)
+      return dataLayout.takeError();
+    if (!commandWidth)
+      return commandWidth.takeError();
+    const std::string addressType = "i" + std::to_string(addressLayout->width);
+    std::string address =
+        emitExtract(*command, addressLayout->lsb, *commandType, addressType);
+    std::string write = emitExtract(*command, writeLayout->lsb, *commandType,
+                                    "i" + std::to_string(writeLayout->width));
+    std::string writeData =
+        emitExtract(*command, dataLayout->lsb, *commandType, *dataType);
+    const bool fullAddressRange =
+        addressLayout->width < 64 &&
+        instance.entries == (uint64_t{1} << addressLayout->width);
+    if (!fullAddressRange) {
+      std::string limit = emitConstant(instance.entries, addressType);
+      std::string safe = emitBinary("ult", address, limit, addressType);
+      std::string checked =
+          emitBinary("or", emitNot(inputValidValue->getValue()), safe, "i1");
+      body << "    pyc.assert " << checked
+           << " {msg = \"memory_address_out_of_range\"}\n";
+    }
+
+    struct BankState {
+      std::string busyNext;
+      std::string busyEnable;
+      std::string busy;
+      std::string issue;
+      std::string pendingContext;
+      std::string readData;
+      std::string mature;
+    };
+    std::vector<BankState> banks;
+    std::vector<std::string> readyCandidates;
+    std::string zeroI1 = emitConstant(0, "i1");
+    std::string oneI1 = emitConstant(1, "i1");
+    const unsigned strobeWidth = (*dataWidth + 7) / 8;
+    const std::string strobeType = "i" + std::to_string(strobeWidth);
+    const uint64_t strobeValue = (uint64_t{1} << strobeWidth) - 1;
+    std::string strobe = emitConstant(strobeValue, strobeType);
+    for (uint64_t bank = 0; bank < bankCount; ++bank) {
+      BankState state;
+      state.busyNext = newValue();
+      state.busyEnable = newValue();
+      body << "    " << state.busyNext << " = pyc.wire : i1\n";
+      body << "    " << state.busyEnable << " = pyc.wire : i1\n";
+      state.busy = newValue();
+      body << "    " << state.busy << " = pyc.reg %clk, %rst, "
+           << state.busyEnable << ", " << state.busyNext << ", " << zeroI1
+           << " : i1\n";
+      std::string bankIndex = emitConstant(bank, selectorType);
+      std::string selected =
+          emitBinary("eq", flatIndex, bankIndex, selectorType);
+      std::string ready =
+          emitBinary("and", selected, emitNot(state.busy), "i1");
+      readyCandidates.push_back(ready);
+      state.issue = emitBinary("and", inputValidValue->getValue(), ready, "i1");
+
+      std::string contextNext = newValue();
+      std::string contextEnable = newValue();
+      body << "    " << contextNext << " = pyc.wire : " << *contextType << "\n";
+      body << "    " << contextEnable << " = pyc.wire : i1\n";
+      state.pendingContext = newValue();
+      std::string zeroContext = emitConstant(0, *contextType);
+      body << "    " << state.pendingContext << " = pyc.reg %clk, %rst, "
+           << contextEnable << ", " << contextNext << ", " << zeroContext
+           << " : " << *contextType << "\n";
+      body << "    pyc.assign " << contextNext << ", " << *context << " : "
+           << *contextType << "\n";
+      body << "    pyc.assign " << contextEnable << ", " << state.issue
+           << " : i1\n";
+
+      std::string writeValid = emitBinary("and", state.issue, write, "i1");
+      state.readData = newValue();
+      body << "    " << state.readData << " = pyc.sync_mem %clk, %rst, "
+           << state.issue << ", " << address << ", " << writeValid << ", "
+           << address << ", " << writeData << ", " << strobe
+           << " {depth = " << instance.entries << ", name = \"" << instance.name
+           << "_bank" << bank << "\"} : " << addressType << ", " << *dataType
+           << ", " << strobeType << "\n";
+
+      state.mature = state.busy;
+      if (instance.latency > 1) {
+        const unsigned latencyWidth = std::max(
+            1u, static_cast<unsigned>(std::bit_width(instance.latency - 1)));
+        const std::string latencyType = "i" + std::to_string(latencyWidth);
+        std::string latencyNext = newValue();
+        std::string latencyEnable = newValue();
+        body << "    " << latencyNext << " = pyc.wire : " << latencyType
+             << "\n";
+        body << "    " << latencyEnable << " = pyc.wire : i1\n";
+        std::string remaining = newValue();
+        std::string zeroLatency = emitConstant(0, latencyType);
+        body << "    " << remaining << " = pyc.reg %clk, %rst, "
+             << latencyEnable << ", " << latencyNext << ", " << zeroLatency
+             << " : " << latencyType << "\n";
+        std::string atZero =
+            emitBinary("eq", remaining, zeroLatency, latencyType);
+        std::string active =
+            emitBinary("and", state.busy, emitNot(atZero), "i1");
+        std::string oneLatency = emitConstant(1, latencyType);
+        std::string decrement =
+            emitBinary("sub", remaining, oneLatency, latencyType);
+        std::string initialLatency =
+            emitConstant(instance.latency - 1, latencyType);
+        std::string nextLatency =
+            emitMux(state.issue, initialLatency, decrement, latencyType);
+        std::string updateLatency = emitBinary("or", state.issue, active, "i1");
+        body << "    pyc.assign " << latencyNext << ", " << nextLatency << " : "
+             << latencyType << "\n";
+        body << "    pyc.assign " << latencyEnable << ", " << updateLatency
+             << " : i1\n";
+        state.mature = emitBinary("and", state.busy, atZero, "i1");
+      }
+      banks.push_back(std::move(state));
+    }
+    std::string anyReady = reduceBalanced("or", readyCandidates, "i1");
+    body << "    pyc.assign " << readyWires[invoke.input] << ", " << anyReady
+         << " : i1\n";
+
+    std::vector<std::string> responseGrants;
+    std::string noEarlier = oneI1;
+    for (const BankState &bank : banks) {
+      std::string grant = emitBinary("and", bank.mature, noEarlier, "i1");
+      responseGrants.push_back(grant);
+      noEarlier = emitBinary("and", noEarlier, emitNot(bank.mature), "i1");
+    }
+    auto selectedContext = selectBalanced(
+        responseGrants,
+        [&]() {
+          std::vector<std::string> values;
+          for (const BankState &bank : banks)
+            values.push_back(bank.pendingContext);
+          return values;
+        }(),
+        *contextType);
+    auto selectedRead = selectBalanced(
+        responseGrants,
+        [&]() {
+          std::vector<std::string> values;
+          for (const BankState &bank : banks)
+            values.push_back(bank.readData);
+          return values;
+        }(),
+        *dataType);
+    auto response = emitTransform(
+        plan, invoke.response, {selectedContext.second, selectedRead.second},
+        {*contextLogicalType, instance.dataType}, 0, nextValue, body);
+    if (!response)
+      return response.takeError();
+    body << "    pyc.assign " << arrayResponseValid[invoke.output] << ", "
+         << selectedContext.first << " : i1\n";
+    body << "    pyc.assign " << arrayResponseData[invoke.output] << ", "
+         << *response << " : " << *resultType << "\n";
+    std::string responseAccepted = emitBinary("and", selectedContext.first,
+                                              inputReady[invoke.output], "i1");
+    for (size_t bank = 0; bank < banks.size(); ++bank) {
+      std::string complete =
+          emitBinary("and", responseGrants[bank], responseAccepted, "i1");
+      std::string retained =
+          emitBinary("and", banks[bank].busy, emitNot(complete), "i1");
+      std::string nextBusy =
+          emitBinary("or", retained, banks[bank].issue, "i1");
+      std::string update = emitBinary("or", complete, banks[bank].issue, "i1");
+      body << "    pyc.assign " << banks[bank].busyNext << ", " << nextBusy
+           << " : i1\n";
+      body << "    pyc.assign " << banks[bank].busyEnable << ", " << update
+           << " : i1\n";
+    }
   }
   for (const MemoryInstancePlan &instance : plan.memoryInstances) {
     std::vector<const QueueBlockPlan *> endpoints;

@@ -1069,6 +1069,223 @@ private:
   bool fired_ = false;
 };
 
+/// A statically-sized array of independent single-outstanding memories.
+/// Dynamic selection is performed by Index; only the selected bank observes a
+/// request.  Banks may be busy concurrently and responses are offered in
+/// row-major bank order when more than one completes in the same epoch.
+template <typename T, typename R, typename Command, typename Context,
+          typename Data, size_t Banks, size_t Endpoints, typename Index,
+          typename Request, typename ContextPolicy, typename Response>
+  requires requires(const Index &index, const Request &request,
+                    const ContextPolicy &context, const Response &response,
+                    size_t endpoint, const T &item, const Context &saved,
+                    const Data &oldData) {
+    { std::invoke(index, endpoint, item) } -> std::integral;
+    { std::invoke(request, endpoint, item) } ->
+        std::convertible_to<Command>;
+    { std::invoke(context, endpoint, item) } ->
+        std::convertible_to<Context>;
+    { std::invoke(response, endpoint, saved, oldData) } ->
+        std::convertible_to<R>;
+  }
+class QueueMemoryBankArray final : public SimObject {
+public:
+  static constexpr std::string_view contractName = "ac.array.invoke";
+  static constexpr ObjectKind componentKind = ObjectKind::Memory;
+
+  QueueMemoryBankArray(
+      std::string name, ObjectId id, SimObject *parent,
+      std::array<SimQueue<T> *, Endpoints> inputs,
+      std::array<SimQueue<R> *, Endpoints> outputs, size_t entries,
+      Data init = {}, size_t latency = 1, Index index = {}, Request request = {},
+      ContextPolicy context = {}, Response response = {},
+      ObservationSink *observations = nullptr)
+      : SimObject(componentKind, std::move(name), id, parent, observations),
+        inputs_(inputs), outputs_(outputs), init_(init), latency_(latency),
+        index_(std::move(index)), request_(std::move(request)),
+        context_(std::move(context)), response_(std::move(response)) {
+    static_assert(Banks > 0 && Endpoints > 0);
+    if (entries == 0 || latency_ == 0)
+      throw std::invalid_argument(
+          "memory bank array entries and latency must be positive");
+    for (auto &bank : storage_)
+      bank.assign(entries, init_);
+  }
+
+  void doWork(Epoch epoch) override {
+    if (fired_)
+      return;
+    proposedCompletions_.fill(false);
+    proposedAccepts_.fill(std::nullopt);
+    std::array<bool, Endpoints> outputClaimed{};
+    std::array<bool, Banks> bankClaimed{};
+
+    // Completion arbitration is deterministic: lower flat bank index wins
+    // when several banks target the same response Queue in one epoch.
+    for (size_t bank = 0; bank < Banks; ++bank) {
+      State &state = states_[bank];
+      if (!state.busy || !state.ready || epoch < *state.ready)
+        continue;
+      const size_t endpoint = state.endpoint;
+      if (endpoint >= Endpoints || outputClaimed[endpoint] ||
+          !state.context || !state.oldData ||
+          !outputs_[endpoint]->canProposePush())
+        continue;
+      R value = std::invoke(std::as_const(response_), endpoint,
+                            *state.context, *state.oldData);
+      if (!outputs_[endpoint]->proposePush(std::move(value)))
+        continue;
+      proposedCompletions_[bank] = true;
+      outputClaimed[endpoint] = true;
+      bankClaimed[bank] = true;
+    }
+
+    // Endpoint ordinal is the fixed priority for requests selecting the same
+    // idle bank.  Requests to distinct banks may all be accepted together.
+    for (size_t endpoint = 0; endpoint < Endpoints; ++endpoint) {
+      if (!inputs_[endpoint]->canProposePop())
+        continue;
+      const T *head = inputs_[endpoint]->peek();
+      if (!head)
+        continue;
+      using IndexResult =
+          std::invoke_result_t<const Index &, size_t, const T &>;
+      const IndexResult rawBank =
+          std::invoke(std::as_const(index_), endpoint, *head);
+      if constexpr (std::signed_integral<IndexResult>)
+        if (rawBank < 0) {
+          setRuntimeFailureCode("memory_bank_index_out_of_range");
+          return;
+        }
+      const uint64_t bank64 = static_cast<uint64_t>(rawBank);
+      if (bank64 >= Banks) {
+        setRuntimeFailureCode("memory_bank_index_out_of_range");
+        return;
+      }
+      const size_t bank = static_cast<size_t>(bank64);
+      if (states_[bank].busy || bankClaimed[bank])
+        continue;
+      const Command command =
+          std::invoke(std::as_const(request_), endpoint, *head);
+      using AddressResult = decltype(command.address);
+      if constexpr (std::signed_integral<AddressResult>)
+        if (command.address < 0) {
+          setRuntimeFailureCode("memory_address_out_of_range");
+          return;
+        }
+      const uint64_t address = static_cast<uint64_t>(command.address);
+      if (address >= storage_[bank].size()) {
+        setRuntimeFailureCode("memory_address_out_of_range");
+        return;
+      }
+      if (epoch.time > std::numeric_limits<uint64_t>::max() - latency_) {
+        setRuntimeFailureCode("memory_latency_overflow");
+        return;
+      }
+      if (!inputs_[endpoint]->proposePop())
+        continue;
+      Accept accept;
+      accept.endpoint = endpoint;
+      accept.address = static_cast<size_t>(address);
+      accept.context =
+          std::invoke(std::as_const(context_), endpoint, *head);
+      accept.oldData = storage_[bank][address];
+      accept.ready = Epoch{epoch.time + latency_, 0};
+      if (static_cast<bool>(command.write))
+        accept.writeData = static_cast<Data>(command.data);
+      proposedAccepts_[bank] = std::move(accept);
+      bankClaimed[bank] = true;
+    }
+
+    bool waiting = false;
+    for (const State &state : states_)
+      waiting |= state.busy && state.ready && epoch < *state.ready;
+    fired_ = waiting || std::any_of(proposedCompletions_.begin(),
+                                   proposedCompletions_.end(),
+                                   [](bool value) { return value; }) ||
+             std::any_of(proposedAccepts_.begin(), proposedAccepts_.end(),
+                         [](const auto &value) { return value.has_value(); });
+  }
+
+  void doXfer(Epoch) override {
+    for (size_t bank = 0; bank < Banks; ++bank) {
+      if (proposedCompletions_[bank])
+        states_[bank] = State{};
+      if (proposedAccepts_[bank]) {
+        Accept &accept = *proposedAccepts_[bank];
+        if (accept.writeData)
+          storage_[bank][accept.address] = *accept.writeData;
+        states_[bank] = State{true, accept.endpoint,
+                              std::move(accept.context), accept.oldData,
+                              accept.ready};
+      }
+    }
+    proposedCompletions_.fill(false);
+    proposedAccepts_.fill(std::nullopt);
+    fired_ = false;
+  }
+
+  bool hasPendingCommit() const override { return fired_; }
+  bool isRunnable(Epoch epoch) const override {
+    if (fired_)
+      return false;
+    for (size_t bank = 0; bank < Banks; ++bank)
+      if (states_[bank].busy && states_[bank].ready &&
+          (epoch < *states_[bank].ready ||
+           outputs_[states_[bank].endpoint]->canProposePush()))
+        return true;
+    return std::any_of(inputs_.begin(), inputs_.end(),
+                       [](const SimQueue<T> *queue) {
+                         return queue->canProposePop();
+                       });
+  }
+
+  bool busy(size_t bank) const { return states_.at(bank).busy; }
+  const Data &at(size_t bank, size_t address) const {
+    return storage_.at(bank).at(address);
+  }
+  void reset() override {
+    for (auto &bank : storage_)
+      std::fill(bank.begin(), bank.end(), init_);
+    states_.fill(State{});
+    proposedCompletions_.fill(false);
+    proposedAccepts_.fill(std::nullopt);
+    fired_ = false;
+    clearRuntimeFailureCode();
+  }
+
+private:
+  struct State {
+    bool busy = false;
+    size_t endpoint = 0;
+    std::optional<Context> context;
+    std::optional<Data> oldData;
+    std::optional<Epoch> ready;
+  };
+  struct Accept {
+    size_t endpoint = 0;
+    size_t address = 0;
+    Context context{};
+    Data oldData{};
+    Epoch ready{};
+    std::optional<Data> writeData;
+  };
+
+  std::array<SimQueue<T> *, Endpoints> inputs_;
+  std::array<SimQueue<R> *, Endpoints> outputs_;
+  Data init_;
+  size_t latency_;
+  std::array<std::vector<Data>, Banks> storage_;
+  std::array<State, Banks> states_{};
+  [[no_unique_address]] Index index_;
+  [[no_unique_address]] Request request_;
+  [[no_unique_address]] ContextPolicy context_;
+  [[no_unique_address]] Response response_;
+  std::array<bool, Banks> proposedCompletions_{};
+  std::array<std::optional<Accept>, Banks> proposedAccepts_{};
+  bool fired_ = false;
+};
+
 template <typename T> class QueueSink final : public SimObject {
 public:
   static constexpr std::string_view contractName = "ac.sink";

@@ -8,6 +8,8 @@ The source tree is intentionally release-neutral: product versions belong to
 Git tags and GitHub Releases, not directory names, filenames, symbols, or test
 names. Serialized artifacts still carry an exact contract epoch because that
 field is part of their wire-format compatibility contract.
+The current explicit-memory contract uses exact global epoch `0.4`; consumers
+reject artifacts from earlier epochs before interpreting them.
 
 ## Development baseline
 

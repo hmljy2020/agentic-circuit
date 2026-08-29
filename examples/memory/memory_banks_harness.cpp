@@ -15,13 +15,15 @@ int main() {
       ac_generated::BankRequest{2, 3, 0, 0, 5},
   }};
 
-  for (const auto &request : requests)
-    if (!model.requests().proposePush(request))
-      return 1;
-
   auto rows = model.dispatch_rows();
   std::size_t cycles = 0;
+  std::size_t nextRequest = 0;
   for (std::size_t tick = 0; tick < 64; ++tick) {
+    if (nextRequest < requests.size()) {
+      if (!model.requests().proposePush(requests[nextRequest]))
+        return 1;
+      ++nextRequest;
+    }
     const gfsim::Epoch epoch{tick, 0};
     for (auto &row : rows)
       row.work(row.object, epoch);

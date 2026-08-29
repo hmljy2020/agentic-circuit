@@ -2,6 +2,7 @@
 #include "acir/CodeGen/QueueBlockContract.h"
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSwitch.h"
@@ -171,6 +172,28 @@ llvm::Expected<std::string> emitExpressionBody(const QueueBlockPlan &block,
              << first->str() << "));\n";
       continue;
     }
+    if (expression.kind == "create") {
+      auto type = cppType(expression.type);
+      if (!type)
+        return type.takeError();
+      llvm::SmallVector<llvm::StringRef> fields;
+      llvm::StringRef(expression.field).split(fields, ',', -1, false);
+      if (fields.size() != expression.operands.size())
+        return generatorError("create expression field arity mismatch");
+      output << padding << *type << ' ' << expression.result << "{};\n";
+      for (auto [index, field] : llvm::enumerate(fields))
+        output << padding << expression.result << '.' << field.str() << " = "
+               << expression.operands[index] << ";\n";
+      continue;
+    }
+    if (expression.kind == "select") {
+      if (expression.operands.size() != 3)
+        return generatorError("select expression operand arity mismatch");
+      output << padding << "auto " << expression.result << " = "
+             << expression.operands[0] << " ? " << expression.operands[1]
+             << " : " << expression.operands[2] << ";\n";
+      continue;
+    }
     auto second = operand(1);
     if (!second)
       return second.takeError();
@@ -188,6 +211,20 @@ llvm::Expected<std::string> emitExpressionBody(const QueueBlockPlan &block,
       operation = "-";
     else if (expression.kind == "mul")
       operation = "*";
+    else if (expression.kind == "and")
+      operation = "&";
+    else if (expression.kind == "or")
+      operation = "|";
+    else if (expression.kind == "xor")
+      operation = "^";
+    else if (expression.kind == "shl")
+      operation = "<<";
+    else if (expression.kind == "lshr" || expression.kind == "ashr")
+      operation = ">>";
+    else if (expression.kind == "udiv" || expression.kind == "sdiv")
+      operation = "/";
+    else if (expression.kind == "urem" || expression.kind == "srem")
+      operation = "%";
     else if (expression.kind == "cmp") {
       operation = llvm::StringSwitch<llvm::StringRef>(expression.predicate)
                       .Case("eq", "==")
@@ -196,6 +233,10 @@ llvm::Expected<std::string> emitExpressionBody(const QueueBlockPlan &block,
                       .Case("sle", "<=")
                       .Case("sgt", ">")
                       .Case("sge", ">=")
+                      .Case("ult", "<")
+                      .Case("ule", "<=")
+                      .Case("ugt", ">")
+                      .Case("uge", ">=")
                       .Default("");
     }
     if (operation.empty())
@@ -213,6 +254,31 @@ const QueuePlan *findQueue(const QueueGraphPlan &plan, llvm::StringRef name) {
       std::find_if(plan.queues.begin(), plan.queues.end(),
                    [&](const QueuePlan &queue) { return queue.name == name; });
   return found == plan.queues.end() ? nullptr : &*found;
+}
+
+llvm::Expected<std::string>
+yieldCppType(const QueueBlockPlan &block, llvm::StringRef yield,
+             llvm::ArrayRef<llvm::StringRef> argumentTypes) {
+  if (yield == "item") {
+    if (argumentTypes.empty())
+      return generatorError("region item type is missing");
+    return cppType(argumentTypes[0]);
+  }
+  if (yield.starts_with("item")) {
+    unsigned index = 0;
+    if (yield.drop_front(4).getAsInteger(10, index) ||
+        index >= argumentTypes.size())
+      return generatorError("region argument type is missing");
+    return cppType(argumentTypes[index]);
+  }
+  auto expression =
+      std::find_if(block.expressions.begin(), block.expressions.end(),
+                   [&](const QueueExpressionPlan &candidate) {
+                     return candidate.result == yield;
+                   });
+  if (expression == block.expressions.end())
+    return generatorError("region yield type is missing");
+  return cppType(expression->type);
 }
 
 bool isRuntimeBlock(const QueueBlockPlan &block) {
@@ -322,6 +388,14 @@ llvm::Expected<std::string> generateQueueGraphCpp(const QueueGraphPlan &plan) {
                [](const QueueBlockPlan *left, const QueueBlockPlan *right) {
                  return left->endpointOrdinal < right->endpointOrdinal;
                });
+  llvm::StringMap<std::vector<const ArrayInvokePlan *>> arrayEndpoints;
+  for (const ArrayInvokePlan &invoke : plan.arrayInvokes)
+    arrayEndpoints[invoke.array].push_back(&invoke);
+  for (auto &entry : arrayEndpoints)
+    llvm::sort(entry.getValue(),
+               [](const ArrayInvokePlan *left, const ArrayInvokePlan *right) {
+                 return left->ordinal < right->ordinal;
+               });
   llvm::StringMap<uint64_t> queueIds;
   for (auto [index, queue] : llvm::enumerate(plan.queues))
     queueIds[queue.name] = index;
@@ -336,6 +410,9 @@ llvm::Expected<std::string> generateQueueGraphCpp(const QueueGraphPlan &plan) {
   llvm::StringMap<uint64_t> memoryIds;
   for (const MemoryInstancePlan &instance : plan.memoryInstances)
     memoryIds[instance.name] = nextId++;
+  llvm::StringMap<uint64_t> arrayIds;
+  for (const ArrayInstancePlan &instance : plan.arrayInstances)
+    arrayIds[instance.name] = nextId++;
 
   std::ostringstream output;
   output << "// Generated from frozen ACIR QueueGraph plan; do not edit.\n";
@@ -557,6 +634,121 @@ llvm::Expected<std::string> generateQueueGraphCpp(const QueueGraphPlan &plan) {
       output << "    case " << endpoint->endpointOrdinal << ": result."
              << endpoint->resultField << " = old_data; break;\n";
     output << "    default: break;\n    }\n    return result;\n  }\n};\n\n";
+  }
+
+  for (auto [arrayIndex, instance] : llvm::enumerate(plan.arrayInstances)) {
+    auto found = arrayEndpoints.find(instance.name);
+    if (found == arrayEndpoints.end() || found->getValue().empty())
+      return generatorError("service array has no invoke endpoints");
+    const auto &endpoints = found->getValue();
+    const QueuePlan *input = findQueue(plan, endpoints.front()->input);
+    const QueuePlan *result = findQueue(plan, endpoints.front()->output);
+    if (!input || !result)
+      return generatorError("array invoke Queue is missing");
+    for (const ArrayInvokePlan *endpoint : endpoints) {
+      const QueuePlan *candidateInput = findQueue(plan, endpoint->input);
+      const QueuePlan *candidateResult = findQueue(plan, endpoint->output);
+      if (!candidateInput || !candidateResult ||
+          candidateInput->payloadType != input->payloadType ||
+          candidateResult->payloadType != result->payloadType)
+        return generatorError(
+            "array invoke endpoints currently require uniform adapter Queue "
+            "types");
+    }
+    auto inputType = cppType(input->payloadType);
+    auto resultType = cppType(result->payloadType);
+    auto commandType = cppType(instance.commandType);
+    auto dataType = cppType(instance.dataType);
+    if (!inputType)
+      return inputType.takeError();
+    if (!resultType)
+      return resultType.takeError();
+    if (!commandType)
+      return commandType.takeError();
+    if (!dataType)
+      return dataType.takeError();
+    if (endpoints.front()->context.yields.size() != 1)
+      return generatorError("array invoke context must yield one value");
+    llvm::StringRef inputTypeRef(input->payloadType);
+    auto contextType =
+        yieldCppType(endpoints.front()->context,
+                     endpoints.front()->context.yields.front(), {inputTypeRef});
+    if (!contextType)
+      return contextType.takeError();
+
+    output << "struct array_" << arrayIndex
+           << "_index_policy {\n  size_t operator()(size_t endpoint, const "
+           << *inputType << " &item) const {\n    switch (endpoint) {\n";
+    for (const ArrayInvokePlan *endpoint : endpoints) {
+      if (endpoint->index.yields.size() != instance.shape.size())
+        return generatorError("array invoke index rank mismatch");
+      output << "    case " << endpoint->ordinal << ": return ";
+      uint64_t stride = 1;
+      for (size_t reverse = instance.shape.size(); reverse-- > 0;) {
+        if (reverse + 1 != instance.shape.size())
+          output << " + ";
+        output << "static_cast<size_t>([&]() {\n";
+        auto body = emitExpressionBody(endpoint->index,
+                                       endpoint->index.yields[reverse], 8);
+        if (!body)
+          return body.takeError();
+        output << *body << "      }())";
+        if (stride != 1)
+          output << " * " << stride;
+        stride *= instance.shape[reverse];
+      }
+      output << ";\n";
+    }
+    output << "    default: return 0;\n    }\n  }\n};\n\n";
+
+    auto emitEndpointPolicy = [&](llvm::StringRef suffix,
+                                  llvm::StringRef returnType,
+                                  auto selectBlock) -> llvm::Error {
+      output << "struct array_" << arrayIndex << '_' << suffix.str()
+             << "_policy {\n  " << returnType.str()
+             << " operator()(size_t endpoint, const " << *inputType
+             << " &item) const {\n    switch (endpoint) {\n";
+      for (const ArrayInvokePlan *endpoint : endpoints) {
+        const QueueBlockPlan &block = selectBlock(*endpoint);
+        if (block.yields.size() != 1)
+          return generatorError("array invoke adapter must yield one value");
+        output << "    case " << endpoint->ordinal << ": {\n";
+        auto body = emitExpressionBody(block, block.yields.front(), 6);
+        if (!body)
+          return body.takeError();
+        output << *body << "    }\n";
+      }
+      output << "    default: return {};\n    }\n  }\n};\n\n";
+      return llvm::Error::success();
+    };
+    if (auto error = emitEndpointPolicy(
+            "request", *commandType,
+            [](const ArrayInvokePlan &value) -> const QueueBlockPlan & {
+              return value.request;
+            }))
+      return std::move(error);
+    if (auto error = emitEndpointPolicy(
+            "context", *contextType,
+            [](const ArrayInvokePlan &value) -> const QueueBlockPlan & {
+              return value.context;
+            }))
+      return std::move(error);
+
+    output << "struct array_" << arrayIndex << "_response_policy {\n  "
+           << *resultType << " operator()(size_t endpoint, const "
+           << *contextType << " &item, const " << *dataType
+           << " &item1) const {\n    switch (endpoint) {\n";
+    for (const ArrayInvokePlan *endpoint : endpoints) {
+      if (endpoint->response.yields.size() != 1)
+        return generatorError("array invoke response must yield one value");
+      output << "    case " << endpoint->ordinal << ": {\n";
+      auto body = emitExpressionBody(endpoint->response,
+                                     endpoint->response.yields.front(), 6);
+      if (!body)
+        return body.takeError();
+      output << *body << "    }\n";
+    }
+    output << "    default: return {};\n    }\n  }\n};\n\n";
   }
 
   std::string modelClass = className(plan.system);
@@ -781,6 +973,44 @@ llvm::Expected<std::string> generateQueueGraphCpp(const QueueGraphPlan &plan) {
                       endpoints.size(), ">{", outputs, "}, ", instance.entries,
                       ", ", instance.init, ", ", instance.latency, ")");
   }
+  for (auto [arrayIndex, instance] : llvm::enumerate(plan.arrayInstances)) {
+    auto found = arrayEndpoints.find(instance.name);
+    if (found == arrayEndpoints.end() || found->getValue().empty())
+      return generatorError("service array has no invoke endpoints");
+    const auto &endpoints = found->getValue();
+    const QueuePlan *input = findQueue(plan, endpoints.front()->input);
+    const QueuePlan *result = findQueue(plan, endpoints.front()->output);
+    auto inputType = input ? cppType(input->payloadType)
+                           : llvm::Expected<std::string>(
+                                 generatorError("array input missing"));
+    auto resultType = result ? cppType(result->payloadType)
+                             : llvm::Expected<std::string>(
+                                   generatorError("array output missing"));
+    auto parent = modulePointer(instance.ownerPath);
+    if (!inputType)
+      return inputType.takeError();
+    if (!resultType)
+      return resultType.takeError();
+    if (!parent)
+      return parent.takeError();
+    std::string inputs;
+    std::string outputs;
+    for (auto [endpointIndex, endpoint] : llvm::enumerate(endpoints)) {
+      if (endpointIndex) {
+        inputs.append(", ");
+        outputs.append(", ");
+      }
+      inputs.append("&").append(queueMembers[endpoint->input]);
+      outputs.append("&").append(queueMembers[endpoint->output]);
+    }
+    appendInitializer(initializers, "array_", arrayIndex, "_(\"array_",
+                      instance.name, "\", ", arrayIds[instance.name], ", ",
+                      *parent, ", std::array<gfsim::SimQueue<", *inputType,
+                      "> *, ", endpoints.size(), ">{", inputs,
+                      "}, std::array<gfsim::SimQueue<", *resultType, "> *, ",
+                      endpoints.size(), ">{", outputs, "}, ", instance.entries,
+                      ", ", instance.init, ", ", instance.latency, ")");
+  }
   for (auto [index, initializer] : llvm::enumerate(initializers))
     output << "        " << initializer
            << (index + 1 == initializers.size() ? "\n" : ",\n");
@@ -812,6 +1042,13 @@ llvm::Expected<std::string> generateQueueGraphCpp(const QueueGraphPlan &plan) {
   for (auto [memoryIndex, instance] : llvm::enumerate(plan.memoryInstances)) {
     auto line = attach(instance.ownerPath,
                        "memory_" + std::to_string(memoryIndex) + "_");
+    if (!line)
+      return line.takeError();
+    output << *line << '\n';
+  }
+  for (auto [arrayIndex, instance] : llvm::enumerate(plan.arrayInstances)) {
+    auto line =
+        attach(instance.ownerPath, "array_" + std::to_string(arrayIndex) + "_");
     if (!line)
       return line.takeError();
     output << *line << '\n';
@@ -891,7 +1128,13 @@ llvm::Expected<std::string> generateQueueGraphCpp(const QueueGraphPlan &plan) {
   }
   for (size_t index = 0; index < plan.memoryInstances.size(); ++index)
     output << "        gfsim::makeDispatchRow(&memory_" << index << "_)"
-           << (index + 1 == plan.memoryInstances.size() ? "\n" : ",\n");
+           << (index + 1 == plan.memoryInstances.size() &&
+                       plan.arrayInstances.empty()
+                   ? "\n"
+                   : ",\n");
+  for (size_t index = 0; index < plan.arrayInstances.size(); ++index)
+    output << "        gfsim::makeDispatchRow(&array_" << index << "_)"
+           << (index + 1 == plan.arrayInstances.size() ? "\n" : ",\n");
   output << "    };\n  }\n\nprivate:\n";
   for (const std::string &scope : plan.scopes)
     output << "  gfsim::Module " << scopeMembers[scope] << ";\n";
@@ -1103,6 +1346,46 @@ llvm::Expected<std::string> generateQueueGraphCpp(const QueueGraphPlan &plan) {
            << "_write_policy, memory_" << memoryIndex << "_data_policy, memory_"
            << memoryIndex << "_response_policy> memory_" << memoryIndex
            << "_;\n";
+  }
+  for (auto [arrayIndex, instance] : llvm::enumerate(plan.arrayInstances)) {
+    auto found = arrayEndpoints.find(instance.name);
+    if (found == arrayEndpoints.end() || found->getValue().empty())
+      return generatorError("service array has no invoke endpoints");
+    const auto &endpoints = found->getValue();
+    const QueuePlan *input = findQueue(plan, endpoints.front()->input);
+    const QueuePlan *result = findQueue(plan, endpoints.front()->output);
+    auto inputType = input ? cppType(input->payloadType)
+                           : llvm::Expected<std::string>(
+                                 generatorError("array input missing"));
+    auto resultType = result ? cppType(result->payloadType)
+                             : llvm::Expected<std::string>(
+                                   generatorError("array output missing"));
+    auto commandType = cppType(instance.commandType);
+    auto dataType = cppType(instance.dataType);
+    if (!inputType)
+      return inputType.takeError();
+    if (!resultType)
+      return resultType.takeError();
+    if (!commandType)
+      return commandType.takeError();
+    if (!dataType)
+      return dataType.takeError();
+    llvm::StringRef inputTypeRef(input->payloadType);
+    auto contextType =
+        yieldCppType(endpoints.front()->context,
+                     endpoints.front()->context.yields.front(), {inputTypeRef});
+    if (!contextType)
+      return contextType.takeError();
+    uint64_t banks = 1;
+    for (uint64_t extent : instance.shape)
+      banks *= extent;
+    output << "  gfsim::QueueMemoryBankArray<" << *inputType << ", "
+           << *resultType << ", " << *commandType << ", " << *contextType
+           << ", " << *dataType << ", " << banks << ", " << endpoints.size()
+           << ", array_" << arrayIndex << "_index_policy, array_" << arrayIndex
+           << "_request_policy, array_" << arrayIndex
+           << "_context_policy, array_" << arrayIndex
+           << "_response_policy> array_" << arrayIndex << "_;\n";
   }
   output << "};\n\n} // namespace ac_generated\n";
   return output.str();

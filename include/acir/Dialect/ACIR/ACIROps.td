@@ -84,6 +84,16 @@ def ACIR_VarConstantOp : ACIR_Op<"var.constant", [Pure]> {
   let assemblyFormat = "$value attr-dict `as` qualified(type($result))";
 }
 
+def ACIR_VarCreateOp : ACIR_Op<"var.create", [Pure]> {
+  let arguments = (ins Variadic<ACIR_VarType>:$values,
+                       StrArrayAttr:$field_names);
+  let results = (outs ACIR_VarType:$result);
+  let hasVerifier = 1;
+  let assemblyFormat = [{
+    $values `fields` $field_names attr-dict `:` functional-type($values, $result)
+  }];
+}
+
 class ACIR_VarBinaryOp<string mnemonic> : ACIR_Op<mnemonic, [
     Pure, AllTypesMatch<["lhs", "rhs", "result"]>
   ]> {
@@ -98,6 +108,28 @@ class ACIR_VarBinaryOp<string mnemonic> : ACIR_Op<mnemonic, [
 def ACIR_VarAddOp : ACIR_VarBinaryOp<"var.add">;
 def ACIR_VarSubOp : ACIR_VarBinaryOp<"var.sub">;
 def ACIR_VarMulOp : ACIR_VarBinaryOp<"var.mul">;
+def ACIR_VarAndOp : ACIR_VarBinaryOp<"var.and">;
+def ACIR_VarOrOp : ACIR_VarBinaryOp<"var.or">;
+def ACIR_VarXorOp : ACIR_VarBinaryOp<"var.xor">;
+def ACIR_VarShlOp : ACIR_VarBinaryOp<"var.shl">;
+def ACIR_VarLShrOp : ACIR_VarBinaryOp<"var.lshr">;
+def ACIR_VarAShrOp : ACIR_VarBinaryOp<"var.ashr">;
+def ACIR_VarUDivOp : ACIR_VarBinaryOp<"var.udiv">;
+def ACIR_VarSDivOp : ACIR_VarBinaryOp<"var.sdiv">;
+def ACIR_VarURemOp : ACIR_VarBinaryOp<"var.urem">;
+def ACIR_VarSRemOp : ACIR_VarBinaryOp<"var.srem">;
+
+def ACIR_VarSelectOp : ACIR_Op<"var.select", [Pure,
+    AllTypesMatch<["true_value", "false_value", "result"]>]> {
+  let arguments = (ins ACIR_VarType:$condition, ACIR_VarType:$true_value,
+                       ACIR_VarType:$false_value);
+  let results = (outs ACIR_VarType:$result);
+  let hasVerifier = 1;
+  let assemblyFormat = [{
+    $condition `,` $true_value `,` $false_value attr-dict `:`
+    qualified(type($condition)) `,` qualified(type($result))
+  }];
+}
 
 def ACIR_VarPopcountOp : ACIR_Op<"var.popcount", [Pure]> {
   let arguments = (ins ACIR_VarType:$in);
@@ -682,7 +714,7 @@ def ACIR_InstanceOp : ACIR_Op<"instance", [Pure]> {
   }];
 }
 
-def ACIR_ArrayOp : ACIR_Op<"array", [Pure]> {
+def ACIR_ArrayOp : ACIR_Op<"array"> {
   let arguments = (ins Variadic<AnyType>:$inputs,
                        FlatSymbolRefAttr:$definition, SymbolNameAttr:$sym_name,
                        StrAttr:$stable_id, StrAttr:$path,
@@ -694,6 +726,31 @@ def ACIR_ArrayOp : ACIR_Op<"array", [Pure]> {
     `static` $static_args `id` $stable_id `path` $path attr-dict
     `:` functional-type($inputs, $outputs)
   }];
+}
+
+def ACIR_ArrayInvokeOp : ACIR_Op<"array.invoke", [SingleBlock]> {
+  let arguments = (ins SymbolRefAttr:$array, StrAttr:$service,
+                       ACIR_QueueType:$input, I64Attr:$ordinal,
+                       I64Attr:$depth, StrAttr:$policy);
+  let results = (outs ACIR_QueueType:$output);
+  let regions = (region SizedRegion<1>:$index,
+                        SizedRegion<1>:$request,
+                        SizedRegion<1>:$id_context,
+                        SizedRegion<1>:$response);
+  let hasVerifier = 1;
+  let assemblyFormat = [{
+    $array `service` $service `,` $input `ordinal` $ordinal `depth` $depth
+    `policy` $policy `index` $index `request` $request `context` $id_context
+    `response` $response attr-dict `:` qualified(type($input)) `->`
+    qualified(type($output))
+  }];
+}
+
+def ACIR_ArrayInvokeYieldOp : ACIR_Op<"array.invoke.yield", [
+    Pure, Terminator, HasParent<"ArrayInvokeOp">
+  ]> {
+  let arguments = (ins Variadic<ACIR_VarType>:$values);
+  let assemblyFormat = "attr-dict ($values^ `:` type($values))?";
 }
 
 def ACIR_InstancesOp : ACIR_Op<"instances", [Pure]> {

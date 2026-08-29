@@ -37,6 +37,15 @@ func.func @compare(%left: i8, %right: i8) -> (i1) attributes {result_names = ["e
 }
 """
 
+PYC_MEMORY = """
+func.func @memory(%clk: !pyc.clock, %rst: !pyc.reset, %address: i4, %data: i16, %write: i1) -> (i16) attributes {result_names = ["old_data"]} {
+    %read = pyc.constant true : i1
+    %strobe = pyc.constant 3 : i2
+    %old = pyc.sync_mem %clk, %rst, %read, %address, %write, %address, %data, %strobe {depth = 16, name = "bank0"} : i4, i16, i2
+    func.return %old : i16
+}
+"""
+
 
 class PycVerilogBackendTest(unittest.TestCase):
     def test_assertion_is_preserved_in_simulation_only_rtl(self) -> None:
@@ -87,6 +96,23 @@ class PycVerilogBackendTest(unittest.TestCase):
         self.assertIn("wire same;", verilog)
         self.assertNotIn("wire [7:0] same;", verilog)
         self.assertIn("assign same = left == right;", verilog)
+
+    def test_sync_memory_preserves_old_data_and_byte_strobes(self) -> None:
+        tool = load_tool()
+        verilog = tool.emit_verilog(
+            tool.parse_pyc_module(PYC_MEMORY),
+            ROOT / "resources/pyc_runtime/verilog",
+        )
+        self.assertIn("reg [15:0] sync_mem_bank0_old [0:15]", verilog)
+        self.assertIn(
+            "sync_mem_bank0_old_read <= sync_mem_bank0_old[address]", verilog
+        )
+        self.assertIn("sync_mem_bank0_old[address][7:0] <= data[7:0]", verilog)
+        self.assertIn("sync_mem_bank0_old[address][15:8] <= data[15:8]", verilog)
+        self.assertLess(
+            verilog.index("sync_mem_bank0_old_read <= sync_mem_bank0_old[address]"),
+            verilog.index("sync_mem_bank0_old[address][7:0] <= data[7:0]"),
+        )
 
     def test_cli_rejects_invalid_timeout_and_path_aliases(self) -> None:
         tool = load_tool()

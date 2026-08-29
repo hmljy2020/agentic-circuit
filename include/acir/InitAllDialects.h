@@ -2,6 +2,7 @@
 #define ACIR_INITALLDIALECTS_H
 
 #include "acir/Dialect/ACIR/ACIRDialect.h"
+#include "acir/Dialect/ACIR/GraphRegion.h"
 #include "acir/Dialect/ACSim/ACSimDialect.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
@@ -19,6 +20,9 @@ inline void registerAllDialects(mlir::DialectRegistry &registry) {
                   mlir::DLTIDialect, mlir::arith::ArithDialect,
                   mlir::func::FuncDialect, mlir::index::IndexDialect,
                   mlir::scf::SCFDialect, mlir::cf::ControlFlowDialect>();
+  registry.addExtension(+[](mlir::MLIRContext *context, ac::ACIRDialect *) {
+    ac::getStructuralProviderRegistry(context).registerGenerator("memory_bank");
+  });
 }
 
 } // namespace acir

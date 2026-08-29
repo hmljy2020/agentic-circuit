@@ -1,7 +1,7 @@
 {
   "schema_kind": "agentic-circuit-component",
   "schema_version": "0.1",
-  "contract_epoch": "0.3",
+  "contract_epoch": "0.4",
   "canonical_name": "workspace.Showcase",
   "family": "source",
   "provider_namespace": "workspace.provider",
@@ -14,14 +14,16 @@
     "toolchain_target": "ac-gfsim-cxx20-v0.1",
     "functional_policy": "none"
   },
-  "static_parameters": [{
-    "name": "scenario",
-    "acir_type": "index",
-    "required": true,
-    "default": null,
-    "constraint": "0 <= value < 6",
-    "cpp_mapping": "constructor_constant"
-  }],
+  "static_parameters": [
+    {
+      "name": "scenario",
+      "acir_type": "index",
+      "required": true,
+      "default": null,
+      "constraint": "0 <= value < 6",
+      "cpp_mapping": "constructor_constant"
+    }
+  ],
   "bindings": [],
   "results": [],
   "resources": [],
@@ -29,9 +31,16 @@
   "protocol_contracts": [],
   "effect": {
     "kind": "stateful",
-    "requirements": ["one validated PTO trace document"],
-    "guarantees": ["one deterministic showcase execution"],
-    "observable_effects": ["architectural_values", "runtime_events"],
+    "requirements": [
+      "one validated PTO trace document"
+    ],
+    "guarantees": [
+      "one deterministic showcase execution"
+    ],
+    "observable_effects": [
+      "architectural_values",
+      "runtime_events"
+    ],
     "failure_behavior": "terminate_with_diagnostic"
   },
   "activation": {
@@ -42,9 +51,12 @@
   },
   "observation": {
     "probes": [],
-    "counters": ["trace_records", "showcase_events"],
+    "counters": [
+      "trace_records",
+      "showcase_events"
+    ],
     "gauges": [],
     "histograms": []
   },
-  "schema_fingerprint": "sha256:3dd113d76227679688dc514e8bbe401a8225925cf592e362891a8857b6f2a270"
+  "schema_fingerprint": "sha256:9e8e7afc37326215d04cf1b3bfa39199bcfb987f3690764f89999794eec50421"
 }

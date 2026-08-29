@@ -44,7 +44,7 @@ Checked-in evidence:
 - [`davincioo-softmax-run.json`](../../tests/goldens/davincioo/davincioo-softmax-run.json)
 - [`davincioo-softmax-swimlane.svg`](../../tests/goldens/davincioo/davincioo-softmax-swimlane.svg)
 
-## Explicit memory (epoch 0.3)
+## Explicit memory (epoch 0.4)
 
 `memory_simple.py` declares one root-owned, 16-entry `u16` memory and connects
 two typed logical endpoints from child scopes. Writer endpoint ordinal 0 has
@@ -73,10 +73,10 @@ PYTHONPATH=src \
   --acir-opt build/dev-llvm22/bin/acir-opt \
   --queue-plan-tool build/dev-llvm22/bin/acir-queue-plan \
   --queue-cxxgen-tool build/dev-llvm22/bin/acir-queue-cxxgen \
-  --output examples/memory/memory_simple.generated.cpp
+  --output /tmp/memory_simple.generated.cpp
 
 c++ \
-  -std=c++20 -Iinclude -Iexamples/memory \
+  -std=c++20 -Iinclude -I/tmp -Iexamples/memory \
   examples/memory/memory_simple_harness.cpp \
   -o /tmp/memory_simple_sim
 
@@ -92,14 +92,11 @@ cycles=8 write_old_values=0,42 read_after_priority=99
 The generated `memory_simple.generated.cpp` is a build artifact and is not
 checked in.
 
-## Statically expanded memory banks
+## Statically selected memory banks
 
-`memory_banks.py` uses a homogeneous `ac.array` of four memories. The
-Python-only `banks.select(...).request(...)` expansion makes bank selection
-explicit while lowering entirely to the existing `ac.route`, four
-`ac.memory.instance`/`ac.memory.request` pairs, and one `ac.merge`. Each bank
-has independent storage and one outstanding request; responses from different
-banks may be reordered, so the harness checks them by tag.
+`memory_banks.py` keeps the original static `banks.select(...).request(...)`
+surface. Elaboration expands four explicit memory instances, routes requests
+by a pure key lambda, and merges their responses with fixed priority.
 
 ```bash
 PYTHONPATH=src \
@@ -111,10 +108,10 @@ PYTHONPATH=src \
   --acir-opt build/dev-llvm22/bin/acir-opt \
   --queue-plan-tool build/dev-llvm22/bin/acir-queue-plan \
   --queue-cxxgen-tool build/dev-llvm22/bin/acir-queue-cxxgen \
-  --output examples/memory/memory_banks.generated.cpp
+  --output /tmp/memory_banks.generated.cpp
 
 c++ \
-  -std=c++20 -Iinclude -Iexamples/memory \
+  -std=c++20 -Iinclude -I/tmp -Iexamples/memory \
   examples/memory/memory_banks_harness.cpp \
   -o /tmp/memory_banks_sim
 
@@ -127,6 +124,42 @@ is intentionally not part of the example contract:
 ```text
 cycles=<N> bank0=41 bank1=91 bank2_initial=0
 ```
+
+## Dynamically selected two-dimensional memory array
+
+`memory_array.py` uses `ac.array((2, 2), ac.memory(...))`. One tuple-valued
+`requests.apply(decode)` keeps row, column, address, ID, write flag, and data
+coupled in one Queue token. `banks[row, col].request(...)` lowers to one
+ownership-only `ac.array` and one `ac.array.invoke`; only the selected bank is
+accessed, different banks can overlap, and completion-order responses carry ID.
+
+```bash
+PYTHONPATH=src \
+  .venv/bin/python \
+  tools/ac-queue-cxxgen.py examples/memory/memory_array.py \
+  --system memory_array \
+  --acir-output /tmp/memory_array.mlir \
+  --plan-output /tmp/memory_array.plan.json \
+  --acir-opt build/dev-llvm22/bin/acir-opt \
+  --queue-plan-tool build/dev-llvm22/bin/acir-queue-plan \
+  --queue-cxxgen-tool build/dev-llvm22/bin/acir-queue-cxxgen \
+  --output /tmp/memory_array.generated.cpp
+
+c++ -std=c++20 -Iinclude -I/tmp -Iexamples/memory \
+  examples/memory/memory_array_harness.cpp \
+  -o /tmp/memory_array_sim
+
+/tmp/memory_array_sim
+```
+
+Expected output:
+
+```text
+responses=6 bank00=41 bank01=52 bank10=63
+```
+
+Generated ACIR, QueueGraph JSON, C++, and RTL remain build artifacts under
+`/tmp`; none are checked in.
 
 ## Single-memory busy backpressure
 
@@ -146,10 +179,10 @@ PYTHONPATH=src \
   --acir-opt build/dev-llvm22/bin/acir-opt \
   --queue-plan-tool build/dev-llvm22/bin/acir-queue-plan \
   --queue-cxxgen-tool build/dev-llvm22/bin/acir-queue-cxxgen \
-  --output examples/memory/memory_busy.generated.cpp
+  --output /tmp/memory_busy.generated.cpp
 
 c++ \
-  -std=c++20 -Iinclude -Iexamples/memory \
+  -std=c++20 -Iinclude -I/tmp -Iexamples/memory \
   examples/memory/memory_busy_harness.cpp \
   -o /tmp/memory_busy_sim
 
@@ -190,10 +223,10 @@ PYTHONPATH=src \
   --acir-opt build/dev-llvm22/bin/acir-opt \
   --queue-plan-tool build/dev-llvm22/bin/acir-queue-plan \
   --queue-cxxgen-tool build/dev-llvm22/bin/acir-queue-cxxgen \
-  --output examples/memory/dma.generated.cpp
+  --output /tmp/dma.generated.cpp
 
 c++ \
-  -std=c++20 -Iinclude -Iexamples/memory \
+  -std=c++20 -Iinclude -I/tmp -Iexamples/memory \
   examples/memory/dma_harness.cpp \
   -o /tmp/dma_sim
 
@@ -208,7 +241,7 @@ seed_tick=5 copy_tick=14 verify_tick=19 dram_value=0x1234 copy_old_sram=0
 
 ## Current boundary
 
-The 0.3 contract intentionally supports one physical port and one outstanding
+The 0.4 contract intentionally supports one physical port and one outstanding
 request per memory instance. It does not provide true multi-port access,
 round-robin fairness, response reordering, byte enables, or non-zero
 initialization. A continuously valid higher-priority endpoint can starve lower

@@ -10,8 +10,11 @@
         "binding_schema": "acsim-binding-0.1",
         "component_schema": "ac.Consumer",
         "component_schema_fingerprint": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
-        "construction": {"arguments": [], "kind": "constructor"},
-        "contract_epoch": "0.3",
+        "construction": {
+          "arguments": [],
+          "kind": "constructor"
+        },
+        "contract_epoch": "0.4",
         "cpp": {
           "concept": "gfsim::StatefulModel",
           "entry_points": {
@@ -27,9 +30,12 @@
         },
         "cpp_type": "cpp_endpoint",
         "effect": "stateful",
-        "fingerprint": "sha256:596eae9fb8166027ec0f237c0e57bdd750700fcdd1075dbb15b0ef8c44c65546",
+        "fingerprint": "sha256:364e1e759e287dd21bb4d1bfb11feb32328d78b5d41e006b1826e25937a96e53",
         "implementation": "gfsim.Consumer",
-        "ownership": {"kind": "unique", "placement": "member_or_array"},
+        "ownership": {
+          "kind": "unique",
+          "placement": "member_or_array"
+        },
         "parameters": [],
         "ports": [
           {
@@ -62,8 +68,11 @@
         "binding_schema": "acsim-binding-0.1",
         "component_schema": "ac.Producer",
         "component_schema_fingerprint": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
-        "construction": {"arguments": [], "kind": "constructor"},
-        "contract_epoch": "0.3",
+        "construction": {
+          "arguments": [],
+          "kind": "constructor"
+        },
+        "contract_epoch": "0.4",
         "cpp": {
           "concept": "gfsim::StatefulModel",
           "entry_points": {
@@ -79,9 +88,12 @@
         },
         "cpp_type": "cpp_endpoint",
         "effect": "stateful",
-        "fingerprint": "sha256:78db155890336c5ebb10b7797e886480eba8f750a653d29ed6d8160d0589385a",
+        "fingerprint": "sha256:53e2c7a2ed2a904de13f0b64318e5ad55ff16eae07b9d43dddcdcfa9b591bf18",
         "implementation": "gfsim.Producer",
-        "ownership": {"kind": "unique", "placement": "member_or_array"},
+        "ownership": {
+          "kind": "unique",
+          "placement": "member_or_array"
+        },
         "parameters": [],
         "ports": [
           {
@@ -100,7 +112,12 @@
         "provider": "gfsim",
         "provider_implementation_fingerprint": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
         "resources": [],
-        "results": [{"cpp_type": "cpp_endpoint", "name": "out"}]
+        "results": [
+          {
+            "cpp_type": "cpp_endpoint",
+            "name": "out"
+          }
+        ]
       },
       "target": "arm64-apple-darwin"
     }
@@ -112,7 +129,7 @@
       "binding_schema": "acsim-binding-0.1",
       "component_schema": "ac.Consumer",
       "component_schema_fingerprint": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
-      "contract_epoch": "0.3",
+      "contract_epoch": "0.4",
       "effect": "stateful",
       "function_type": "(!ac.endpoint<@Wire, @source>) -> ()",
       "parameters": [],
@@ -141,7 +158,7 @@
       "binding_schema": "acsim-binding-0.1",
       "component_schema": "ac.Producer",
       "component_schema_fingerprint": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
-      "contract_epoch": "0.3",
+      "contract_epoch": "0.4",
       "effect": "stateful",
       "function_type": "() -> !ac.endpoint<@Wire, @source>",
       "parameters": [],
@@ -162,7 +179,12 @@
       "provider_implementation_fingerprint": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
       "resolution_key": "@Producer",
       "resources": [],
-      "results": [{"acir_type": "!ac.endpoint<@Wire, @source>", "name": "out"}]
+      "results": [
+        {
+          "acir_type": "!ac.endpoint<@Wire, @source>",
+          "name": "out"
+        }
+      ]
     }
   ]
 }

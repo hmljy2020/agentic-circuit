@@ -206,6 +206,44 @@ struct SharedMemoryResponse {
   }
 };
 
+struct BankRequest {
+  uint8_t bank = 0;
+  uint8_t address = 0;
+  uint8_t id = 0;
+  bool write = false;
+  uint16_t data = 0;
+};
+struct BankCommand {
+  uint8_t address = 0;
+  bool write = false;
+  uint16_t data = 0;
+};
+struct BankResponse {
+  uint8_t id = 0;
+  uint16_t data = 0;
+};
+struct BankIndex {
+  size_t operator()(size_t, const BankRequest &request) const {
+    return request.bank;
+  }
+};
+struct BankCommandPolicy {
+  BankCommand operator()(size_t, const BankRequest &request) const {
+    return {request.address, request.write, request.data};
+  }
+};
+struct BankContextPolicy {
+  uint8_t operator()(size_t, const BankRequest &request) const {
+    return request.id;
+  }
+};
+struct BankResponsePolicy {
+  BankResponse operator()(size_t, const uint8_t &id,
+                          const uint16_t &oldData) const {
+    return {id, oldData};
+  }
+};
+
 TEST(QueueBlocksTest, TransformCommitsOnlyAcrossTheQueueBarrier) {
   SimQueue<int> input("input", 1, nullptr, 2);
   SimQueue<int> output("output", 2, nullptr, 2);
@@ -688,6 +726,44 @@ TEST(QueueBlocksTest, SharedMemoryRejectsZeroLatency) {
                                    SharedMemoryWriteData, SharedMemoryResponse>(
                    "memory", 3, nullptr, {&input}, {&output}, 16, 0, 0)),
                std::invalid_argument);
+}
+
+TEST(QueueBlocksTest, MemoryBankArrayAllowsIndependentOutstandingBanks) {
+  SimQueue<BankRequest> input("input", 1, nullptr, 4);
+  SimQueue<BankResponse> output("output", 2, nullptr, 4);
+  QueueMemoryBankArray<BankRequest, BankResponse, BankCommand, uint8_t,
+                       uint16_t, 2, 1, BankIndex, BankCommandPolicy,
+                       BankContextPolicy, BankResponsePolicy>
+      banks("banks", 3, nullptr, {&input}, {&output}, 8, 0, 3);
+
+  ASSERT_TRUE(input.proposePush({0, 1, 10, true, 41}));
+  ASSERT_TRUE(input.proposePush({1, 2, 11, true, 52}));
+  input.doXfer({0, 0});
+
+  banks.doWork({1, 0});
+  input.doXfer({1, 0});
+  banks.doXfer({1, 0});
+  EXPECT_TRUE(banks.busy(0));
+  EXPECT_FALSE(banks.busy(1));
+
+  banks.doWork({2, 0});
+  input.doXfer({2, 0});
+  banks.doXfer({2, 0});
+  EXPECT_TRUE(banks.busy(0));
+  EXPECT_TRUE(banks.busy(1));
+  EXPECT_EQ(input.committedSize(), 0u);
+
+  for (uint64_t tick = 3; tick <= 5; ++tick) {
+    banks.doWork({tick, 0});
+    output.doXfer({tick, 0});
+    banks.doXfer({tick, 0});
+  }
+  ASSERT_EQ(output.committedSize(), 2u);
+  ASSERT_NE(output.peek(), nullptr);
+  EXPECT_EQ(output.peek()->id, 10u);
+  EXPECT_EQ(output.peek()->data, 0u);
+  EXPECT_EQ(banks.at(0, 1), 41u);
+  EXPECT_EQ(banks.at(1, 2), 52u);
 }
 
 TEST(QueueBlocksTest, QueueLatencyDelaysVisibilityButReservesCapacity) {

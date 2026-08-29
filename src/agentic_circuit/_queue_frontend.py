@@ -43,12 +43,27 @@ class QueueBinding:
     dependency_output: bool = False
     credit_output: bool = False
     memory_output: bool = False
+    array_invoke_output: bool = False
     barrier_output: bool = False
     select_output: bool = False
     firing_effect: bool = False
     atomic_group: int | None = None
     provider: str = "transform"
     rate: int = 1
+    input_payload: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectionBinding:
+    queue: str
+    field: str
+    payload: str
+
+
+@dataclass(frozen=True, slots=True)
+class PureQueueHelper:
+    argument: str
+    expression: ast.expr
 
 
 @dataclass(frozen=True, slots=True)
@@ -273,6 +288,37 @@ class SelectedMemoryBinding:
 
 
 @dataclass(frozen=True, slots=True)
+class MemoryArrayBinding:
+    name: str
+    shape: tuple[int, ...]
+    data_type: str
+    entries: int
+    init: int
+    latency: int
+    scope: tuple[str, ...]
+    order: int
+
+
+@dataclass(frozen=True, slots=True)
+class ArrayInvokeBinding:
+    array: str
+    input_name: str
+    output_name: str
+    argument: str
+    indices: tuple[ast.expr, ...]
+    address: ast.expr
+    write: ast.expr
+    data: ast.expr
+    request_id: ast.expr
+    address_type: str
+    id_type: str
+    command_payload: str
+    depth: int
+    scope: tuple[str, ...]
+    order: int
+
+
+@dataclass(frozen=True, slots=True)
 class AtomicBinding:
     queues: tuple[str, ...]
     scope: tuple[str, ...]
@@ -320,6 +366,8 @@ class QueueProgram:
     memory_instances: tuple[MemoryInstanceBinding, ...]
     memory_requests: tuple[MemoryRequestBinding, ...]
     memories: tuple[MemoryBinding, ...]
+    memory_arrays: tuple[MemoryArrayBinding, ...]
+    array_invokes: tuple[ArrayInvokeBinding, ...]
     atomics: tuple[AtomicBinding, ...]
     collections: tuple[CollectionBinding, ...]
     observations: tuple[ObservationBinding, ...]
@@ -542,7 +590,7 @@ def parse_queue_program(
             raise QueueFrontendError(
                 "ACPY-QUEUE-010: user opcode or backend providers are forbidden"
             )
-    payloads = _payloads(tree)
+    payloads = list(_payloads(tree))
     payload_map = {item.name: item for item in payloads}
     candidates = [
         node
@@ -757,6 +805,8 @@ def parse_queue_program(
     memories: list[MemoryBinding] = []
     memory_by_name: dict[str, MemoryInstanceBinding] = {}
     memory_arrays: dict[str, StaticMemoryArrayBinding] = {}
+    service_arrays: dict[str, MemoryArrayBinding] = {}
+    array_invokes: list[ArrayInvokeBinding] = []
     selected_memories: dict[str, SelectedMemoryBinding] = {}
     consumed_selected_memories: set[str] = set()
     atomics: list[AtomicBinding] = []
@@ -766,6 +816,8 @@ def parse_queue_program(
     by_name: dict[str, QueueBinding] = {}
     collections: dict[str, StaticQueueCollection] = {}
     collection_bindings: list[CollectionBinding] = []
+    projections: dict[str, ProjectionBinding] = {}
+    pure_helpers: dict[str, PureQueueHelper] = {}
     order = 0
 
     def call_name(call: ast.Call) -> str:
@@ -826,6 +878,79 @@ def parse_queue_program(
                 "ACPY-QUEUE-024: merge policy must be priority or round_robin"
             )
         return policy
+
+    def static_shape(node: ast.expr) -> tuple[int, ...] | None:
+        values = node.elts if isinstance(node, ast.Tuple) else [node]
+        shape: list[int] = []
+        cardinality = 1
+        for value in values:
+            extent = _static_int(value, {})
+            if extent is None or extent <= 0:
+                return None
+            cardinality *= extent
+            if cardinality > 1024:
+                raise QueueFrontendError(
+                    "ACPY-QUEUE-022: service array cardinality exceeds 1024"
+                )
+            shape.append(extent)
+        return tuple(shape)
+
+    def pure_callable(node: ast.expr) -> tuple[str, ast.expr]:
+        if isinstance(node, ast.Lambda):
+            return _lambda(node)
+        if isinstance(node, ast.Name) and node.id in pure_helpers:
+            helper = pure_helpers[node.id]
+            return helper.argument, copy.deepcopy(helper.expression)
+        raise QueueFrontendError(
+            "ACPY-QUEUE-003: apply requires a one-argument lambda or pure helper"
+        )
+
+    def register_pure_helper(statement: ast.FunctionDef) -> None:
+        if (
+            statement.decorator_list
+            or len(statement.args.args) != 1
+            or statement.args.posonlyargs
+            or statement.args.kwonlyargs
+            or statement.args.vararg
+            or statement.args.kwarg
+            or statement.name in pure_helpers
+        ):
+            raise QueueFrontendError(
+                "ACPY-QUEUE-003: pure helper requires one fresh positional argument"
+            )
+        argument = statement.args.args[0].arg
+        values: dict[str, ast.expr] = {}
+
+        class Substitute(ast.NodeTransformer):
+            def visit_Name(self, node: ast.Name) -> ast.expr:
+                value = values.get(node.id)
+                return copy.deepcopy(value) if value is not None else node
+
+        result: ast.expr | None = None
+        for item in statement.body:
+            if (
+                isinstance(item, ast.Assign)
+                and len(item.targets) == 1
+                and isinstance(item.targets[0], ast.Name)
+            ):
+                name = item.targets[0].id
+                if name == argument or name in values:
+                    raise QueueFrontendError(
+                        "ACPY-QUEUE-003: pure helper locals require fresh names"
+                    )
+                values[name] = Substitute().visit(copy.deepcopy(item.value))
+                continue
+            if isinstance(item, ast.Return) and item.value is not None and result is None:
+                result = Substitute().visit(copy.deepcopy(item.value))
+                continue
+            raise QueueFrontendError(
+                "ACPY-QUEUE-003: pure helper supports assignments and one final return"
+            )
+        if result is None or not isinstance(statement.body[-1], ast.Return):
+            raise QueueFrontendError(
+                "ACPY-QUEUE-003: pure helper requires one final return"
+            )
+        pure_helpers[statement.name] = PureQueueHelper(argument, result)
 
     def static_reference(
         node: ast.expr,
@@ -1151,6 +1276,9 @@ def parse_queue_program(
         for statement in statements:
             current_order = order
             order += 1
+            if isinstance(statement, ast.FunctionDef):
+                register_pure_helper(statement)
+                continue
             assigned_names: tuple[str, ...] = ()
             if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
                 target = statement.targets[0]
@@ -1163,6 +1291,7 @@ def parse_queue_program(
             if any(
                 name in memory_by_name
                 or name in memory_arrays
+                or name in service_arrays
                 or name in selected_memories
                 for name in assigned_names
             ):
@@ -1194,6 +1323,72 @@ def parse_queue_program(
                 )
                 memory_instances.append(instance)
                 memory_by_name[name] = instance
+                continue
+            if (
+                isinstance(statement, ast.Assign)
+                and len(statement.targets) == 1
+                and isinstance(statement.targets[0], ast.Tuple)
+                and all(isinstance(item, ast.Name) for item in statement.targets[0].elts)
+                and isinstance(statement.value, ast.Call)
+                and isinstance(statement.value.func, ast.Attribute)
+                and statement.value.func.attr == "apply"
+                and isinstance(statement.value.func.value, ast.Name)
+                and len(statement.value.args) == 1
+            ):
+                call = statement.value
+                incoming = by_name.get(call.func.value.id)
+                if incoming is None:
+                    raise QueueFrontendError("ACPY-QUEUE-003: tuple apply input is unbound")
+                argument, expression = pure_callable(call.args[0])
+                if not isinstance(expression, ast.Tuple):
+                    raise QueueFrontendError(
+                        "ACPY-QUEUE-003: tuple assignment requires a tuple return"
+                    )
+                names = tuple(item.id for item in statement.targets[0].elts)
+                if len(names) != len(expression.elts) or len(set(names)) != len(names):
+                    raise QueueFrontendError(
+                        "ACPY-QUEUE-003: tuple assignment must match fresh return arity"
+                    )
+                if any(
+                    name in by_name
+                    or name in projections
+                    or name in collections
+                    or name in memory_by_name
+                    for name in names
+                ):
+                    raise QueueFrontendError(
+                        "ACPY-QUEUE-003: tuple projection names must be fresh"
+                    )
+                field_types: list[str] = []
+                for element in expression.elts:
+                    emitter = _ExpressionEmitter(payload_map, argument, incoming.payload)
+                    _, element_type = emitter.emit(element)
+                    field_types.append(element_type)
+                payload_name = f"__tuple_{current_order}"
+                payload = Payload(
+                    payload_name,
+                    tuple((f"_{index}", typ) for index, typ in enumerate(field_types)),
+                )
+                payloads.append(payload)
+                payload_map[payload_name] = payload
+                hidden = f"__tuple_queue_{current_order}"
+                binding = QueueBinding(
+                    hidden,
+                    payload.acir_type,
+                    _positive_int(call, "depth", 1),
+                    _positive_int(call, "latency", 1),
+                    incoming.name,
+                    argument,
+                    expression,
+                    scope_path,
+                    current_order,
+                    rate=incoming.rate,
+                    input_payload=incoming.payload,
+                )
+                queues.append(binding)
+                by_name[hidden] = binding
+                for index, (name, typ) in enumerate(zip(names, field_types, strict=True)):
+                    projections[name] = ProjectionBinding(hidden, f"_{index}", typ)
                 continue
             if isinstance(statement, ast.If):
                 if (
@@ -1236,7 +1431,7 @@ def parse_queue_program(
                             "assignment in each branch"
                         )
                     input_name = queue_reference(call.func.value, aliases)
-                    argument, expression = _lambda(call.args[0])
+                    argument, expression = pure_callable(call.args[0])
                     return target, input_name, call, argument, expression
 
                 false_arm = parse_arm(statement.orelse)
@@ -1458,6 +1653,47 @@ def parse_queue_program(
                 and len(statement.targets) == 1
                 and isinstance(statement.targets[0], ast.Name)
                 and isinstance(statement.value, ast.Call)
+                and call_name(statement.value) == "array"
+                and len(statement.value.args) == 2
+                and isinstance(statement.value.args[1], ast.Call)
+                and call_name(statement.value.args[1]) == "memory"
+            ):
+                name = statement.targets[0].id
+                if (
+                    name in by_name
+                    or name in collections
+                    or name in memory_by_name
+                    or name in memory_arrays
+                    or name in service_arrays
+                    or name in selected_memories
+                ):
+                    raise QueueFrontendError(
+                        "ACPY-QUEUE-022: memory array requires one fresh name"
+                    )
+                shape = static_shape(statement.value.args[0])
+                if shape is None:
+                    raise QueueFrontendError(
+                        "ACPY-QUEUE-022: memory array requires a positive static shape"
+                    )
+                template = memory_instance_binding(
+                    name, statement.value.args[1], scope_path, current_order
+                )
+                service_arrays[name] = MemoryArrayBinding(
+                    name,
+                    shape,
+                    template.data_type,
+                    template.entries,
+                    template.init,
+                    template.latency,
+                    scope_path,
+                    current_order,
+                )
+                continue
+            if (
+                isinstance(statement, ast.Assign)
+                and len(statement.targets) == 1
+                and isinstance(statement.targets[0], ast.Name)
+                and isinstance(statement.value, ast.Call)
                 and call_name(statement.value) in {"array", "map", "set"}
             ):
                 name = statement.targets[0].id
@@ -1496,6 +1732,7 @@ def parse_queue_program(
                             or member_name in collections
                             or member_name in memory_by_name
                             or member_name in memory_arrays
+                            or member_name in service_arrays
                             or member_name in selected_memories
                         ):
                             raise QueueFrontendError(
@@ -1594,6 +1831,10 @@ def parse_queue_program(
                     )
                 input_name = queue_reference(call.args[0], aliases)
                 incoming = by_name[input_name]
+                if incoming.rate != 1:
+                    raise QueueFrontendError(
+                        "ACPY-QUEUE-015: memory bank select requires Queue rate 1"
+                    )
                 argument, selector = _lambda(keys[0])
                 depth = _positive_int(call, "depth", 1)
                 latency = _positive_int(call, "latency", 1)
@@ -2202,6 +2443,177 @@ def parse_queue_program(
                 and isinstance(statement.value, ast.Call)
                 and isinstance(statement.value.func, ast.Attribute)
                 and statement.value.func.attr == "request"
+                and isinstance(statement.value.func.value, ast.Subscript)
+                and isinstance(statement.value.func.value.value, ast.Name)
+                and statement.value.func.value.value.id in service_arrays
+                and not statement.value.args
+            ):
+                name = statement.targets[0].id
+                if (
+                    name in by_name
+                    or name in projections
+                    or name in collections
+                    or name in memory_by_name
+                    or name in memory_arrays
+                    or name in service_arrays
+                    or name in selected_memories
+                ):
+                    raise QueueFrontendError(
+                        "ACPY-QUEUE-022: array request output requires one fresh name"
+                    )
+                call = statement.value
+                array_name = call.func.value.value.id
+                array = service_arrays[array_name]
+                if len(scope_path) < len(array.scope) or (
+                    scope_path[: len(array.scope)] != array.scope
+                ):
+                    raise QueueFrontendError(
+                        "ACPY-QUEUE-022: memory array is only visible in its "
+                        "declaration scope and descendants"
+                    )
+                raw_indices = call.func.value.slice
+                index_nodes = (
+                    tuple(raw_indices.elts)
+                    if isinstance(raw_indices, ast.Tuple)
+                    else (raw_indices,)
+                )
+                if len(index_nodes) != len(array.shape):
+                    raise QueueFrontendError(
+                        "ACPY-QUEUE-022: memory array index rank must match shape"
+                    )
+                keyword_values = {
+                    keyword.arg: keyword.value
+                    for keyword in call.keywords
+                    if keyword.arg is not None
+                }
+                if (
+                    len(keyword_values) != len(call.keywords)
+                    or set(keyword_values) != {"id", "address", "write", "data", "depth"}
+                ):
+                    raise QueueFrontendError(
+                        "ACPY-QUEUE-022: array request requires id, address, write, "
+                        "data, and depth"
+                    )
+
+                bases: set[str] = set()
+
+                def coupled_expression(
+                    node: ast.expr, *, expected: str | None = None
+                ) -> tuple[ast.expr, str]:
+                    if isinstance(node, ast.Name) and node.id in projections:
+                        projection = projections[node.id]
+                        bases.add(projection.queue)
+                        return (
+                            ast.Attribute(
+                                value=ast.Name(id="item", ctx=ast.Load()),
+                                attr=projection.field,
+                                ctx=ast.Load(),
+                            ),
+                            projection.payload,
+                        )
+                    if isinstance(node, ast.Constant) and type(node.value) in {int, bool}:
+                        return copy.deepcopy(node), expected or (
+                            "i1" if type(node.value) is bool else "i64"
+                        )
+                    raise QueueFrontendError(
+                        "ACPY-QUEUE-022: array request values must be constants or "
+                        "coupled tuple projections"
+                    )
+
+                indices: list[ast.expr] = []
+                for node in index_nodes:
+                    expression, typ = coupled_expression(node)
+                    if not typ.startswith("i"):
+                        raise QueueFrontendError(
+                            "ACPY-QUEUE-022: memory array indices must be integers"
+                        )
+                    indices.append(expression)
+                request_id, id_type = coupled_expression(keyword_values["id"])
+                address, address_type = coupled_expression(keyword_values["address"])
+                write, write_type = coupled_expression(
+                    keyword_values["write"], expected="i1"
+                )
+                data, data_type = coupled_expression(
+                    keyword_values["data"], expected=array.data_type
+                )
+                if len(bases) != 1:
+                    raise QueueFrontendError(
+                        "ACPY-QUEUE-022: all dynamic request values must share one "
+                        "tuple Queue provenance"
+                    )
+                if (
+                    not id_type.startswith("i")
+                    or int(id_type[1:]) > 64
+                    or not address_type.startswith("i")
+                    or int(address_type[1:]) > 64
+                    or write_type != "i1"
+                    or data_type != array.data_type
+                ):
+                    raise QueueFrontendError(
+                        "ACPY-QUEUE-022: array request field types do not match memory"
+                    )
+                input_name = next(iter(bases))
+                incoming = by_name[input_name]
+                if incoming.rate != 1:
+                    raise QueueFrontendError(
+                        "ACPY-QUEUE-022: memory array invoke requires Queue rate 1"
+                    )
+                command_name = f"__memory_command_{array_name}_{current_order}"
+                response_name = f"__memory_response_{current_order}"
+                command_payload = Payload(
+                    command_name,
+                    (
+                        ("address", address_type),
+                        ("write", "i1"),
+                        ("data", array.data_type),
+                    ),
+                )
+                response_payload = Payload(
+                    response_name,
+                    (("id", id_type), ("data", array.data_type)),
+                )
+                payloads.extend((command_payload, response_payload))
+                payload_map[command_name] = command_payload
+                payload_map[response_name] = response_payload
+                output = QueueBinding(
+                    name,
+                    response_payload.acir_type,
+                    _positive_int(call, "depth", 1),
+                    1,
+                    None,
+                    scope=scope_path,
+                    order=current_order,
+                    array_invoke_output=True,
+                )
+                queues.append(output)
+                by_name[name] = output
+                array_invokes.append(
+                    ArrayInvokeBinding(
+                        array_name,
+                        input_name,
+                        name,
+                        "item",
+                        tuple(indices),
+                        address,
+                        write,
+                        data,
+                        request_id,
+                        address_type,
+                        id_type,
+                        command_payload.acir_type,
+                        output.depth,
+                        scope_path,
+                        current_order,
+                    )
+                )
+                continue
+            if (
+                isinstance(statement, ast.Assign)
+                and len(statement.targets) == 1
+                and isinstance(statement.targets[0], ast.Name)
+                and isinstance(statement.value, ast.Call)
+                and isinstance(statement.value.func, ast.Attribute)
+                and statement.value.func.attr == "request"
                 and isinstance(statement.value.func.value, ast.Name)
                 and statement.value.func.value.id in selected_memories
                 and not statement.value.args
@@ -2230,6 +2642,10 @@ def parse_queue_program(
                         "same lexical scope"
                     )
                 incoming = by_name[selected.input_name]
+                if incoming.rate != 1:
+                    raise QueueFrontendError(
+                        "ACPY-QUEUE-015: memory request requires Queue rate 1"
+                    )
                 array = memory_arrays[selected.array]
                 (
                     argument,
@@ -2366,6 +2782,10 @@ def parse_queue_program(
                 if incoming is None:
                     raise QueueFrontendError(
                         "ACPY-QUEUE-015: memory request input is unbound"
+                    )
+                if incoming.rate != 1:
+                    raise QueueFrontendError(
+                        "ACPY-QUEUE-015: memory request requires Queue rate 1"
                     )
                 (
                     argument,
@@ -2848,8 +3268,12 @@ def parse_queue_program(
                         raise QueueFrontendError(
                             f"ACPY-QUEUE-001: input queue {input_name!r} is unbound"
                         )
-                    argument, expression = _lambda(call.args[0])
                     firing_effect = call.func.attr == "firing"
+                    argument, expression = (
+                        _lambda(call.args[0])
+                        if firing_effect
+                        else pure_callable(call.args[0])
+                    )
                     if firing_effect:
                         _validate_firing_expression(expression, argument)
                     binding = QueueBinding(
@@ -2864,6 +3288,7 @@ def parse_queue_program(
                         current_order,
                         firing_effect=firing_effect,
                         atomic_group=atomic_group,
+                        input_payload=incoming.payload,
                     )
                 else:
                     raise QueueFrontendError(
@@ -3183,6 +3608,19 @@ def parse_queue_program(
             "ACPY-QUEUE-015: selected memory is not requested: "
             + ", ".join(repr(name) for name in unused_selected)
         )
+    invokes_by_array: dict[str, list[ArrayInvokeBinding]] = {}
+    for invoke in array_invokes:
+        invokes_by_array.setdefault(invoke.array, []).append(invoke)
+    for array in service_arrays.values():
+        endpoints = invokes_by_array.get(array.name, [])
+        if not endpoints:
+            raise QueueFrontendError(
+                f"ACPY-QUEUE-022: memory array {array.name!r} is not connected"
+            )
+        if len({endpoint.address_type for endpoint in endpoints}) != 1:
+            raise QueueFrontendError(
+                "ACPY-QUEUE-022: all endpoints of one array require one address type"
+            )
     requests_by_instance: dict[str, list[MemoryRequestBinding]] = {}
     for request in memory_requests:
         requests_by_instance.setdefault(request.instance, []).append(request)
@@ -3203,7 +3641,7 @@ def parse_queue_program(
         )
     return QueueProgram(
         system,
-        payloads,
+        tuple(payloads),
         tuple(queues),
         tuple(scopes),
         tuple(routes),
@@ -3218,6 +3656,8 @@ def parse_queue_program(
         tuple(memory_instances),
         tuple(memory_requests),
         tuple(memories),
+        tuple(service_arrays.values()),
+        tuple(array_invokes),
         tuple(atomics),
         tuple(collection_bindings),
         tuple(observations),
@@ -3292,6 +3732,40 @@ class _ExpressionEmitter:
                 f"    %{name} = ac.var.constant {attribute} as !ac.var<{typ}>"
             )
             return name, typ
+        if isinstance(node, ast.Tuple):
+            if expected is None:
+                raise QueueFrontendError(
+                    "ACPY-QUEUE-003: tuple expression requires an inferred payload"
+                )
+            payload_name = expected.removeprefix(
+                "!ac.struct<@types::@"
+            ).removesuffix(">")
+            definition = self.payloads.get(payload_name)
+            if definition is None or len(definition.fields) != len(node.elts):
+                raise QueueFrontendError(
+                    "ACPY-QUEUE-003: tuple expression does not match payload"
+                )
+            values: list[str] = []
+            types: list[str] = []
+            for element, (_, field_type) in zip(
+                node.elts, definition.fields, strict=True
+            ):
+                value, value_type = self.emit(element, field_type)
+                if value_type != field_type:
+                    raise QueueFrontendError(
+                        "ACPY-QUEUE-003: tuple field type mismatch"
+                    )
+                values.append(value)
+                types.append(value_type)
+            name = self._new()
+            operands = ", ".join(f"%{value}" for value in values)
+            fields = ", ".join(f'"_{index}"' for index in range(len(values)))
+            input_types = ", ".join(f"!ac.var<{typ}>" for typ in types)
+            self.lines.append(
+                f"    %{name} = ac.var.create {operands} fields [{fields}] : "
+                f"({input_types}) -> !ac.var<{expected}>"
+            )
+            return name, expected
         if isinstance(node, ast.Attribute):
             record, record_type = self.emit(node.value)
             payload_name = record_type.removeprefix(
@@ -3307,7 +3781,19 @@ class _ExpressionEmitter:
             )
             return name, field_type
         if isinstance(node, ast.BinOp) and isinstance(
-            node.op, (ast.Add, ast.Sub, ast.Mult)
+            node.op,
+            (
+                ast.Add,
+                ast.Sub,
+                ast.Mult,
+                ast.BitAnd,
+                ast.BitOr,
+                ast.BitXor,
+                ast.LShift,
+                ast.RShift,
+                ast.FloorDiv,
+                ast.Mod,
+            ),
         ):
             left, left_type = self.emit(node.left)
             right, right_type = self.emit(node.right, left_type)
@@ -3315,12 +3801,41 @@ class _ExpressionEmitter:
                 raise QueueFrontendError(
                     "ACPY-QUEUE-003: arithmetic operands must match"
                 )
-            opcode = {ast.Add: "add", ast.Sub: "sub", ast.Mult: "mul"}[type(node.op)]
+            opcode = {
+                ast.Add: "add",
+                ast.Sub: "sub",
+                ast.Mult: "mul",
+                ast.BitAnd: "and",
+                ast.BitOr: "or",
+                ast.BitXor: "xor",
+                ast.LShift: "shl",
+                ast.RShift: "lshr",
+                ast.FloorDiv: "udiv",
+                ast.Mod: "urem",
+            }[type(node.op)]
             name = self._new()
             self.lines.append(
                 f"    %{name} = ac.var.{opcode} %{left}, %{right} : !ac.var<{left_type}>"
             )
             return name, left_type
+        if isinstance(node, ast.IfExp):
+            condition, condition_type = self.emit(node.test, "i1")
+            if condition_type != "i1":
+                raise QueueFrontendError(
+                    "ACPY-QUEUE-003: conditional expression requires bool"
+                )
+            true_value, true_type = self.emit(node.body, expected)
+            false_value, false_type = self.emit(node.orelse, true_type)
+            if true_type != false_type:
+                raise QueueFrontendError(
+                    "ACPY-QUEUE-003: conditional values must match"
+                )
+            name = self._new()
+            self.lines.append(
+                f"    %{name} = ac.var.select %{condition}, %{true_value}, "
+                f"%{false_value} : !ac.var<i1>, !ac.var<{true_type}>"
+            )
+            return name, true_type
         if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.And):
             if len(node.values) < 2:
                 raise QueueFrontendError(
@@ -3451,7 +3966,7 @@ def lower_queue_program(program: QueueProgram) -> str:
         else f', ac.specialization = "{program.specialization_fingerprint}"'
     )
     lines = [
-        f'module attributes {{ac.contract_epoch = "0.3", '
+        f'module attributes {{ac.contract_epoch = "0.4", '
         f'ac.system = "{program.system}"{specialization}}} {{'
     ]
     payloads = {item.name: item for item in program.payloads}
@@ -3479,6 +3994,39 @@ def lower_queue_program(program: QueueProgram) -> str:
                 f"preferred_alignment = {alignment} : i64, size = {total} : i64}}"
             )
         lines.append("  } {dlti.dl_spec = #dlti.dl_spec<" + ", ".join(layouts) + ">}")
+    invokes_by_array: dict[str, list[ArrayInvokeBinding]] = {}
+    for invoke in program.array_invokes:
+        invokes_by_array.setdefault(invoke.array, []).append(invoke)
+    for array in sorted(
+        program.memory_arrays, key=lambda value: (value.scope, value.order, value.name)
+    ):
+        invoke = invokes_by_array[array.name][0]
+        target = f"__memory_bank_{array.name}"
+        lines.append(
+            f'  ac.module.generated @{target} : () -> () parameters {{}} '
+            f'generator {{registry = "ac", name = "memory_bank"}} '
+            f'{{ac.memory = {{data_type = {array.data_type}, '
+            f'entries = {array.entries} : i64, init = {array.init} : i64, '
+            f'latency = {array.latency} : i64}}, ac.services = '
+            f'[{{name = "request", request = {invoke.command_payload}, '
+            f'response = {array.data_type}, max_outstanding = 1 : i64}}]}}'
+        )
+    if program.memory_arrays:
+        for array in sorted(
+            program.memory_arrays,
+            key=lambda value: (value.scope, value.order, value.name),
+        ):
+            count = 1
+            for extent in array.shape:
+                count *= extent
+            shape = ", ".join(str(extent) for extent in array.shape)
+            static_args = ", ".join("{}" for _ in range(count))
+            owner = "/" + "/".join(array.scope) if array.scope else "/"
+            lines.append(
+                f"  ac.array @{array.name} of @__memory_bank_{array.name} "
+                f"shape [{shape}]() static [{static_args}] id \"{array.name}\" "
+                f'path "{array.name}" {{ac.owner = "{owner}"}} : () -> ()'
+            )
     for instance in sorted(
         program.memory_instances, key=lambda value: (value.scope, value.order, value.name)
     ):
@@ -3504,6 +4052,12 @@ def lower_queue_program(program: QueueProgram) -> str:
             sorted(requests, key=lambda value: (value.scope, value.order, value.output_name))
         ):
             memory_ordinals[(instance, request.output_name)] = ordinal
+    array_ordinals: dict[tuple[str, str], int] = {}
+    for array, invokes in invokes_by_array.items():
+        for ordinal, invoke in enumerate(
+            sorted(invokes, key=lambda value: (value.scope, value.order, value.output_name))
+        ):
+            array_ordinals[(array, invoke.output_name)] = ordinal
 
     def name_array(names: list[str] | tuple[str, ...]) -> str:
         return "[" + ", ".join(f'"{name}"' for name in names) + "]"
@@ -3577,6 +4131,8 @@ def lower_queue_program(program: QueueProgram) -> str:
             uses[input_name].append(select.scope)
     for request in program.memory_requests:
         uses[request.input_name].append(request.scope)
+    for invoke in program.array_invokes:
+        uses[invoke.input_name].append(invoke.scope)
 
     def inside(container: tuple[str, ...], candidate: tuple[str, ...]) -> bool:
         return candidate[: len(container)] == container
@@ -3622,13 +4178,14 @@ def lower_queue_program(program: QueueProgram) -> str:
             mapping[queue.name] = output_ssa
             return
         assert queue.argument is not None and queue.expression is not None
+        input_payload = queue.input_payload or queue.payload
         emitter = _ExpressionEmitter(
             payloads,
             queue.argument,
-            queue.payload,
+            input_payload,
             allow_queue_effects=queue.firing_effect,
         )
-        result, result_type = emitter.emit(queue.expression)
+        result, result_type = emitter.emit(queue.expression, queue.payload)
         if result_type != queue.payload:
             raise QueueFrontendError(
                 "ACPY-QUEUE-003: lambda result must preserve Queue payload type"
@@ -3639,14 +4196,14 @@ def lower_queue_program(program: QueueProgram) -> str:
             f"{indent}%{output_ssa} = ac.transform %{input_ssa} "
             f"depths [{queue.depth}] latencies [{queue.latency}] {{"
         )
-        lines.append(f"{indent}^transform(%item: !ac.var<{queue.payload}>):")
+        lines.append(f"{indent}^transform(%item: !ac.var<{input_payload}>):")
         lines.extend(indent + line[2:] for line in emitter.lines)
         lines.append(
             f"{indent}  ac.transform.yield %{result} : !ac.var<{queue.payload}>"
         )
         lines.append(
             f"{indent}}} {queue_attributes(queue.name, (queue.rate,))} : "
-            f"(!ac.queue<{queue.payload}>) -> "
+            f"(!ac.queue<{input_payload}>) -> "
             f"!ac.queue<{queue.payload}>"
         )
         mapping[queue.name] = output_ssa
@@ -3674,6 +4231,7 @@ def lower_queue_program(program: QueueProgram) -> str:
             and not queue.dependency_output
             and not queue.credit_output
             and not queue.memory_output
+            and not queue.array_invoke_output
             and not queue.barrier_output
             and not queue.select_output
             and queue.atomic_group is None
@@ -3730,6 +4288,11 @@ def lower_queue_program(program: QueueProgram) -> str:
             (request.order, "memory_request", request)
             for request in program.memory_requests
             if request.scope == path
+        )
+        events.extend(
+            (invoke.order, "array_invoke", invoke)
+            for invoke in program.array_invokes
+            if invoke.scope == path
         )
         events.extend(
             (
@@ -4063,6 +4626,114 @@ def lower_queue_program(program: QueueProgram) -> str:
                     f"!ac.queue<{incoming.payload}>"
                 )
                 mapping[credit.output_name] = output
+            elif kind == "array_invoke":
+                invoke = item
+                assert isinstance(invoke, ArrayInvokeBinding)
+                incoming = by_name[invoke.input_name]
+                array = next(
+                    value for value in program.memory_arrays if value.name == invoke.array
+                )
+                output_binding = by_name[invoke.output_name]
+                output = (
+                    invoke.output_name
+                    if not path
+                    else f"{invoke.output_name}__local"
+                )
+
+                index_emitter = _ExpressionEmitter(
+                    payloads, invoke.argument, incoming.payload
+                )
+                index_values: list[tuple[str, str]] = []
+                for expression in invoke.indices:
+                    index_values.append(index_emitter.emit(expression))
+
+                request_emitter = _ExpressionEmitter(
+                    payloads, invoke.argument, incoming.payload
+                )
+                address, address_type = request_emitter.emit(
+                    invoke.address, invoke.address_type
+                )
+                write, write_type = request_emitter.emit(invoke.write, "i1")
+                data, data_type = request_emitter.emit(invoke.data, array.data_type)
+                command = request_emitter._new()
+                request_emitter.lines.append(
+                    f'    %{command} = ac.var.create %{address}, %{write}, %{data} '
+                    f'fields ["address", "write", "data"] : '
+                    f'(!ac.var<{address_type}>, !ac.var<{write_type}>, '
+                    f'!ac.var<{data_type}>) -> !ac.var<{invoke.command_payload}>'
+                )
+
+                context_emitter = _ExpressionEmitter(
+                    payloads, invoke.argument, incoming.payload
+                )
+                context, context_type = context_emitter.emit(
+                    invoke.request_id, invoke.id_type
+                )
+                response_value = "response_value"
+                result = "response_token"
+                response_payload = output_binding.payload
+                owner_symbol = "@" + invoke.array
+                lines.append(
+                    f"{indent}%{output} = ac.array.invoke {owner_symbol} "
+                    f'service "request", %{mapping[invoke.input_name]} ordinal '
+                    f"{array_ordinals[(invoke.array, invoke.output_name)]} "
+                    f'depth {invoke.depth} policy "priority" index {{'
+                )
+                lines.append(
+                    f"{indent}^index(%item: !ac.var<{incoming.payload}>):"
+                )
+                lines.extend(indent + line[2:] for line in index_emitter.lines)
+                yielded_indices = ", ".join(
+                    f"%{value}" for value, _ in index_values
+                )
+                yielded_index_types = ", ".join(
+                    f"!ac.var<{typ}>" for _, typ in index_values
+                )
+                lines.append(
+                    f"{indent}  ac.array.invoke.yield {yielded_indices} : "
+                    f"{yielded_index_types}"
+                )
+                lines.append(f"{indent}}} request {{")
+                lines.append(
+                    f"{indent}^request(%item: !ac.var<{incoming.payload}>):"
+                )
+                lines.extend(indent + line[2:] for line in request_emitter.lines)
+                lines.append(
+                    f"{indent}  ac.array.invoke.yield %{command} : "
+                    f"!ac.var<{invoke.command_payload}>"
+                )
+                lines.append(f"{indent}}} context {{")
+                lines.append(
+                    f"{indent}^context(%item: !ac.var<{incoming.payload}>):"
+                )
+                lines.extend(indent + line[2:] for line in context_emitter.lines)
+                lines.append(
+                    f"{indent}  ac.array.invoke.yield %{context} : "
+                    f"!ac.var<{context_type}>"
+                )
+                lines.append(f"{indent}}} response {{")
+                lines.append(
+                    f"{indent}^response(%response_id: !ac.var<{context_type}>, "
+                    f"%{response_value}: !ac.var<{array.data_type}>):"
+                )
+                lines.append(
+                    f"{indent}  %{result} = ac.var.create %response_id, "
+                    f'%{response_value} fields ["id", "data"] : '
+                    f"(!ac.var<{context_type}>, !ac.var<{array.data_type}>) -> "
+                    f"!ac.var<{response_payload}>"
+                )
+                lines.append(
+                    f"{indent}  ac.array.invoke.yield %{result} : "
+                    f"!ac.var<{response_payload}>"
+                )
+                endpoint = "/" + "/".join((*invoke.scope, invoke.output_name))
+                lines.append(
+                    f'{indent}}} {{ac.endpoint_path = "{endpoint}", '
+                    f'ac.name = "{invoke.output_name}"}} : '
+                    f"!ac.queue<{incoming.payload}> -> "
+                    f"!ac.queue<{response_payload}>"
+                )
+                mapping[invoke.output_name] = output
             elif kind == "memory_request":
                 memory = item
                 assert isinstance(memory, MemoryRequestBinding)

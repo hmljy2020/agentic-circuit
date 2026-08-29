@@ -1,7 +1,7 @@
 {
   "schema": "agentic-circuit-block-spec",
-  "version": "0.3",
-  "contract_epoch": "0.3",
+  "version": "0.4",
+  "contract_epoch": "0.4",
   "blocks": [
     {
       "name": "barrier",
